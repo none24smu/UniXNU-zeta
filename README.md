@@ -364,10 +364,10 @@ the later native USB captures below supply direct kernel output.
 A read-only XNU probe mapped USB0 and accepted its DWC3 signature at physical
 `0x0a60c120` after boot services ended (7.356 seconds including a 2-second wait
 and reboot). This does not prove DMA, PHY readiness or CDC traffic. Native
-polling CDC integration is under qualification; capture accepts the separate
+polling CDC integration was subsequently qualified; capture accepts the separate
 product `zeta XNU log`. Host tests cover control requests, data/status phases,
 line coding, completed-byte accounting, split reboot frames and bounded
-command timeout with ASan/UBSan; hardware log capture is still required.
+command timeout with ASan/UBSan; later captures verify real hardware traffic.
 
 Bounded instruction probes in the native initializer reached the instruction
 before the DCTL core-reset store and the instruction after that store and its
@@ -410,6 +410,21 @@ the direct dispatcher while the IOKit wrapper's vector is being registered.
 headers, isolates static symbol collisions, audits imports/deployment, and
 registers its real functions through XNU's versioned shims. Its hardware
 qualification is pending. No pthread panic or initialization path is bypassed.
+
+Stage 6 begins with the stock zeta DT's UFS host at `0x01d84000+0x3000`,
+QMP v4 Lahaina PHY at `0x01d87000+0xe10`, SPI 265 (INTID 297), and SMMU
+stream ID `0xe0`. The current generic NativeUfs driver targets SM8550; its
+board clock offsets must not be applied unchanged to SM8350.
+
+The `--inspect-zeta-ufs` bounded probe reads the SM8350 GCC page at `0x177000`:
+GDSC `+0x4`, AXI `+0x10`, AHB `+0x18`, aggregate `+0xcc`, UniPro `+0x5c`.
+It reads the host only when the domain is powered and all four clock votes
+are enabled. Hardware returned `f822f000/221/1/1/221` for those registers,
+then CAP `1587031f`, VER `300`, HCS `10f`, HCE `1`. That establishes a readable
+UFSHCI 3.0 host with 32 transfer slots, enabled controller, present device and
+ready transfer/task/UIC queues. The probe writes no UFS, PHY, GCC or SMMU
+register. It does not issue SCSI reads, publish storage media or mount root.
+Evidence is in `build/bringup/native-usb/qcom-ufs-inspect/capture/`.
 
 An explicit early video acquisition test also hit the exception guard (25.291
 seconds), with only UEFI text visible. XNU's normal screen acquisition occurs

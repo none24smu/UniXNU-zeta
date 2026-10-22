@@ -24,7 +24,8 @@ RECORD_ADDRESS = 0xA9000000
 
 
 def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
-            reset_before=False, occurrence=1, guard_early_faults=False, function='_arm_init'):
+            reset_before=False, occurrence=1, guard_early_faults=False, function='_arm_init',
+            check_pointer=None):
     if guard_early_faults and reset_delay >= 16:
         raise ValueError('With fault guards, normal delay must be below 16 seconds to distinguish outcomes')
     if output.exists() or kernel.resolve() == output.resolve():
@@ -116,6 +117,14 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             raise ValueError('Require one verified SCTLR/ISB/CPACR bootstrap sequence')
         site_va = matches[0] + (0 if stage == 'before-mmu' else 0x20)
     site = file_offset(site_va, 4)
+    pointer_va = None
+    if check_pointer:
+        if not (reset_after and reset_before and guard_early_faults and 0 <= reset_delay <= 8):
+            raise ValueError('Pointer checks require a guarded before-call probe with delay 0..8 seconds')
+        pointer_va = symbol(check_pointer)
+        if pointer_va % 8:
+            raise ValueError('Pointer symbol must be 8-byte aligned')
+        file_offset(pointer_va, 8)
     # Only verified zero padding between this branch and its original target.
     cave = (entry + 0x7F) & ~0xFF
     if cave <= entry:
@@ -156,6 +165,14 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
     prefix = '  bl probe_callee\n' if callee and not reset_before else ''
     if stage == 'early-fault-test':
         prefix = '  brk #0\n'
+    if check_pointer:
+        # Use a PC-relative reference so the load follows the kernel mapping.
+        # NULL gets its own delay, distinct from both fault guards.
+        prefix = '''  adrp x7, checked_pointer
+  ldr x7, [x7, :lo12:checked_pointer]
+  mov x6, #12
+  cbz x7, timed_reset
+'''
     guards = '''
   .org 0x80
 exception_reset:
@@ -198,6 +215,8 @@ timed_reset:
         (tmp/'probe.S').write_text(assembly)
         subprocess.run(['clang', '--target=aarch64-none-elf', '-c', str(tmp/'probe.S'), '-o', str(tmp/'probe.o')], check=True)
         definitions = [f'--defsym=probe_callee={callee:#x}'] if callee and not reset_before else []
+        if pointer_va is not None:
+            definitions.append(f'--defsym=checked_pointer={pointer_va:#x}')
         subprocess.run(['ld.lld', f'-Ttext={cave:#x}', '-e', '_start', *definitions,
                         str(tmp/'probe.o'), '-o', str(tmp/'probe.elf')], check=True)
         subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'probe.elf'), str(tmp/'probe.bin')], check=True)
@@ -264,6 +283,9 @@ timed_reset:
               'reset_delay_seconds': reset_delay,
               'reset_after': reset_after, 'reset_before': reset_before, 'occurrence': occurrence,
               'caller_function': function,
+              'checked_pointer_symbol': check_pointer,
+              'checked_pointer_va': hex(pointer_va) if pointer_va is not None else None,
+              'null_pointer_reset_delay_seconds': 12 if check_pointer else None,
               'early_fault_guard_sites': guard_sites,
               'exception_reset_delay_seconds': 20 if guard_early_faults else None,
               'panic_reset_delay_seconds': 24 if guard_early_faults else None,
@@ -291,6 +313,7 @@ def main():
     parser.add_argument('--reset-before', action='store_true', help='stop at that call without executing it')
     parser.add_argument('--occurrence', type=int, default=1, help='which call to the symbol (default: 1)')
     parser.add_argument('--guard-early-faults', action='store_true', help='reset 20 s after an early exception or 24 s after panic')
+    parser.add_argument('--check-pointer', help='before-call pointer check: NULL resets after 12 s, non-NULL uses --reset-delay')
     args = parser.parse_args()
     try:
         if not 0 <= args.reset_delay <= 30:
@@ -300,7 +323,8 @@ def main():
         if args.occurrence < 1:
             raise ValueError('--occurrence must be positive')
         prepare(args.kernel, args.output, args.reset_delay, args.stage, args.reset_after,
-                args.reset_before, args.occurrence, args.guard_early_faults, args.function)
+                args.reset_before, args.occurrence, args.guard_early_faults, args.function,
+                args.check_pointer)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

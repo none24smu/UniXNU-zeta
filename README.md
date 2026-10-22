@@ -19,7 +19,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
-| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed `arm_vm_init` and the end of `arm_init`. With the virtual-timer fix, the first kernel thread completes `InitIOKit` and NVRAM setup. Platform UUID generation faults in `SHA1Init`; crypto-provider registration is being checked. IOKit platform matching and kernel USB logging remain unverified |
+| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed `arm_vm_init` and the end of `arm_init`. With the virtual-timer fix, the first kernel thread completes `InitIOKit` and NVRAM setup. Platform UUID generation faults in `SHA1Init`; a NULL crypto-provider pointer is now hardware verified. Source-provider integration is being built. IOKit platform matching and kernel USB logging remain unverified |
 | 7-8 | Storage, root filesystem, and iOS userspace not started |
 
 ## Inputs
@@ -227,12 +227,26 @@ The linked kernel initializes that pointer to NULL and contains no direct
 calls to `register_crypto_functions`. Runtime pointer checks distinguish
 missing registration from a fault within an installed implementation. A
 non-NULL control using `PE_putc` at the same checkpoint returned in 6.970
-seconds. The `g_crypto_funcs` check did not expose USB during its 120-second
-capture, so its runtime value remains unverified. Both artifacts are retained
-in `source-check-console-pointer/` and `source-check-crypto-pointer/`.
-The next source integration needs a compatible crypto provider initialized
-before platform defaults, with its PRNG and provider callbacks audited for
-xnu-12377. The older xnu-10063 build recipe does not apply automatically.
+seconds. The first `g_crypto_funcs` check did not expose USB during its
+120-second capture. Retrying the exact same image after manual recovery
+returned in 17.140 seconds: the distinct 12-second NULL branch plus reboot
+latency. The console control used the 2-second non-NULL branch. The runtime
+crypto-provider pointer is therefore NULL immediately before `SHA1Init`.
+Artifacts are retained in `source-check-console-pointer/` and
+`source-check-crypto-pointer/`, including `retry-capture/` and
+`retry-hardware-test.json`.
+
+UniXNU's source-provider integration at `2875119` initializes the pinned
+source provider after `InitIOKit` and before `ConfigureIOKit`. It uses a
+separate iOS 26 build, checks the RNG/PRNG callback ABI, compiles digest
+descriptors with XNU's current header, and fills all 56 crypto callbacks.
+Default provider POST and additional digest/HMAC KPI checks run before
+platform defaults. Build and runtime validation of this integration are
+pending; no provider-startup or platform-UUID success is implied yet. The
+KPI adapter passed local tests with XNU callback declarations, an OpenSSL
+backend, and ASan/UBSan: five digests, streaming, HMAC truncation and
+verification, and rejection of invalid context/output lengths. These tests
+cover the adapter; provider POST and kernel execution require hardware.
 
 Kernel USB output requires a native transport after the firmware controller
 shuts down; these timing observations do not provide kernel text.

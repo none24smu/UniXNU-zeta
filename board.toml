@@ -17,3 +17,35 @@ device_class = "v54ap"
 chip_id = 0x8150
 board_id = 14
 fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]   # the small components
+
+# Stage 1 and 2 (UEFI, UniXNU menu): the firmware comes from uefi-zeta, a Mu-Silicium tree with
+# Platforms/Microsoft/zetaPkg. Its memory and configuration maps are generated from the stock slot b
+# firmware by scripts/gen-zeta-memory-map.py and scripts/gen-zeta-config-map.py.
+[firmware]
+config = "zeta"                    # Resources/Configs/zeta.toml in the Mu-Silicium checkout (--uefi)
+dsc = "Platforms/Microsoft/zetaPkg/zeta.dsc"
+fd = "Build/zetaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = ["scripts/check-zeta.py"]
+submodules = ["Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
+patches = ["Resources/MuPatches/Gic-Spurious.patch"]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/Microsoft",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+]
+
+[firmware.defines]
+ENABLE_SECUREBOOT = "1"
+DEVICE_MODEL = "zeta"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "zeta-research"
+

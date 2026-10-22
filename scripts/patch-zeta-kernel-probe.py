@@ -198,7 +198,7 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
     if cave <= entry:
         cave += 0x100
     cave_size = 0x200 if extended else 0x100
-    exception_offset, panic_offset = (0x100, 0x140) if extended else (0x80, 0x90)
+    exception_offset, panic_offset = (0x100, 0x150) if extended else (0x80, 0x90)
     if cave + cave_size > target or any(data[file_offset(cave, cave_size):file_offset(cave, cave_size)+cave_size]):
         raise ValueError('No verified empty entry padding for the probe')
     nonce = secrets.randbits(64) or 1
@@ -327,11 +327,15 @@ controller_found:
   mrs x1, esr_el1
   mrs x2, far_el1
   mrs x3, elr_el1
-  adr x0, fault_format
   sub sp, sp, #32
   stp x1, x2, [sp]
   str x3, [sp, #16]
   str x30, [sp, #24]
+  bl probe_is_serial_console
+  cbnz w0, exception_console_ready
+  bl probe_serial_console
+exception_console_ready:
+  adr x0, fault_format
   bl probe_printf
   add sp, sp, #32
 ''' if log_faults else ''
@@ -339,6 +343,12 @@ controller_found:
   adrp x9, probe_console_suspended
   mov w10, #1
   strb w10, [x9, :lo12:probe_console_suspended]
+  mov x19, x0
+  bl probe_is_serial_console
+  cbnz w0, panic_console_ready
+  bl probe_serial_console
+panic_console_ready:
+  mov x0, x19
   bl probe_printf
 ''' if log_faults else ''
     guards = f'''
@@ -356,10 +366,10 @@ panic_reset:
     counter_end = 'x20' if poll_native_usb else 'x5'
     poll = '  bl probe_usb_poll\n' if poll_native_usb else ''
     console_strings = '''
-  .org 0x160
+  .org 0x180
 banner_format:
   .asciz "XNU checkpoint\\n%s\\nKernel boot args: %s\\n"
-  .org 0x1a0
+  .org 0x1c0
 fault_format:
   .asciz "XNU fault ESR=%llx FAR=%llx ELR=%llx LR=%llx\\n"
 ''' if extended else ''
@@ -414,6 +424,8 @@ timed_reset:
             definitions.append(f'--defsym=probe_printf={symbol("_printf"):#x}')
         if log_faults:
             definitions.append(f'--defsym=probe_console_suspended={symbol("_console_suspended"):#x}')
+            definitions.append(f'--defsym=probe_serial_console={symbol("_switch_to_serial_console"):#x}')
+            definitions.append(f'--defsym=probe_is_serial_console={symbol("_console_is_serial"):#x}')
         if poll_native_usb:
             definitions.append(f'--defsym=probe_usb_poll={symbol("_unixnu_dwc3_poll"):#x}')
         if inspect_zeta_ufs:

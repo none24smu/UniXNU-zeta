@@ -410,6 +410,9 @@ the direct dispatcher while the IOKit wrapper's vector is being registered.
 headers, isolates static symbol collisions, audits imports/deployment, and
 registers its real functions through XNU's versioned shims. Its hardware
 qualification is pending. No pthread panic or initialization path is bypassed.
+The first pthread build compiled the CPU/USB drivers but failed in the
+registration bootstrap's BSD-private header context. UniXNU `30c3543` corrects
+that bootstrap recipe; CI run `39850532370` is the replacement qualification.
 
 Stage 6 begins with the stock zeta DT's UFS host at `0x01d84000+0x3000`,
 QMP v4 Lahaina PHY at `0x01d87000+0xe10`, SPI 265 (INTID 297), and SMMU
@@ -435,6 +438,13 @@ The first tagged-mapping boot did not expose even firmware USB logging, so it
 provides no kernel result and required physical bootloader recovery. The user
 reported a garbled overlay before that attempt's kernel handoff was observed;
 it is not accepted as readable XNU output.
+The subsequent `qcom-physical-display` attempt did enumerate native kernel
+USB, but output stopped before the acquisition checkpoint. Neither a fault
+report nor the USB reboot acknowledgement arrived, and fastboot return failed.
+Its exact execution point is unknown. Further early display acquisition is
+deferred while the working serial path is used for kernel bring-up. The probe
+fault guards now select serial output only when it is not already selected,
+avoiding an unnecessary late write to the console selector.
 
 `--stage function-offset --in SYMBOL --instruction-offset OFFSET
 --expected-instruction WORD` stops before an exact reviewed instruction;

@@ -18,7 +18,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 2. Device repository | This repository |
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
-| 5. Payload and boot image | Blocked on the kernel: UniXNU's kernel step targets xnu-10063 (iOS 17); 23F84 runs xnu-12377 |
+| 5. Payload and boot image | Kernel builds: xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication. Not booted |
 | 6-8 | Not started |
 
 ## Inputs

@@ -9,6 +9,8 @@ CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
 # Register the source crypto provider before platform UUID hashing.
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
+# Register the public source pthread provider through XNU's versioned shims.
+CONFIG_XNU_SOURCE_PTHREAD=y
 # Link the real DT platform expert and GICv3 boot CPU provider into XNU 12377.
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y

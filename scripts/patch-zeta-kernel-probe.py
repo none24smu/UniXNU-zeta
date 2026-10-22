@@ -33,7 +33,8 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             instruction_offset=None, expected_instruction=None,
             check_word=None, expected_word=None, acquire_text_console=False,
             physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False,
-            allow_vm_faults=False):
+            allow_vm_faults=False, inspect_zeta_smmu=False):
+    inspect_storage = inspect_zeta_ufs or inspect_zeta_smmu
     if warm_reset and (stage != 'entry' or reset_after or guard_early_faults):
         raise ValueError('Warm-reset retention discovery requires an unguarded entry probe')
     if record_address not in (RECORD_ADDRESS, 0xE3000000):
@@ -195,9 +196,9 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         raise ValueError('Early IRQ registration test requires native vectors, USB polling and fault capture')
     if install_boot_irq_early and physical_framebuffer:
         raise ValueError('Select only one auxiliary entry-padding trampoline')
-    if inspect_zeta_ufs and not (guard_early_faults and allow_interrupts and poll_native_usb and log_faults and reset_before):
+    if inspect_storage and not (guard_early_faults and allow_interrupts and poll_native_usb and log_faults and reset_before):
         raise ValueError('Read-only UFS inspection requires a guarded before-call probe with USB fault capture')
-    if sum(map(bool, (physical_framebuffer, install_boot_irq_early, inspect_zeta_ufs))) > 1:
+    if sum(map(bool, (physical_framebuffer, install_boot_irq_early, inspect_zeta_ufs, inspect_zeta_smmu))) > 1:
         raise ValueError('Select only one auxiliary entry-padding trampoline')
     cave = (entry + 0x7F) & ~0xFF
     if cave <= entry:
@@ -285,7 +286,7 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
   b.ne timed_reset
 controller_found:
 '''
-    if inspect_zeta_ufs:
+    if inspect_storage:
         prefix += '  bl probe_ufs_inspect\n'
     if acquire_text_console:
         prefix += '''  bl probe_video_console
@@ -433,7 +434,7 @@ timed_reset:
             definitions.append(f'--defsym=probe_is_serial_console={symbol("_console_is_serial"):#x}')
         if poll_native_usb:
             definitions.append(f'--defsym=probe_usb_poll={symbol("_unixnu_dwc3_poll"):#x}')
-        if inspect_zeta_ufs:
+        if inspect_storage:
             definitions.append(f'--defsym=probe_ufs_inspect={cave+0x800:#x}')
         subprocess.run(['ld.lld', f'-Ttext={cave:#x}', '-e', '_start', *definitions,
                         str(tmp/'probe.o'), '-o', str(tmp/'probe.elf')], check=True)
@@ -454,7 +455,7 @@ timed_reset:
         allowed.append((patch, patch+4))
 
     branch(site_va, cave)
-    if inspect_zeta_ufs:
+    if inspect_storage:
         # Stock zeta DT: UFS GDSC 0x177004, host 0x1d84000. Clock
         # offsets come from gcc-lahaina.c, not the SM8550 NativeUfs driver.
         # Only read host registers if the domain and all four clock votes
@@ -534,6 +535,8 @@ report_ufs:
 ufs_format:
   .asciz "ZETA UFS RO: gdsc=%llx axi=%llx ahb=%llx aggr=%llx unipro=%llx read=%llx CAP=%llx VER=%llx HCS=%llx HCE=%llx UTRLBA=%llx UTRLDBR=%llx UTRLRSR=%llx UTMRLBA=%llx UTMRLDBR=%llx UTMRLRSR=%llx IS=%llx IE=%llx\\n"
 '''
+        if inspect_zeta_smmu:
+            asm = Path(__file__).with_name('zeta-smmu-readonly.S').read_text()
         with tempfile.TemporaryDirectory(prefix='zeta-ufs-ro-') as temporary:
             tmp = Path(temporary)
             (tmp/'ufs.S').write_text(asm)
@@ -764,6 +767,7 @@ native_vm:
               'physical_framebuffer_tagged_before_console_setup': physical_framebuffer,
               'early_boot_irq_handler_installed_before_processor_registration': install_boot_irq_early,
               'zeta_ufs_register_inspection_read_only': inspect_zeta_ufs,
+              'zeta_smmu_register_inspection_read_only': inspect_zeta_smmu,
               'native_usb_polled_during_reset_delay': poll_native_usb,
               'fault_text_logging_enabled': log_faults,
               'probe_padding_bytes': cave_size,
@@ -812,6 +816,7 @@ def main():
     parser.add_argument('--physical-framebuffer', action='store_true', help='tag PE_state video as physical before its first mapping; requires early text acquisition')
     parser.add_argument('--install-boot-irq-early', action='store_true', help='bounded source-fix test: install actual ArmCpu dispatch before calling the original processor registration')
     parser.add_argument('--inspect-zeta-ufs', action='store_true', help='read SM8350 UFS clock votes and gated host registers; never writes storage, PHY, GCC or SMMU registers')
+    parser.add_argument('--inspect-zeta-smmu', action='store_true', help='read SMMUv500 global registers and UFS stream 0xe0 mapping; no register writes')
     parser.add_argument('--poll-native-usb', action='store_true', help='poll the linked native USB console throughout the bounded wait')
     parser.add_argument('--log-faults', action='store_true', help='print fault registers or panic arguments before polling native USB until reset; requires a usable kernel stack and console')
     args = parser.parse_args()
@@ -831,7 +836,7 @@ def main():
                 args.print_kernel_banner, args.poll_native_usb, args.log_faults,
                 args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
                 args.acquire_text_console, args.physical_framebuffer, args.install_boot_irq_early,
-                args.inspect_zeta_ufs, args.allow_vm_faults)
+                args.inspect_zeta_ufs, args.allow_vm_faults, args.inspect_zeta_smmu)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

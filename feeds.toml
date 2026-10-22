@@ -3,6 +3,13 @@
 # for this device only; scripts/build-xnu-12377.sh reads the versions through the unixnu driver.
 
 [[source]]
+name = "IOStorageFamily"
+kind = "refer"
+git = "https://github.com/apple-oss-distributions/IOStorageFamily.git"
+ref = "IOStorageFamily-337.100.1"
+commit = "7edb88fbae296fb7c8ce2f64e115e116e566d51c"
+
+[[source]]
 name = "xnu"
 kind = "refer"
 git = "https://github.com/apple-oss-distributions/xnu.git"

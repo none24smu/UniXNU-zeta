@@ -463,6 +463,14 @@ base `0x9d988000`, task doorbell `0`, task run/stop `0`, interrupt status
 the firmware's queue addresses are not proof of an XNU DMA mapping. Native
 USB captured the full report, and automatic fastboot return was verified.
 
+The `qcom-smmu-inspect` kernel checkpoint additionally read the SMMU global
+pages at `0x15000000` without writes or DMA. It found exactly one UFS SID
+`0xe0` match: SMR slot 2=`0x800000e0`, S2CR=`2` (translation through context
+bank 2), CBAR=`0x1f000`, CBA2R=`1`, and no global fault. There are 89 stream
+slots and 75 context banks. Native USB captured the report and fastboot
+return was verified. An eventual takeover must preserve that bank's other
+users and change only the exact UFS stream after both command queues stop.
+
 An explicit early video acquisition test also hit the exception guard (25.291
 seconds), with only UEFI text visible. XNU's normal screen acquisition occurs
 later in `vcattach`. The probe now supports `--acquire-text-console` with a
@@ -506,3 +514,29 @@ Additional diagnostic modes:
   a usable stack and console and forces unbuffered console output. Console
   probes verify a larger, entirely zero 512-byte entry-padding area.
 * `--check-usb-controller` performs the bounded USB0 mapping/signature read only.
+
+## Stage 6 root-image preparation
+
+`scripts/build-zeta-root.py` wraps the two decrypted raw APFS containers in
+512-byte-sector GPT disks, preserving every original APFS byte at a 1 MiB
+offset. It signs each disk with VerifiedRoot v1, records the actual APFS
+volume UUID independently of the GPT partition UUID, and assembles a local
+`SHNGROOT` userdata image. It never operates on a device.
+
+The signing key remains in ignored `.cache/owner-root/owner.pem` with mode
+0600. Only `scripts/zeta-owner-root-key.h`, the public trust anchor, belongs
+in the source repository. The manifest entry's reserved bytes 88..103 carry
+the relative offset and exact size of its signed policy envelope. These
+policies live outside the disk windows; a compatible kernel must bound those
+reads, authenticate the envelope with the independently compiled public key,
+and verify every returned 4 KiB block before publication. Existing kernels
+that only use embedded policies cannot publish this layout.
+
+The prepared iOS 26.5.2 23F84 images have root UUID
+`B6C635B2-67F6-4034-B5D5-539E4D03D1EC` and SystemOS UUID
+`B792C617-C87F-4706-9CD3-4C3A034C27CB`. Host APFS parsing and a read-only FUSE
+mount succeeded. The real C verifier authenticated all 2,335,744 OS blocks
+and all 1,281,536 SystemOS blocks, including RSA signatures and full image
+hashes. Reports are local under `build/root-stage6/`. These are host checks:
+no image has been flashed, no native UFS read or root mount is proven, and
+Stage 6 remains incomplete.

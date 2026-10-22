@@ -19,7 +19,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
-| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed early `PE_init_platform(FALSE, args)` and `arm_vm_init`; IOKit platform matching and kernel USB logging remain unverified |
+| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed `arm_vm_init` and the end of `arm_init`. With the virtual-timer fix, the first kernel thread reaches `InitIOKit`; an exception during subsequent initialization is being isolated. IOKit platform matching and kernel USB logging remain unverified |
 | 7-8 | Storage, root filesystem, and iOS userspace not started |
 
 ## Inputs
@@ -49,9 +49,13 @@ cd UniXNU
 fastboot -s 0F00EFK214800A boot out/zeta/boot/boot.img
 ```
 
-The local UniXNU build system is at commit `364e98b`. The control kernel is
-from the fork's successful `ios26` CI run `39740998421`; its SHA-256 is
+The preserved control kernel is from the fork's successful `ios26` CI run
+`39740998421` at `364e98b`; its SHA-256 is
 `5c12fc41e41cc0b07c591558dc1f1a3b17c1fea588e74f374f22a3edf50e9790`.
+The virtual-timer fix is built at UniXNU `c136782` with device config `b9576d3`
+in [CI run 39816443967](https://github.com/none24smu/UniXNU/actions/runs/39816443967).
+That kernel has SHA-256
+`9f0da73b8cf93f5fbd26a8ade878ee8498bb5dc337d5e5c17839fa87ed2a1e05`.
 
 ## USB boot logs
 
@@ -175,10 +179,33 @@ from `arm_vm_init` with the paired delays above. The 2-second VM probe kernel
 is byte-identical to the failing 64-byte-seed control: only the ADT seed was
 changed. Generated seed length and packed payload hashes were also checked.
 
-A subsequent probe before `machine_startup` returned after 24.803 seconds,
-consistent with the exception guard. The next failure is after VM setup and
-before the end of `arm_init`; it is being isolated around console and later
-platform initialization. No IOKit matching or userspace success is implied.
+The next exception was isolated to the `CNTP_CTL_EL0` write in
+`fiq_context_init`. With the original instruction, the after-call probe took
+24.800 seconds; changing only that instruction to a NOP reduced it to 7.272
+seconds. The source patch `native-virtual-timer-only.patch` and
+`CONFIG_XNU_VIRTUAL_TIMER_ONLY=y` now omit that physical-timer write on zeta
+while retaining the virtual-timer enable. This does not establish which EL2
+control caused the access to fault.
+
+With that diagnostic change and the corrected seed, paired probes before the
+final `machine_startup` call in `arm_init` took 7.072 and 12.816 seconds.
+Further probes returned after `vm_mem_bootstrap` (6.873 seconds) and reached
+`PE_init_iokit` in the first kernel thread (7.173 seconds). The probe after
+`PE_init_iokit` took the exception path (25.101 seconds). Evidence is in
+`build/bringup/virtual-timer/arm-init-hardware-test.json` and
+`bootstrap-hardware-test.json`.
+
+The fresh CI kernel contains the source fix, with no diagnostic timer NOP.
+Hardware probes reached the first kernel thread before `PE_init_iokit`
+(7.372 seconds), and the call to `InitIOKit` within it (7.170 seconds).
+Their captures and hashes are in
+`build/bringup/virtual-timer/source-before-iokit-delay2/` and
+`source-before-init-iokit-delay2/`. These tests establish initialization up to
+those points, not IOKit platform matching or userspace execution. A subsequent
+8-second repeat was accepted by fastboot but exposed neither firmware USB
+nor fastboot during the 120-second capture. Its execution point is unknown;
+it is not counted as a passed checkpoint. Evidence is retained in
+`source-before-iokit-delay8/`.
 
 Kernel USB output requires a native transport after the firmware controller
 shuts down; these timing observations do not provide kernel text.
@@ -215,4 +242,6 @@ MMU enable. A deliberate BRK test verified automatic fastboot return after
 `build/bringup/c-startup/active-fault-control/`. The earlier test that guarded
 only the inactive table stalled and is retained in `fault-control/` as a
 diagnostic implementation failure. These guards replace normal handling and
-must not be used in a normal boot image. They cannot recover a plain spin loop.
+must not be used in a normal boot image. They also replace IRQ/FIQ handling,
+so guarded checkpoints must stay before interrupt enable (`spllo()` in
+`kernel_bootstrap_thread`). They cannot recover a plain spin loop.

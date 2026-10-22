@@ -25,7 +25,15 @@ RECORD_ADDRESS = 0xA9000000
 
 def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             reset_before=False, occurrence=1, guard_early_faults=False, function='_arm_init',
-            check_pointer=None, check_return_zero=False):
+            check_pointer=None, check_return_zero=False, allow_interrupts=False, record_address=RECORD_ADDRESS,
+            check_return_one=False, warm_reset=False, check_usb_controller=False,
+            print_kernel_banner=False, poll_native_usb=False, log_faults=False):
+    if warm_reset and (stage != 'entry' or reset_after or guard_early_faults):
+        raise ValueError('Warm-reset retention discovery requires an unguarded entry probe')
+    if record_address not in (RECORD_ADDRESS, 0xE3000000):
+        raise ValueError('Record address must be a verified zeta reserved diagnostic region')
+    if allow_interrupts and not guard_early_faults:
+        raise ValueError('Interrupt-preserving mode requires fault guards')
     if guard_early_faults and reset_delay >= 16:
         raise ValueError('With fault guards, normal delay must be below 16 seconds to distinguish outcomes')
     if output.exists() or kernel.resolve() == output.resolve():
@@ -101,6 +109,14 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         if not 1 <= occurrence <= len(matches):
             raise ValueError(f'{function} has {len(matches)} calls to {reset_after}, not {occurrence}')
         site_va = matches[occurrence-1]
+    elif stage == 'function-return':
+        low = symbol(function)
+        high = min(value for values in symbols.values() for value in values if value > low)
+        returns = [va for va in range(low, high, 4)
+                   if struct.unpack_from('<I', data, file_offset(va, 4))[0] == 0xD65F03C0]
+        if len(returns) != 1:
+            raise ValueError(f'Require one plain RET in {function}, found {len(returns)}')
+        site_va = returns[0]
     elif stage == 'arm-init':
         site_va = symbol('_arm_init')
         if struct.unpack_from('<II', data, file_offset(site_va, 8)) != (0xD10343FF, 0xA9076FFC):
@@ -127,15 +143,31 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         file_offset(pointer_va, 8)
     if check_return_zero and not (reset_after and not reset_before and guard_early_faults and 0 <= reset_delay <= 8):
         raise ValueError('Return checks require a guarded after-call probe with delay 0..8 seconds')
+    if check_return_one and not (stage == 'function-return' and guard_early_faults and 0 <= reset_delay <= 8):
+        raise ValueError('Boolean success checks require a guarded function-return probe with delay 0..8 seconds')
+    if check_return_one and check_return_zero:
+        raise ValueError('Select only one return-value check')
+    if check_usb_controller and not (reset_after and reset_before and guard_early_faults and
+                                     allow_interrupts and 0 <= reset_delay <= 8):
+        raise ValueError('USB controller checks require an interrupt-preserving guarded before-call probe, delay 0..8')
+    if check_usb_controller and (check_pointer or check_return_zero or check_return_one or warm_reset):
+        raise ValueError('USB controller checks cannot be combined with other conditional probes')
     # Only verified zero padding between this branch and its original target.
+    extended = print_kernel_banner or poll_native_usb or log_faults
+    if extended and (stage in ('entry', 'before-mmu') or not guard_early_faults):
+        raise ValueError('Console diagnostics require guarded probes after MMU enable')
+    if log_faults and not poll_native_usb:
+        raise ValueError('Fault text capture requires polling native USB during the reset delay')
     cave = (entry + 0x7F) & ~0xFF
     if cave <= entry:
         cave += 0x100
-    if cave + 0x100 > target or any(data[file_offset(cave, 0x100):file_offset(cave, 0x100)+0x100]):
+    cave_size = 0x200 if extended else 0x100
+    exception_offset, panic_offset = (0x100, 0x140) if extended else (0x80, 0x90)
+    if cave + cave_size > target or any(data[file_offset(cave, cave_size):file_offset(cave, cave_size)+cave_size]):
         raise ValueError('No verified empty entry padding for the probe')
     nonce = secrets.randbits(64) or 1
     record = f'''
-  ldr x1, ={RECORD_ADDRESS:#x}
+  ldr x1, ={record_address:#x}
   mov w2, #1
   str w2, [x1, #8]
   mov w2, #{1 if stage == 'entry' else 2}
@@ -179,16 +211,104 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         prefix += '''  mov x6, #12
   cbnz w0, timed_reset
 '''
-    guards = '''
-  .org 0x80
+    if check_return_one:
+        prefix += '''  mov x6, #12
+  cmp w0, #1
+  b.ne timed_reset
+'''
+    if check_usb_controller:
+        # SM8350 stock DT usb0/dwc3@a600000; map with the real XNU service.
+        # Read only GSNPSID. Both USB3 and USB3.1 Synopsys signatures are valid.
+        prefix = '''  mov x0, #0xa600000
+  mov x1, #0x10000
+  bl probe_mapper
+  mov x6, #12
+  cbz x0, timed_reset
+  add x0, x0, #0xc000
+  ldr w7, [x0, #0x120]
+  lsr w7, w7, #16
+  mov w8, #0x5533
+  cmp w7, w8
+  b.eq controller_found
+  mov w8, #0x3331
+  cmp w7, w8
+  b.ne timed_reset
+controller_found:
+'''
+    if print_kernel_banner:
+        prefix += '''  bl probe_boot_args
+  mov x2, x0
+  adrp x1, probe_version
+  add x1, x1, :lo12:probe_version
+  adr x0, banner_format
+  sub sp, sp, #16
+  stp x1, x2, [sp]
+  bl probe_printf
+  add sp, sp, #16
+'''
+    if warm_reset:
+        # Ask PSCI_FEATURES before selecting architectural SYSTEM_WARM_RESET.
+        # Unsupported gets a distinct 12-second cold-reset path.
+        prefix += '''  mov w19, #9
+  movk w19, #0x8400, lsl #16
+  mov w0, #10
+  movk w0, #0x8400, lsl #16
+  mov w1, #18
+  movk w1, #0xc400, lsl #16
+  smc #0
+  mov x6, #12
+  cbnz w0, timed_reset
+  mov w19, #18
+  movk w19, #0xc400, lsl #16
+'''
+    reset_function = '  mov w0, w19' if warm_reset else '  mov w0, #9\n  movk w0, #0x8400, lsl #16'
+    fallback = '''  mov w19, #9
+  movk w19, #0x8400, lsl #16
+  mov x6, #12
+  b timed_reset
+''' if warm_reset else ''
+    exception_log = '''  msr daifset, #0xf
+  adrp x9, probe_console_suspended
+  mov w10, #1
+  strb w10, [x9, :lo12:probe_console_suspended]
+  mrs x1, esr_el1
+  mrs x2, far_el1
+  mrs x3, elr_el1
+  adr x0, fault_format
+  sub sp, sp, #32
+  stp x1, x2, [sp]
+  str x3, [sp, #16]
+  bl probe_printf
+  add sp, sp, #32
+''' if log_faults else ''
+    panic_log = '''  msr daifset, #0xf
+  adrp x9, probe_console_suspended
+  mov w10, #1
+  strb w10, [x9, :lo12:probe_console_suspended]
+  bl probe_printf
+''' if log_faults else ''
+    guards = f'''
+  .org {exception_offset:#x}
 exception_reset:
+{exception_log}
   mov x6, #20
   b timed_reset
-  .org 0x90
+  .org {panic_offset:#x}
 panic_reset:
+{panic_log}
   mov x6, #24
   b timed_reset
 ''' if guard_early_faults else ''
+    counter_end = 'x20' if poll_native_usb else 'x5'
+    poll = '  bl probe_usb_poll\n' if poll_native_usb else ''
+    console_strings = '''
+  .org 0x160
+banner_format:
+  .asciz "XNU checkpoint\\n%s\\nKernel boot args: %s\\n"
+  .org 0x1a0
+fault_format:
+  .asciz "XNU fault ESR=%llx FAR=%llx ELR=%llx\\n"
+''' if extended else ''
     assembly = f'''.text
 .global _start
 _start:
@@ -196,25 +316,28 @@ _start:
 {prefix}
   mov x6, #{reset_delay}
 timed_reset:
+  msr daifset, #0xf
   mrs x4, cntpct_el0
   mrs x5, cntfrq_el0
-  madd x5, x5, x6, x4
+  madd {counter_end}, x5, x6, x4
 2:
+{poll}
   isb
   mrs x4, cntpct_el0
-  cmp x4, x5
+  cmp x4, {counter_end}
   b.lo 2b
-  mov w0, #9
-  movk w0, #0x8400, lsl #16
+{reset_function}
   mov x1, xzr
   mov x2, xzr
   mov x3, xzr
   smc #0
+{fallback}
 1:
   wfe
   b 1b
   .ltorg
 {guards}
+{console_strings}
 '''
     with tempfile.TemporaryDirectory(prefix='zeta-entry-probe-') as temporary:
         tmp = Path(temporary)
@@ -223,11 +346,22 @@ timed_reset:
         definitions = [f'--defsym=probe_callee={callee:#x}'] if callee and not reset_before else []
         if pointer_va is not None:
             definitions.append(f'--defsym=checked_pointer={pointer_va:#x}')
+        if check_usb_controller:
+            definitions.append(f'--defsym=probe_mapper={symbol("_ml_io_map"):#x}')
+        if print_kernel_banner:
+            definitions += [f'--defsym=probe_boot_args={symbol("_PE_boot_args"):#x}',
+                            f'--defsym=probe_version={symbol("_version"):#x}']
+        if print_kernel_banner or log_faults:
+            definitions.append(f'--defsym=probe_printf={symbol("_printf"):#x}')
+        if log_faults:
+            definitions.append(f'--defsym=probe_console_suspended={symbol("_console_suspended"):#x}')
+        if poll_native_usb:
+            definitions.append(f'--defsym=probe_usb_poll={symbol("_unixnu_dwc3_poll"):#x}')
         subprocess.run(['ld.lld', f'-Ttext={cave:#x}', '-e', '_start', *definitions,
                         str(tmp/'probe.o'), '-o', str(tmp/'probe.elf')], check=True)
         subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'probe.elf'), str(tmp/'probe.bin')], check=True)
         code = (tmp/'probe.bin').read_bytes()
-    if len(code) > 0x100:
+    if len(code) > cave_size:
         raise ValueError('Probe exceeded verified padding')
     offset = file_offset(cave, len(code))
     data[offset:offset+len(code)] = code
@@ -267,12 +401,14 @@ timed_reset:
             word, following = struct.unpack_from('<II', original, file_offset(address, 8))
             if word & 0xFC000000 != 0x14000000 or following != 0xD503201F:
                 raise ValueError('Unrecognized active exception vector')
-            branch(address, cave+0x80)
+            if allow_interrupts and index % 4 in (1, 2):
+                continue
+            branch(address, cave+exception_offset)
             guard_sites.append(hex(address))
         panic = symbol('_panic')
         if struct.unpack_from('<II', original, file_offset(panic, 8)) != (0xD10083FF, 0xA9017BFD):
             raise ValueError('Unrecognized panic prologue')
-        branch(panic, cave+0x90)
+        branch(panic, cave+panic_offset)
         guard_sites.append(hex(panic))
     # Exactly the selected instruction and the verified padding may differ.
     for index, (before, after) in enumerate(zip(original, data)):
@@ -284,24 +420,38 @@ timed_reset:
               'output': str(output), 'output_sha256': hashlib.sha256(data).hexdigest(),
               'entry_va': hex(entry), 'original_target_va': hex(target), 'probe_va': hex(cave),
               'patched_site_va': hex(site_va),
-              'record_pa': hex(RECORD_ADDRESS), 'nonce': hex(nonce), 'probe_bytes': len(code),
+              'record_pa': hex(record_address), 'nonce': hex(nonce), 'probe_bytes': len(code),
               'record_written': bool(record),
               'reset_delay_seconds': reset_delay,
+              'warm_reset_feature_discovery': warm_reset,
+              'unsupported_warm_reset_delay_seconds': 12 if warm_reset else None,
+              'returned_warm_reset_cold_fallback_delay_seconds': 12 if warm_reset else None,
+              'unexpected_return_reset_delay_seconds': 12 if check_return_one else None,
               'reset_after': reset_after, 'reset_before': reset_before, 'occurrence': occurrence,
               'caller_function': function,
               'checked_pointer_symbol': check_pointer,
               'checked_pointer_va': hex(pointer_va) if pointer_va is not None else None,
               'null_pointer_reset_delay_seconds': 12 if check_pointer else None,
               'check_return_zero': check_return_zero,
+              'check_return_one': check_return_one,
+              'check_usb_controller_signature': check_usb_controller,
+              'usb_controller_register_pa': '0xa60c120' if check_usb_controller else None,
+              'usb_signature_mismatch_or_map_failure_delay_seconds': 12 if check_usb_controller else None,
               'nonzero_return_reset_delay_seconds': 12 if check_return_zero else None,
               'early_fault_guard_sites': guard_sites,
+              'native_irq_fiq_vectors_preserved': allow_interrupts,
+              'kernel_banner_printed_at_checkpoint': print_kernel_banner,
+              'native_usb_polled_during_reset_delay': poll_native_usb,
+              'fault_text_logging_enabled': log_faults,
+              'probe_padding_bytes': cave_size,
               'exception_reset_delay_seconds': 20 if guard_early_faults else None,
               'panic_reset_delay_seconds': 24 if guard_early_faults else None,
-              'stage': {'entry': 1, 'before-mmu': 2, 'after-mmu': 3, 'arm-init': 4, 'call': 5, 'early-fault-test': 6}[stage],
+              'stage': {'entry': 1, 'before-mmu': 2, 'after-mmu': 3, 'arm-init': 4, 'call': 5, 'early-fault-test': 6, 'function-return': 7}[stage],
               'stage_meaning': {'entry': 'instrumented kernel entry; original startup not executed',
                                 'before-mmu': 'original bootstrap reached SCTLR write; MMU not enabled',
                                 'after-mmu': 'original bootstrap passed MMU enable and ISB',
                                 'arm-init': 'original assembly bootstrap reached arm_init; C body not executed',
+                                'function-return': f'{function} reached its actual RET; W0 checked for 1' if check_return_one else f'{function} reached its actual RET',
                                 'call': f'{function} reached {"before" if reset_before else "after"} call {occurrence} to {reset_after}',
                                 'early-fault-test': 'deliberate BRK after MMU enable; verifies early exception reset'}[stage],
               'retained_record_verified': False,
@@ -315,25 +465,37 @@ def main():
     parser.add_argument('kernel', type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--reset-delay', type=int, default=0, help='seconds between probe entry and reset (0..30)')
-    parser.add_argument('--stage', choices=['entry', 'before-mmu', 'after-mmu', 'arm-init', 'early-fault-test'], default='entry')
+    parser.add_argument('--stage', choices=['entry', 'before-mmu', 'after-mmu', 'arm-init', 'early-fault-test', 'function-return'], default='entry')
     parser.add_argument('--reset-after', help='reset after the named call')
     parser.add_argument('--in', dest='function', default='_arm_init', help='function containing the call (default: _arm_init)')
     parser.add_argument('--reset-before', action='store_true', help='stop at that call without executing it')
     parser.add_argument('--occurrence', type=int, default=1, help='which call to the symbol (default: 1)')
     parser.add_argument('--guard-early-faults', action='store_true', help='reset 20 s after an early exception or 24 s after panic')
+    parser.add_argument('--allow-interrupts', action='store_true', help='preserve native IRQ/FIQ vectors; guard synchronous faults and SError only')
+    parser.add_argument('--record-address', type=lambda value: int(value, 0), default=RECORD_ADDRESS, help='reserved record PA: default ramoops, or 0xe3000000 display diagnostic window')
+    parser.add_argument('--warm-reset', action='store_true', help='entry retention test: discover and use PSCI SYSTEM_RESET2 warm reset, otherwise cold reset after 12 s')
     parser.add_argument('--check-pointer', help='before-call pointer check: NULL resets after 12 s, non-NULL uses --reset-delay')
     parser.add_argument('--check-return-zero', action='store_true', help='after-call status check: nonzero W0 resets after 12 s, zero uses --reset-delay')
+    parser.add_argument('--check-return-one', action='store_true', help='function-return boolean check: W0=1 uses normal delay, any other value uses 12 s')
+    parser.add_argument('--check-usb-controller', action='store_true', help='before-call read-only DWC3 mapping/signature test; invalid signature or failed mapping uses 12 s')
+    parser.add_argument('--print-kernel-banner', action='store_true', help='print XNU checkpoint, kernel version and boot args before the bounded wait')
+    parser.add_argument('--poll-native-usb', action='store_true', help='poll the linked native USB console throughout the bounded wait')
+    parser.add_argument('--log-faults', action='store_true', help='print fault registers or panic arguments before polling native USB until reset; requires a usable kernel stack and console')
     args = parser.parse_args()
     try:
         if not 0 <= args.reset_delay <= 30:
             raise ValueError('Reset delay must be 0..30 seconds')
         if args.reset_before and not args.reset_after:
             raise ValueError('--reset-before requires --reset-after')
+        if args.stage == 'function-return' and args.reset_after:
+            raise ValueError('Function-return probes cannot also select a call')
         if args.occurrence < 1:
             raise ValueError('--occurrence must be positive')
         prepare(args.kernel, args.output, args.reset_delay, args.stage, args.reset_after,
                 args.reset_before, args.occurrence, args.guard_early_faults, args.function,
-                args.check_pointer, args.check_return_zero)
+                args.check_pointer, args.check_return_zero, args.allow_interrupts, args.record_address,
+                args.check_return_one, args.warm_reset, args.check_usb_controller,
+                args.print_kernel_banner, args.poll_native_usb, args.log_faults)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

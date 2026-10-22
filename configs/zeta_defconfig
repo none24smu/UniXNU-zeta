@@ -1,3 +1,4 @@
-# Surface Duo 2 (zeta) first-boot configuration: firmware, UniXNU menu and payload stages only.
-# The kernel step is pinned to xnu-10063 (iOS 17) and the target is iOS 26.5.2 (xnu-12377), so no kernel
-# options are selected yet; board.toml has no [kernel] section for the same reason.
+# Surface Duo 2 (zeta): firmware, UniXNU menu and payload stages, and the xnu-12377 (iOS 26) kernel.
+# The kernel is a plain DEVELOPMENT BCM2837 build of UniXNU patches/xnu-12377; none of the xnu-10063
+# feature options (CONFIG_XNU_NATIVE_*, CONFIG_XNU_OWNER_*, ...) apply to it yet.
+CONFIG_XNU_BUILD_SCRIPT="build-xnu-12377.sh"

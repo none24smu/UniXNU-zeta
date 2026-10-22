@@ -553,3 +553,15 @@ MMFR1=`0x10212122`. ISAR1's APA/API/GPA/GPI fields are all zero. This is
 hardware evidence for the boot CPU, not a successful arm64e compatibility
 layer or a survey of every core. The helper only reads ID/SMMU registers,
 and automatic fastboot return was verified.
+
+The production UFS ARM64 command harness passed five EL1 TCG cases on QEMU
+10.1.0 with the upstream `ed621cc8e2a6dab2663ffb02e875f896f521bee2`
+UPIU length correction (`hw/ufs/lu.c` hunk only). NOP, attribute query, SCSI
+ready, 4 KiB and 128 KiB reads passed with ordinary and >4 GiB physical DMA
+addresses. Truncated and virtual DMA addresses timed out and were quarantined
+without resubmission. Older QEMU 8.2 omitted query echoes; unmodified 10.1.0
+also double-swapped the SCSI sense length, so neither is a passing control.
+The driver still enforces the same response checks. Logs and source/binary
+hashes are in `build/native-ufs-tests/sm8350-qemu10-qualified/` in the base
+checkout. This fixture does not qualify XNU allocation/locks, the Duo SMMU,
+real cache coherency or actual storage reads.

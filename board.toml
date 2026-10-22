@@ -18,6 +18,10 @@ chip_id = 0x8150
 board_id = 14
 fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]   # the small components
 
+[ipsw.sha256]
+# The source of the ADT identity (scripts/make-zeta-adt.py).
+"DeviceTree.v54ap.im4p" = "9305d468d6a97f6e57842b5866359ad473434b5d507ea3e4b4123f29edda8218"
+
 # Stage 1 and 2 (UEFI, UniXNU menu): the firmware comes from uefi-zeta, a Mu-Silicium tree with
 # Platforms/Microsoft/zetaPkg. Its memory and configuration maps are generated from the stock slot b
 # firmware by scripts/gen-zeta-memory-map.py and scripts/gen-zeta-config-map.py.
@@ -49,3 +53,25 @@ MEMORY_PROTECTION = "TRUE"
 SHIP_MODE = "FALSE"
 BUILDID_STRING = "zeta-research"
 
+# Stage 3 (payload). The kernel and the trust cache do not exist yet (see [ipsw] above), so the payload
+# cannot be built; the ADT tool can (scripts/make-zeta-adt.py, values from the phone and the stock tree).
+[payload]
+volume = "ZETAESP"
+size_mib = 192
+loader = "firmware"                 # DarwinBoot is in the uefi-zeta firmware volume
+title = "zeta first boot: iPhone18,2 23F84"
+dram_size = "0x200000000"           # 0x80000000..0x280000000; ABL /memory read on the phone (zetaPkg PORTING.md)
+skip_setup_tool = "scripts/seed-data-skip-setup.py"   # base UniXNU script, used by --skip-setup
+# panic_screen needs scripts/patch-xnu-entry-probe.py, which only sheng has; it is off until the kernel step.
+# trust_cache_sha256 is set once the iPhone18,2 trust caches are extracted and bundled.
+kernel_args = ["-v", "serial=3", "debug=0x14e"]
+
+[payload.adt]
+tool = "scripts/make-zeta-adt.py"
+chip_id = "8350"                    # software seed for IOPlatformUUID (with unique_chip_id), not an Apple chip ID
+cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"   # stock /cpus; boot CPU MPIDR 0x81000000 (Aff1 0)
+psci_method = "smc"                 # stock /psci
+packed_data_ramdisk = true
+unique_chip_id = "required"         # the platform seed is not stored in any repository
+# owned_memory_size: DarwinBoot's default window (256 MiB) until UEFI hands over more DRAM.
+# root_match_volume_uuid: set from the userdata OS volume once it is built.

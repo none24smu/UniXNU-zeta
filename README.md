@@ -19,7 +19,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
-| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed `arm_vm_init` and the end of `arm_init`. With the virtual-timer fix, the first kernel thread completes `InitIOKit` and NVRAM setup. Platform UUID generation faults in `SHA1Init`; a NULL crypto-provider pointer is now hardware verified. Source-provider integration is being built. IOKit platform matching and kernel USB logging remain unverified |
+| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed `arm_vm_init` and the end of `arm_init`. Paired probes now pass the complete `PE_init_iokit` call, including source crypto startup, POST/KPI checks, NVRAM and platform UUID generation. Platform/CPU-driver matching, native timer interrupts and kernel USB logging remain unverified. IOKit platform matching and kernel USB logging remain unverified |
 | 7-8 | Storage, root filesystem, and iOS userspace not started |
 
 ## Inputs
@@ -154,6 +154,7 @@ Hardware results on 2026-10-22:
 | Entry to `arm_init`, before its C body | 6.769 s | 13.011 s | `build/bringup/arm-init/hardware-test.json` |
 | Return from first `PE_init_platform(FALSE, args)` | 7.067 s | 13.012 s | `build/bringup/c-startup/early-platform-hardware-test.json` |
 | Return from `arm_vm_init`, with corrected entropy seed | 6.970 s | 12.817 s | `build/bringup/entropy-fix/vm-hardware-test.json` |
+| Return from `PE_init_iokit`, with source provider and corrected POST field | 7.361 s | 13.402 s | `build/bringup/source-crypto/hardware-test.json` |
 
 The roughly six-second change supports execution at each instrumented point.
 Each probe terminates startup at its selected location; it does not establish
@@ -241,12 +242,35 @@ source provider after `InitIOKit` and before `ConfigureIOKit`. It uses a
 separate iOS 26 build, checks the RNG/PRNG callback ABI, compiles digest
 descriptors with XNU's current header, and fills all 56 crypto callbacks.
 Default provider POST and additional digest/HMAC KPI checks run before
-platform defaults. Build and runtime validation of this integration are
-pending; no provider-startup or platform-UUID success is implied yet. The
-KPI adapter passed local tests with XNU callback declarations, an OpenSSL
-backend, and ASan/UBSan: five digests, streaming, HMAC truncation and
-verification, and rejection of invalid context/output lengths. These tests
-cover the adapter; provider POST and kernel execution require hardware.
+platform defaults. [CI run 39823955914](https://github.com/none24smu/UniXNU/actions/runs/39823955914)
+compiled all 529 provider sources in both variants, with zero unresolved
+kernel references and zero remaining global collisions after namespacing.
+The adapter also passed local tests using XNU callback declarations, an
+OpenSSL backend and ASan/UBSan: five digests, streaming, HMAC truncation and
+verification, and rejection of invalid context/output lengths.
+
+The first hardware probes reached a panic before `PE_init_iokit` returned:
+2- and 8-second probes took 29.314 and 29.621 seconds respectively. Separate
+status probes verified nonzero returns from provider POST and its integrity
+test. The initial integrity field covered the on-disk instructions, but XNU
+12377's early `static_if_init` changes ten test-branch instructions before
+POST runs. `seal-source-crypto-kernel.py --static-if-defaults` now computes
+the expected post-startup HMAC from the audited table and its two known
+initializers. It changes only the 32-byte integrity field, preserves every
+instruction, and leaves all self-tests enabled. It rejects unexpected table
+layouts, initializers, keys or patch instructions. This profile requires the
+default `validation_disables`, `serverperfmode` and `lcks` values.
+
+With that correction, the paired after-`PE_init_iokit` probes took 7.361 and
+13.402 seconds, a 6.041-second difference. This supports completion of source
+provider startup, default POST, new digest/HMAC KPI checks, NVRAM setup and
+platform UUID generation. Both returned automatically to verified fastboot.
+Artifacts and matched controls are in `build/bringup/source-crypto/`.
+The corrected unprobed kernel is `kernel-static-if-defaults.macho`, SHA-256
+`bf300241e10027f4c7e30f93091c7be508ec8b4bcdce318fc8ad95e7689341d8`.
+Its code comes from CI revision `2875119`; the corrected post-processing is
+at `7b1030e`. The next gate is platform/CPU-driver matching and native timer
+interrupts. Current fault guards must still stop before interrupt enable.
 
 Kernel USB output requires a native transport after the firmware controller
 shuts down; these timing observations do not provide kernel text.
@@ -292,3 +316,9 @@ Before-call probes also support `--check-pointer SYMBOL`. They read the
 and use `--reset-delay` for non-NULL. This requires fault guards and a normal
 delay of 0..8 seconds. It preserves distinct exception/panic delays and
 retains the same restrictions on interrupt state.
+
+`--check-return-zero` checks a 32-bit return status in a guarded after-call
+probe: zero uses the normal delay, and nonzero uses 12 seconds. It requires
+`--reset-delay` in 0..8 seconds. Source-crypto probes must be re-sealed after
+instrumentation using `seal-source-crypto-kernel.py --static-if-defaults`;
+otherwise their integrity field no longer matches the tested instructions.

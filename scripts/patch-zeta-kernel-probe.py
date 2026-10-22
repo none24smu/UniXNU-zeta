@@ -25,7 +25,7 @@ RECORD_ADDRESS = 0xA9000000
 
 def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             reset_before=False, occurrence=1, guard_early_faults=False, function='_arm_init',
-            check_pointer=None):
+            check_pointer=None, check_return_zero=False):
     if guard_early_faults and reset_delay >= 16:
         raise ValueError('With fault guards, normal delay must be below 16 seconds to distinguish outcomes')
     if output.exists() or kernel.resolve() == output.resolve():
@@ -125,6 +125,8 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         if pointer_va % 8:
             raise ValueError('Pointer symbol must be 8-byte aligned')
         file_offset(pointer_va, 8)
+    if check_return_zero and not (reset_after and not reset_before and guard_early_faults and 0 <= reset_delay <= 8):
+        raise ValueError('Return checks require a guarded after-call probe with delay 0..8 seconds')
     # Only verified zero padding between this branch and its original target.
     cave = (entry + 0x7F) & ~0xFF
     if cave <= entry:
@@ -172,6 +174,10 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
   ldr x7, [x7, :lo12:checked_pointer]
   mov x6, #12
   cbz x7, timed_reset
+'''
+    if check_return_zero:
+        prefix += '''  mov x6, #12
+  cbnz w0, timed_reset
 '''
     guards = '''
   .org 0x80
@@ -286,6 +292,8 @@ timed_reset:
               'checked_pointer_symbol': check_pointer,
               'checked_pointer_va': hex(pointer_va) if pointer_va is not None else None,
               'null_pointer_reset_delay_seconds': 12 if check_pointer else None,
+              'check_return_zero': check_return_zero,
+              'nonzero_return_reset_delay_seconds': 12 if check_return_zero else None,
               'early_fault_guard_sites': guard_sites,
               'exception_reset_delay_seconds': 20 if guard_early_faults else None,
               'panic_reset_delay_seconds': 24 if guard_early_faults else None,
@@ -314,6 +322,7 @@ def main():
     parser.add_argument('--occurrence', type=int, default=1, help='which call to the symbol (default: 1)')
     parser.add_argument('--guard-early-faults', action='store_true', help='reset 20 s after an early exception or 24 s after panic')
     parser.add_argument('--check-pointer', help='before-call pointer check: NULL resets after 12 s, non-NULL uses --reset-delay')
+    parser.add_argument('--check-return-zero', action='store_true', help='after-call status check: nonzero W0 resets after 12 s, zero uses --reset-delay')
     args = parser.parse_args()
     try:
         if not 0 <= args.reset_delay <= 30:
@@ -324,7 +333,7 @@ def main():
             raise ValueError('--occurrence must be positive')
         prepare(args.kernel, args.output, args.reset_delay, args.stage, args.reset_after,
                 args.reset_before, args.occurrence, args.guard_early_faults, args.function,
-                args.check_pointer)
+                args.check_pointer, args.check_return_zero)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

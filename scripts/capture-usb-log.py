@@ -111,7 +111,8 @@ def candidates(port=None):
     for path in ports:
         identity = usb_identity(path)
         if identity and (identity.get('idVendor'), identity.get('idProduct'),
-                         identity.get('product')) == ('0525', 'a4a7', 'zeta UEFI log'):
+                         identity.get('product')) in (('0525', 'a4a7', 'zeta UEFI log'),
+                                                      ('0525', 'a4a7', 'zeta XNU log')):
             yield path, identity
 
 

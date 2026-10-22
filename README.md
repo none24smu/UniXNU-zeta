@@ -19,7 +19,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
-| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed `arm_vm_init` and the end of `arm_init`. Paired probes now pass the complete `PE_init_iokit` call, including source crypto startup, POST/KPI checks, NVRAM and platform UUID generation. Platform/CPU-driver matching, native timer interrupts and kernel USB logging remain unverified. IOKit platform matching and kernel USB logging remain unverified |
+| 6. Kernel bring-up | Guide Stage 5, in progress. MMU/C startup, source crypto POST/KPIs, NVRAM/UUID initialization and the real `ArmDTPlatform::configure()` success return are hardware-verified. CPU start encounters a synchronous fault. Readable kernel version/arguments and native USB console traffic remain unverified |
 | 7-8 | Storage, root filesystem, and iOS userspace not started |
 
 ## Inputs
@@ -155,6 +155,8 @@ Hardware results on 2026-10-22:
 | Return from first `PE_init_platform(FALSE, args)` | 7.067 s | 13.012 s | `build/bringup/c-startup/early-platform-hardware-test.json` |
 | Return from `arm_vm_init`, with corrected entropy seed | 6.970 s | 12.817 s | `build/bringup/entropy-fix/vm-hardware-test.json` |
 | Return from `PE_init_iokit`, with source provider and corrected POST field | 7.361 s | 13.402 s | `build/bringup/source-crypto/hardware-test.json` |
+| Before `PE_lockdown_iokit`, past interrupt enable | 7.562 s | 13.607 s | `build/bringup/platform-12377/before-matching-hardware.json` |
+| `ArmDTPlatform::configure()` at RET, W0 verified equal to 1 | 7.361 s | 13.206 s | `build/bringup/platform-12377/hardware-test.json` |
 
 The roughly six-second change supports execution at each instrumented point.
 Each probe terminates startup at its selected location; it does not establish
@@ -269,8 +271,9 @@ Artifacts and matched controls are in `build/bringup/source-crypto/`.
 The corrected unprobed kernel is `kernel-static-if-defaults.macho`, SHA-256
 `bf300241e10027f4c7e30f93091c7be508ec8b4bcdce318fc8ad95e7689341d8`.
 Its code comes from CI revision `2875119`; the corrected post-processing is
-at `7b1030e`. The next gate is platform/CPU-driver matching and native timer
-interrupts. Current fault guards must still stop before interrupt enable.
+at `7b1030e`. Subsequent platform matching is verified below. Native timer
+interrupt delivery remains unverified. Use interrupt-preserving fault guards
+for checkpoints after `spllo()`.
 
 Kernel USB output requires a native transport after the firmware controller
 shuts down; these timing observations do not provide kernel text.
@@ -307,9 +310,12 @@ MMU enable. A deliberate BRK test verified automatic fastboot return after
 `build/bringup/c-startup/active-fault-control/`. The earlier test that guarded
 only the inactive table stalled and is retained in `fault-control/` as a
 diagnostic implementation failure. These guards replace normal handling and
-must not be used in a normal boot image. They also replace IRQ/FIQ handling,
-so guarded checkpoints must stay before interrupt enable (`spllo()` in
-`kernel_bootstrap_thread`). They cannot recover a plain spin loop.
+must not be used in a normal boot image. The default mode also replaces IRQ/FIQ
+handling, so it must stop before interrupt enable. `--allow-interrupts` preserves
+all six native IRQ/FIQ vector slots and guards synchronous faults, SError and
+panic. This mode passed the paired checkpoint before `PE_lockdown_iokit`, after
+`spllo()`. Terminal waits mask interrupts. Neither mode recovers a plain spin
+loop before the checkpoint.
 
 Before-call probes also support `--check-pointer SYMBOL`. They read the
 8-byte pointer through a PC-relative load, use a 12-second delay for NULL,
@@ -322,3 +328,47 @@ probe: zero uses the normal delay, and nonzero uses 12 seconds. It requires
 `--reset-delay` in 0..8 seconds. Source-crypto probes must be re-sealed after
 instrumentation using `seal-source-crypto-kernel.py --static-if-defaults`;
 otherwise their integrity field no longer matches the tested instructions.
+
+
+Platform matching on XNU 12377 now uses linked `ArmDTPlatform` and `ArmCpu`
+archives and conditional personalities (UniXNU `6779be0`,
+[CI 39830720845](https://github.com/none24smu/UniXNU/actions/runs/39830720845)).
+The actual `ArmDTPlatform::configure()` RET was instrumented, with W0=1 taking
+the normal 2/8-second delays and other returns taking 12 seconds. Hardware
+returned in 7.361/13.206 seconds, supporting successful root matching, inherited
+configuration and real nub publication. The later CPU-start return probe
+instead hit the synchronous-fault guard (25.690 seconds); its faulting
+instruction and actual timer delivery are not yet identified.
+
+The ARM framebuffer source honors `-v` and logs boot arguments (`b0cb61a`).
+Its source-built platform-success probe, including an explicit XNU banner,
+returned in 13.499 seconds with an 8-second delay. Readable display output is
+still unconfirmed: the supplied photograph shows UEFI DXE driver loading.
+Stage 5 is not marked complete on timing alone.
+
+A read-only XNU probe mapped USB0 and accepted its DWC3 signature at physical
+`0x0a60c120` after boot services ended (7.356 seconds including a 2-second wait
+and reboot). This does not prove DMA, PHY readiness or CDC traffic. Native
+polling CDC integration is under qualification; capture accepts the separate
+product `zeta XNU log`. Host tests cover control requests, data/status phases,
+line coding, completed-byte accounting, split reboot frames and bounded
+command timeout with ASan/UBSan; hardware log capture is still required.
+
+The post-reset RAM-log experiment is not usable. No marker was recovered
+from its reserved display window, even with temporary SEC preservation.
+SYSTEM_RESET2 returned, followed by a distinct 12-second cold-reset fallback
+(19.043 seconds total). Experimental firmware and a focused patch remain in
+`build/bringup/retained-usb/`; temporary firmware source changes were removed.
+No conclusion relies on retained RAM.
+
+Additional diagnostic modes:
+
+* `--stage function-return --in SYMBOL --check-return-one` checks W0 at a unique
+  RET. Boolean success uses the normal delay; other values use 12 seconds.
+* `--print-kernel-banner` prints the checkpoint, version and arguments using the
+  Darwin ARM64 variadic stack ABI.
+* `--poll-native-usb` keeps a linked native console polled during the reset wait.
+  Optional `--log-faults` prints fault registers or panic arguments; it requires
+  a usable stack and console and forces unbuffered console output. Console
+  probes verify a larger, entirely zero 512-byte entry-padding area.
+* `--check-usb-controller` performs the bounded USB0 mapping/signature read only.

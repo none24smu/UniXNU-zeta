@@ -1,0 +1,21 @@
+# Proprietary files of the Microsoft Surface Duo 2 (zeta). They stay out of Git: scripts/extract-files.py copies them
+# into .cache/firmware/, checks every file against its SHA-256 and refuses any other content.
+#
+# path|sha256       path relative to the source (a partition dump directory)
+# -path|sha256      optional file: a missing one is reported, not an error
+#
+# Source: an EDL partition dump of the active slot b, bootloader 2023.501.53, XBL BOOT.MXF.1.0-00893-LAHAINA-1.7786.2.
+# There is no public mirror; pass the dump directory: scripts/extract-files.py /path/to/dump
+
+# Boot firmware: XBL carries the stock UEFI firmware volume (ELF segment at 0x9fc00000, 0x300000 bytes)
+xbl_b.img|cefd8ed5700d46c223188dce35f8701b99688938c9c7dcf502b95e02fae5b7e9
+xbl_config_b.img|0df3155ee0cf49e1d97b1a0e7099256dbfaf53635f62e40c621191823a5c8fb7
+abl_b.img|ec6b377170550f84e9bc51b2a0c7f67b215919b6009d7532f1f05b8ae163d315
+imagefv_b.img|6599f008a31c51843f8a78b02a871636501726ee38160676363e4df4b0882e66
+uefisecapp_b.img|747b915139f566168c2aa033d2bda30c73f055a49374c88a7620049be10ba0c2
+devcfg_b.img|1c5ef8ef75e768faba442fff04a593711a22a6fe16917edb97f2add607c0b5d5
+
+# Android images: boot header v3, the Lahaina base device trees in vendor_boot and the Duo 2 overlays in dtbo
+boot_b.img|7739b71f4e28913948e05e5e9266a8fd7d406ff7dd7a5b51b5ea8bbdd819610b
+vendor_boot_b.img|1b68e1bdadd1b6caaaaf7ff9e69a8cbb3d40b14d795da0056bf8cda92847a222
+dtbo_b.img|a294cfb873d7317c1c49f4996e2e4f481d4e1ded25e00913a0855cae94bc24cd

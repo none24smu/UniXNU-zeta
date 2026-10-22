@@ -5,6 +5,8 @@ CONFIG_XNU_BUILD_SCRIPT="build-xnu-12377.sh"
 
 # No Raspberry Pi timer routing: on SM8350 its address is the disabled second PCIe controller.
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
+# The CNTP_CTL_EL0 write in fiq_context_init faults on the boot core; CNTV is usable.
+CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
 # Cortex-A55/A78/X1 are ARMv8.2 (Arm TRMs), so PAN is present.
 CONFIG_XNU_NATIVE_PAN=y
 # Panic log from the device tree's pram node, not the Raspberry Pi address 0x3c0fc000.

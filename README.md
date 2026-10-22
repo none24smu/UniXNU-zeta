@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6 started: BSD reaches the callsite before `IOFindBSDRoot`; SM8350 UFS registers and idle queues are verified. Native block reads, storage publication, root mounting and launchd remain unverified; Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6 started: Native XNU UFS reads now verify the LUN 0 GPT and read `userdata`; storage publication, root mounting and launchd remain unverified; Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -470,6 +470,36 @@ bank 2), CBAR=`0x1f000`, CBA2R=`1`, and no global fault. There are 89 stream
 slots and 75 context banks. Native USB captured the report and fastboot
 return was verified. An eventual takeover must preserve that bank's other
 users and change only the exact UFS stream after both command queues stop.
+
+The later `qcom-ufs-settle` test completed actual native XNU UFS reads.
+Its source-built IOStorage/SM8350 kernel came from CI `39869506631`
+(`03daf749`, SHA-256 `1053462098799e7f816dde56472eb330eb3d319b167b83fe937aaf947143f642`),
+with the GPT personality's `Content Mask` literal quoted for OSUnserialize.
+The matching/start counters were already 1, but the original terminal
+checkpoint disabled interrupts before the asynchronous driver could finish.
+`--inspect-zeta-ufs-status --settle-zeta-ufs-ms 5000` yields through real
+`IOSleep` at the checkpoint before `IOFindBSDRoot`. The driver then completed
+its own controller/DMA/SMMU setup, NOP/query/TUR, and READ(10) path. Its GPT
+parser verified header and entry CRCs and found `userdata` at 4096-byte LBAs
+`0x17e2c..0x19b3ffa`, exactly 109,993,324,544 bytes, matching fastboot's
+partition capacity. The first block read succeeded; it contained no
+SHNGROOT manifest (`status=1`, zero windows). The test intentionally panicked
+with that report, USB captured it, and fastboot return was verified.
+This proves transport and GPT/partition reads, not media publication or mount.
+Evidence: `build/bringup/native-usb/qcom-ufs-settle/hardware-test.json`.
+
+The same read-only probe passed with the complete signed-root build,
+CI `39872415372` at `68c513467bb6c44106c053c410582c1d14f96dd7`, kernel SHA-256
+`dd0c197298b57993057c44aef0e1c3739d8a8cc8f1acebcc206f0ca9af2f64f5`.
+That kernel links VerifiedRoot and the disk-policy reader; its embedded public
+anchor matches the prepared images. That read-only control did not exercise
+the signature/policy loader. Evidence:
+`build/bringup/native-usb/qcom-verified-ufs10/hardware-test.json`.
+
+The counter inspector reads linked diagnostic globals and the current
+`native-ufs-probe` value, with no direct MMIO. Its optional 0..60-second
+scheduler wait is permitted only at the qualified BSD root-finder checkpoint;
+it reports once per second and lets explicitly requested driver work run.
 
 An explicit early video acquisition test also hit the exception guard (25.291
 seconds), with only UEFI text visible. XNU's normal screen acquisition occurs

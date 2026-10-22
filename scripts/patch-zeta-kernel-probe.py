@@ -33,8 +33,12 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             instruction_offset=None, expected_instruction=None,
             check_word=None, expected_word=None, acquire_text_console=False,
             physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False,
-            allow_vm_faults=False, inspect_zeta_smmu=False):
-    inspect_storage = inspect_zeta_ufs or inspect_zeta_smmu
+            allow_vm_faults=False, inspect_zeta_smmu=False, inspect_zeta_ufs_status=False, settle_zeta_ufs_ms=0):
+    if not 0 <= settle_zeta_ufs_ms <= 60000 or (settle_zeta_ufs_ms and not inspect_zeta_ufs_status):
+        raise ValueError("UFS scheduler wait requires the counter inspector and 0..60000 ms")
+    if settle_zeta_ufs_ms and (function != '_bsd_init' or reset_after != '_IOFindBSDRoot' or not reset_before):
+        raise ValueError('UFS scheduler wait is qualified only before IOFindBSDRoot in bsd_init')
+    inspect_storage = inspect_zeta_ufs or inspect_zeta_smmu or inspect_zeta_ufs_status
     if warm_reset and (stage != 'entry' or reset_after or guard_early_faults):
         raise ValueError('Warm-reset retention discovery requires an unguarded entry probe')
     if record_address not in (RECORD_ADDRESS, 0xE3000000):
@@ -198,7 +202,7 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         raise ValueError('Select only one auxiliary entry-padding trampoline')
     if inspect_storage and not (guard_early_faults and allow_interrupts and poll_native_usb and log_faults and reset_before):
         raise ValueError('Read-only UFS inspection requires a guarded before-call probe with USB fault capture')
-    if sum(map(bool, (physical_framebuffer, install_boot_irq_early, inspect_zeta_ufs, inspect_zeta_smmu))) > 1:
+    if sum(map(bool, (physical_framebuffer, install_boot_irq_early, inspect_zeta_ufs, inspect_zeta_smmu, inspect_zeta_ufs_status))) > 1:
         raise ValueError('Select only one auxiliary entry-padding trampoline')
     cave = (entry + 0x7F) & ~0xFF
     if cave <= entry:
@@ -537,13 +541,22 @@ ufs_format:
 '''
         if inspect_zeta_smmu:
             asm = Path(__file__).with_name('zeta-smmu-readonly.S').read_text()
+        if inspect_zeta_ufs_status:
+            asm = Path(__file__).with_name('zeta-ufs-status.S').read_text()
         with tempfile.TemporaryDirectory(prefix='zeta-ufs-ro-') as temporary:
             tmp = Path(temporary)
             (tmp/'ufs.S').write_text(asm)
             subprocess.run(['clang', '--target=aarch64-none-elf', '-c', str(tmp/'ufs.S'), '-o', str(tmp/'ufs.o')], check=True)
-            subprocess.run(['ld.lld', f'-Ttext={ufs_cave:#x}', '-e', '_start',
-                            f'--defsym=ufs_mapper={symbol("_ml_io_map"):#x}',
-                            f'--defsym=ufs_printf={symbol("_printf"):#x}',
+            bindings = [f'--defsym=ufs_mapper={symbol("_ml_io_map"):#x}',
+                        f'--defsym=ufs_printf={symbol("_printf"):#x}']
+            if inspect_zeta_ufs_status:
+                bindings += [f'--defsym=ufs_sleep={symbol("_IOSleep"):#x}',
+                             f'--defsym=ufs_settle_ms={settle_zeta_ufs_ms}',
+                             f'--defsym=ufs_root_diagnostic={symbol("__ZL15gRootDiagnostic"):#x}',
+                             f'--defsym=ufs_parse_arg={symbol("_PE_parse_boot_argn"):#x}']
+                for label in ('probe_calls', 'matched', 'probe_requested', 'mapped', 'status', 'root_step'):
+                    bindings.append(f'--defsym=ufs_{label}={symbol("_native_ufs_" + label):#x}')
+            subprocess.run(['ld.lld', f'-Ttext={ufs_cave:#x}', '-e', '_start', *bindings,
                             str(tmp/'ufs.o'), '-o', str(tmp/'ufs.elf')], check=True)
             subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'ufs.elf'), str(tmp/'ufs.bin')], check=True)
             ufs_code = (tmp/'ufs.bin').read_bytes()
@@ -768,6 +781,8 @@ native_vm:
               'early_boot_irq_handler_installed_before_processor_registration': install_boot_irq_early,
               'zeta_ufs_register_inspection_read_only': inspect_zeta_ufs,
               'zeta_smmu_register_inspection_read_only': inspect_zeta_smmu,
+              'zeta_ufs_counters_inspection_read_only': inspect_zeta_ufs_status,
+              'zeta_ufs_scheduler_wait_ms': settle_zeta_ufs_ms,
               'native_usb_polled_during_reset_delay': poll_native_usb,
               'fault_text_logging_enabled': log_faults,
               'probe_padding_bytes': cave_size,
@@ -816,6 +831,8 @@ def main():
     parser.add_argument('--physical-framebuffer', action='store_true', help='tag PE_state video as physical before its first mapping; requires early text acquisition')
     parser.add_argument('--install-boot-irq-early', action='store_true', help='bounded source-fix test: install actual ArmCpu dispatch before calling the original processor registration')
     parser.add_argument('--inspect-zeta-ufs', action='store_true', help='read SM8350 UFS clock votes and gated host registers; never writes storage, PHY, GCC or SMMU registers')
+    parser.add_argument('--inspect-zeta-ufs-status', action='store_true', help='print linked UFS matching/start counters without MMIO access')
+    parser.add_argument('--settle-zeta-ufs-ms', type=int, default=0, help='yield to the scheduler before reading UFS counters, 0..60000 ms; requires --inspect-zeta-ufs-status')
     parser.add_argument('--inspect-zeta-smmu', action='store_true', help='read SMMUv500 global registers and UFS stream 0xe0 mapping; no register writes')
     parser.add_argument('--poll-native-usb', action='store_true', help='poll the linked native USB console throughout the bounded wait')
     parser.add_argument('--log-faults', action='store_true', help='print fault registers or panic arguments before polling native USB until reset; requires a usable kernel stack and console')
@@ -836,7 +853,7 @@ def main():
                 args.print_kernel_banner, args.poll_native_usb, args.log_faults,
                 args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
                 args.acquire_text_console, args.physical_framebuffer, args.install_boot_irq_early,
-                args.inspect_zeta_ufs, args.allow_vm_faults, args.inspect_zeta_smmu)
+                args.inspect_zeta_ufs, args.allow_vm_faults, args.inspect_zeta_smmu, args.inspect_zeta_ufs_status, args.settle_zeta_ufs_ms)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

@@ -30,7 +30,7 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             print_kernel_banner=False, poll_native_usb=False, log_faults=False,
             instruction_offset=None, expected_instruction=None,
             check_word=None, expected_word=None, acquire_text_console=False,
-            physical_framebuffer=False):
+            physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False):
     if warm_reset and (stage != 'entry' or reset_after or guard_early_faults):
         raise ValueError('Warm-reset retention discovery requires an unguarded entry probe')
     if record_address not in (RECORD_ADDRESS, 0xE3000000):
@@ -186,6 +186,14 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         raise ValueError('Early text acquisition requires a guarded kernel banner probe')
     if physical_framebuffer and not acquire_text_console:
         raise ValueError('Physical framebuffer mapping test requires explicit early text acquisition')
+    if install_boot_irq_early and not (guard_early_faults and allow_interrupts and poll_native_usb and log_faults):
+        raise ValueError('Early IRQ registration test requires native vectors, USB polling and fault capture')
+    if install_boot_irq_early and physical_framebuffer:
+        raise ValueError('Select only one auxiliary entry-padding trampoline')
+    if inspect_zeta_ufs and not (guard_early_faults and allow_interrupts and poll_native_usb and log_faults and reset_before):
+        raise ValueError('Read-only UFS inspection requires a guarded before-call probe with USB fault capture')
+    if sum(map(bool, (physical_framebuffer, install_boot_irq_early, inspect_zeta_ufs))) > 1:
+        raise ValueError('Select only one auxiliary entry-padding trampoline')
     cave = (entry + 0x7F) & ~0xFF
     if cave <= entry:
         cave += 0x100
@@ -272,6 +280,8 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
   b.ne timed_reset
 controller_found:
 '''
+    if inspect_zeta_ufs:
+        prefix += '  bl probe_ufs_inspect\n'
     if acquire_text_console:
         prefix += '''  bl probe_video_console
   mov x0, xzr
@@ -321,6 +331,7 @@ controller_found:
   sub sp, sp, #32
   stp x1, x2, [sp]
   str x3, [sp, #16]
+  str x30, [sp, #24]
   bl probe_printf
   add sp, sp, #32
 ''' if log_faults else ''
@@ -350,7 +361,7 @@ banner_format:
   .asciz "XNU checkpoint\\n%s\\nKernel boot args: %s\\n"
   .org 0x1a0
 fault_format:
-  .asciz "XNU fault ESR=%llx FAR=%llx ELR=%llx\\n"
+  .asciz "XNU fault ESR=%llx FAR=%llx ELR=%llx LR=%llx\\n"
 ''' if extended else ''
     assembly = f'''.text
 .global _start
@@ -405,6 +416,8 @@ timed_reset:
             definitions.append(f'--defsym=probe_console_suspended={symbol("_console_suspended"):#x}')
         if poll_native_usb:
             definitions.append(f'--defsym=probe_usb_poll={symbol("_unixnu_dwc3_poll"):#x}')
+        if inspect_zeta_ufs:
+            definitions.append(f'--defsym=probe_ufs_inspect={cave+0x800:#x}')
         subprocess.run(['ld.lld', f'-Ttext={cave:#x}', '-e', '_start', *definitions,
                         str(tmp/'probe.o'), '-o', str(tmp/'probe.elf')], check=True)
         subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'probe.elf'), str(tmp/'probe.bin')], check=True)
@@ -424,6 +437,138 @@ timed_reset:
         allowed.append((patch, patch+4))
 
     branch(site_va, cave)
+    if inspect_zeta_ufs:
+        # Stock zeta DT: UFS GDSC 0x177004, host 0x1d84000. Clock
+        # offsets come from gcc-lahaina.c, not the SM8550 NativeUfs driver.
+        # Only read host registers if the domain and all four clock votes
+        # are enabled. No UFS/PHY/GCC/SMMU register is written.
+        ufs_cave = cave + 0x800
+        ufs_offset = file_offset(ufs_cave, 512)
+        if ufs_cave + 512 > target or any(original[ufs_offset:ufs_offset+512]):
+            raise ValueError('No verified empty UFS inspector padding')
+        asm = '''.text
+.global _start
+_start:
+  sub sp, sp, #128
+  stp x19, x30, [sp, #96]
+  stp xzr, xzr, [sp]
+  stp xzr, xzr, [sp, #16]
+  stp xzr, xzr, [sp, #32]
+  stp xzr, xzr, [sp, #48]
+  stp xzr, xzr, [sp, #64]
+  mov x0, #0x7000
+  movk x0, #0x17, lsl #16
+  mov x1, #0x1000
+  bl ufs_mapper
+  cbz x0, report_ufs
+  ldr w8, [x0, #4]
+  ldr w9, [x0, #0x10]
+  ldr w10, [x0, #0x18]
+  ldr w11, [x0, #0xcc]
+  ldr w12, [x0, #0x5c]
+  stp x8, x9, [sp]
+  stp x10, x11, [sp, #16]
+  str x12, [sp, #32]
+  tbz w8, #31, report_ufs
+  and w9, w9, w10
+  and w9, w9, w11
+  and w9, w9, w12
+  tbz w9, #0, report_ufs
+  mov x0, #0x4000
+  movk x0, #0x1d8, lsl #16
+  mov x1, #0x3000
+  bl ufs_mapper
+  cbz x0, report_ufs
+  mov x8, #1
+  str x8, [sp, #40]
+  ldr w8, [x0]
+  ldr w9, [x0, #8]
+  ldr w10, [x0, #0x30]
+  ldr w11, [x0, #0x34]
+  stp x8, x9, [sp, #48]
+  stp x10, x11, [sp, #64]
+report_ufs:
+  adr x0, ufs_format
+  bl ufs_printf
+  ldp x19, x30, [sp, #96]
+  add sp, sp, #128
+  ret
+ufs_format:
+  .asciz "ZETA UFS RO: gdsc=%llx axi=%llx ahb=%llx aggr=%llx unipro=%llx read=%llx CAP=%llx VER=%llx HCS=%llx HCE=%llx\\n"
+'''
+        with tempfile.TemporaryDirectory(prefix='zeta-ufs-ro-') as temporary:
+            tmp = Path(temporary)
+            (tmp/'ufs.S').write_text(asm)
+            subprocess.run(['clang', '--target=aarch64-none-elf', '-c', str(tmp/'ufs.S'), '-o', str(tmp/'ufs.o')], check=True)
+            subprocess.run(['ld.lld', f'-Ttext={ufs_cave:#x}', '-e', '_start',
+                            f'--defsym=ufs_mapper={symbol("_ml_io_map"):#x}',
+                            f'--defsym=ufs_printf={symbol("_printf"):#x}',
+                            str(tmp/'ufs.o'), '-o', str(tmp/'ufs.elf')], check=True)
+            subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'ufs.elf'), str(tmp/'ufs.bin')], check=True)
+            ufs_code = (tmp/'ufs.bin').read_bytes()
+        if len(ufs_code) > 512: raise ValueError('UFS inspector exceeded verified padding')
+        data[ufs_offset:ufs_offset+len(ufs_code)] = ufs_code
+        allowed.append((ufs_offset, ufs_offset+len(ufs_code)))
+    if install_boot_irq_early:
+        # Bounded A/B of the source fix while CI builds. Call the real kernel
+        # installation API with the actual ArmCpu and dispatch function, then
+        # call the original ml_processor_register with all four arguments.
+        # ml_processor_info.log_id is offset 0x6c in XNU 12377 ARM64 headers.
+        start = symbol('__ZN6ArmCpu5startEP9IOService')
+        end = min(value for values in symbols.values() for value in values if value > start)
+        register = symbol('_ml_processor_register')
+        matches = []
+        for address in range(start, end, 4):
+            word = struct.unpack_from('<I', original, file_offset(address, 4))[0]
+            if word & 0xfc000000 == 0x94000000:
+                immediate = word & 0x3ffffff
+                if immediate & (1 << 25): immediate -= 1 << 26
+                if address + 4 * immediate == register: matches.append(address)
+        if len(matches) != 1 or matches[0] == site_va:
+            raise ValueError('Require one separate ArmCpu call to ml_processor_register')
+        irq_cave = cave + 0x800
+        irq_offset = file_offset(irq_cave, 128)
+        if irq_cave + 128 > target or any(original[irq_offset:irq_offset+128]):
+            raise ValueError('No verified empty IRQ trampoline padding')
+        asm = '''.text
+.global _start
+_start:
+  stp x29, x30, [sp, #-64]!
+  mov x29, sp
+  stp x0, x1, [sp, #16]
+  stp x2, x3, [sp, #32]
+  mov x8, x0
+  ldr x0, [x8]
+  ldr w1, [x8, #0x6c]
+  mov x2, x0
+  adrp x3, irq_dispatch
+  add x3, x3, :lo12:irq_dispatch
+  mov x4, xzr
+  bl install_irq
+  ldp x0, x1, [sp, #16]
+  ldp x2, x3, [sp, #32]
+  bl register_cpu
+  ldp x29, x30, [sp], #64
+  ret
+'''
+        with tempfile.TemporaryDirectory(prefix='zeta-early-irq-') as temporary:
+            tmp = Path(temporary)
+            (tmp/'irq.S').write_text(asm)
+            subprocess.run(['clang', '--target=aarch64-none-elf', '-c', str(tmp/'irq.S'), '-o', str(tmp/'irq.o')], check=True)
+            subprocess.run(['ld.lld', f'-Ttext={irq_cave:#x}', '-e', '_start',
+                            f'--defsym=irq_dispatch={symbol("__ZN6ArmCpu8dispatchEPvS0_S0_i"):#x}',
+                            f'--defsym=install_irq={symbol("_ml_install_interrupt_handler"):#x}',
+                            f'--defsym=register_cpu={register:#x}',
+                            str(tmp/'irq.o'), '-o', str(tmp/'irq.elf')], check=True)
+            subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'irq.elf'), str(tmp/'irq.bin')], check=True)
+            irq_code = (tmp/'irq.bin').read_bytes()
+        if len(irq_code) > 128: raise ValueError('IRQ trampoline exceeded verified padding')
+        data[irq_offset:irq_offset+len(irq_code)] = irq_code
+        allowed.append((irq_offset, irq_offset+len(irq_code)))
+        branch(matches[0], irq_cave)
+        # This site replaces BL, so preserve its original link semantics.
+        struct.pack_into('<I', data, file_offset(matches[0], 4),
+                         0x94000000 | (((irq_cave-matches[0])//4) & 0x3ffffff))
     if physical_framebuffer:
         # XNU initialize_screen treats bit 0 as the physical-address marker
         # once kernel_map exists. PE_state.video starts at offset 8 in the
@@ -533,6 +678,8 @@ _start:
               'kernel_banner_printed_at_checkpoint': print_kernel_banner,
               'early_text_console_acquired': acquire_text_console,
               'physical_framebuffer_tagged_before_console_setup': physical_framebuffer,
+              'early_boot_irq_handler_installed_before_processor_registration': install_boot_irq_early,
+              'zeta_ufs_register_inspection_read_only': inspect_zeta_ufs,
               'native_usb_polled_during_reset_delay': poll_native_usb,
               'fault_text_logging_enabled': log_faults,
               'probe_padding_bytes': cave_size,
@@ -578,6 +725,8 @@ def main():
     parser.add_argument('--print-kernel-banner', action='store_true', help='print XNU checkpoint, kernel version and boot args before the bounded wait')
     parser.add_argument('--acquire-text-console', action='store_true', help='select and acquire the mapped video console before the kernel banner, clearing old firmware text')
     parser.add_argument('--physical-framebuffer', action='store_true', help='tag PE_state video as physical before its first mapping; requires early text acquisition')
+    parser.add_argument('--install-boot-irq-early', action='store_true', help='bounded source-fix test: install actual ArmCpu dispatch before calling the original processor registration')
+    parser.add_argument('--inspect-zeta-ufs', action='store_true', help='read SM8350 UFS clock votes and gated host registers; never writes storage, PHY, GCC or SMMU registers')
     parser.add_argument('--poll-native-usb', action='store_true', help='poll the linked native USB console throughout the bounded wait')
     parser.add_argument('--log-faults', action='store_true', help='print fault registers or panic arguments before polling native USB until reset; requires a usable kernel stack and console')
     args = parser.parse_args()
@@ -596,7 +745,8 @@ def main():
                 args.check_return_one, args.warm_reset, args.check_usb_controller,
                 args.print_kernel_banner, args.poll_native_usb, args.log_faults,
                 args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
-                args.acquire_text_console, args.physical_framebuffer)
+                args.acquire_text_console, args.physical_framebuffer, args.install_boot_irq_early,
+                args.inspect_zeta_ufs)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

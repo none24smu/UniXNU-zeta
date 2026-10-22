@@ -19,8 +19,8 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
-| 6. Kernel bring-up | Guide Stage 5, in progress. MMU/C startup, source crypto POST/KPIs, NVRAM/UUID initialization and the real `ArmDTPlatform::configure()` success return are hardware-verified. CPU start encounters a synchronous fault. Readable kernel version/arguments and native USB console traffic remain unverified |
-| 7-8 | Storage, root filesystem, and iOS userspace not started |
+| 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. Early IRQ-handler installation advances the hardware boot into BSD, where the next panic requires the source pthread provider |
+| Storage and userland | Guide Stage 6 started: SM8350 UFS register/clock inspection. Native storage publication, root mounting and launchd remain unverified; Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -127,6 +127,18 @@ arguments, then returned without leaving boot services. Evidence is in
 This transport runs during UEFI boot services and flushes before
 `ExitBootServices`. XNU output after that handoff requires a kernel USB
 transport; `serial=3` alone does not provide one.
+
+Native kernel USB logging is now hardware verified with UniXNU `e1c77fc` and
+the ADT's SM8350 QSCRATCH VBUS/session override. Linux reconnects as product
+`zeta XNU log` on `/dev/ttyACM0` about 0.9 seconds after handoff. The same
+capture tool handles both products. The kernel log includes Darwin 25.5.0,
+boot arguments, VM startup, NVRAM and subsequent BSD output. Evidence:
+`build/bringup/native-usb/qcom-session-before-matching/capture/`.
+
+The kernel also recognizes the reboot control frame. In
+`build/bringup/native-usb/qcom-host-return/capture/`, the host ends capture at
+48 seconds, records `XNUUSB: returning to bootloader`, and verifies fastboot
+5.317 seconds after the request, before the terminal probe's own reset deadline.
 
 The payload filesystem is 64 MiB so the combined boot image fits the phone's
 128 MiB `boot_b` partition. A flashable image containing the USB firmware and
@@ -346,7 +358,8 @@ returned in 13.499 seconds with an 8-second delay. Readable display output is
 still unconfirmed: the supplied photograph shows UEFI DXE driver loading,
 and the user reports a garbled banner at the bottom right. The captured GOP
 handoff is 1344x1892, 32 bpp, row stride 5376; its width and stride agree.
-Stage 5 is not marked complete on timing alone.
+Those earlier display observations alone did not establish Stage 5 completion;
+the later native USB captures below supply direct kernel output.
 
 A read-only XNU probe mapped USB0 and accepted its DWC3 signature at physical
 `0x0a60c120` after boot services ended (7.356 seconds including a 2-second wait
@@ -370,13 +383,33 @@ Two 8-second initialization waits accounted for the longer delay; these were
 not evidence of a panic. UniXNU `e1c77fc` preserves an active controller across
 serial initialization, buffers text before configuration, and adds the
 ADT-selected SM8350 QSCRATCH VBUS/session override from the Linux USB driver.
-Its build passed; hardware qualification remains pending.
+Its build passed and native enumeration/traffic are now hardware verified.
+`qcom-platform-success` logs the kernel banner only after the actual
+`ArmDTPlatform::configure()` RET returned W0=1. It also logs the version and
+boot arguments and initializes the 8192-byte NVRAM proxy. The unchanged
+required `/cpus`, `/arm-io`, `/defaults`, `/options` nodes are checked in that
+real provider path. This completes the guide's Stage 5 checks.
 
 With USB disabled in the ADT, the corrected CPU assembly still hit a synchronous
 exception (25.535 seconds). A before-call probe reached `ml_processor_register`
 (7.260 seconds), while the after-call probe hit the exception guard (25.486
 seconds). The fault is inside that registration path; the exact instruction
-is not identified yet.
+was subsequently identified from USB fault capture: ESR `0x86000005`,
+FAR/ELR zero, LR `0xfffffff0074f5894`. The caller is the indirect handler call
+in `sleh_irq`; no per-CPU handler was installed yet. XNU 12377 calls
+`processor_boot()` inside `ml_processor_register()`, before the generic
+driver's later interrupt-controller setup.
+
+The bounded `--install-boot-irq-early` test installs the actual ArmCpu dispatch
+through the real `ml_install_interrupt_handler`, preserves all original
+processor-registration arguments, and executes the original registration.
+It reaches BSD initialization and the explicit missing-pthread-provider panic.
+UniXNU `84f52ac` makes the IRQ ordering fix in the compiled source and preserves
+the direct dispatcher while the IOKit wrapper's vector is being registered.
+`e0742df` additionally builds public libpthread 539.100.4 against XNU 12377's
+headers, isolates static symbol collisions, audits imports/deployment, and
+registers its real functions through XNU's versioned shims. Its hardware
+qualification is pending. No pthread panic or initialization path is bypassed.
 
 An explicit early video acquisition test also hit the exception guard (25.291
 seconds), with only UEFI text visible. XNU's normal screen acquisition occurs

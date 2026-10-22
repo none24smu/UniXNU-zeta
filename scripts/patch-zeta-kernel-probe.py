@@ -455,19 +455,23 @@ timed_reset:
         # Only read host registers if the domain and all four clock votes
         # are enabled. No UFS/PHY/GCC/SMMU register is written.
         ufs_cave = cave + 0x800
-        ufs_offset = file_offset(ufs_cave, 512)
-        if ufs_cave + 512 > target or any(original[ufs_offset:ufs_offset+512]):
+        ufs_offset = file_offset(ufs_cave, 768)
+        if ufs_cave + 768 > target or any(original[ufs_offset:ufs_offset+768]):
             raise ValueError('No verified empty UFS inspector padding')
         asm = '''.text
 .global _start
 _start:
-  sub sp, sp, #128
-  stp x19, x30, [sp, #96]
+  sub sp, sp, #160
+  stp x19, x30, [sp, #144]
   stp xzr, xzr, [sp]
   stp xzr, xzr, [sp, #16]
   stp xzr, xzr, [sp, #32]
   stp xzr, xzr, [sp, #48]
   stp xzr, xzr, [sp, #64]
+  stp xzr, xzr, [sp, #80]
+  stp xzr, xzr, [sp, #96]
+  stp xzr, xzr, [sp, #112]
+  stp xzr, xzr, [sp, #128]
   mov x0, #0x7000
   movk x0, #0x17, lsl #16
   mov x1, #0x1000
@@ -499,14 +503,31 @@ _start:
   ldr w11, [x0, #0x34]
   stp x8, x9, [sp, #48]
   stp x10, x11, [sp, #64]
+  ldr w8, [x0, #0x50]
+  ldr w9, [x0, #0x54]
+  orr x8, x8, x9, lsl #32
+  str x8, [sp, #80]
+  ldr w8, [x0, #0x58]
+  ldr w9, [x0, #0x60]
+  stp x8, x9, [sp, #88]
+  ldr w8, [x0, #0x70]
+  ldr w9, [x0, #0x74]
+  orr x8, x8, x9, lsl #32
+  str x8, [sp, #104]
+  ldr w8, [x0, #0x78]
+  ldr w9, [x0, #0x80]
+  stp x8, x9, [sp, #112]
+  ldr w8, [x0, #0x20]
+  ldr w9, [x0, #0x24]
+  stp x8, x9, [sp, #128]
 report_ufs:
   adr x0, ufs_format
   bl ufs_printf
-  ldp x19, x30, [sp, #96]
-  add sp, sp, #128
+  ldp x19, x30, [sp, #144]
+  add sp, sp, #160
   ret
 ufs_format:
-  .asciz "ZETA UFS RO: gdsc=%llx axi=%llx ahb=%llx aggr=%llx unipro=%llx read=%llx CAP=%llx VER=%llx HCS=%llx HCE=%llx\\n"
+  .asciz "ZETA UFS RO: gdsc=%llx axi=%llx ahb=%llx aggr=%llx unipro=%llx read=%llx CAP=%llx VER=%llx HCS=%llx HCE=%llx UTRLBA=%llx UTRLDBR=%llx UTRLRSR=%llx UTMRLBA=%llx UTMRLDBR=%llx UTMRLRSR=%llx IS=%llx IE=%llx\\n"
 '''
         with tempfile.TemporaryDirectory(prefix='zeta-ufs-ro-') as temporary:
             tmp = Path(temporary)
@@ -518,7 +539,7 @@ ufs_format:
                             str(tmp/'ufs.o'), '-o', str(tmp/'ufs.elf')], check=True)
             subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'ufs.elf'), str(tmp/'ufs.bin')], check=True)
             ufs_code = (tmp/'ufs.bin').read_bytes()
-        if len(ufs_code) > 512: raise ValueError('UFS inspector exceeded verified padding')
+        if len(ufs_code) > 768: raise ValueError('UFS inspector exceeded verified padding')
         data[ufs_offset:ufs_offset+len(ufs_code)] = ufs_code
         allowed.append((ufs_offset, ufs_offset+len(ufs_code)))
     if install_boot_irq_early:

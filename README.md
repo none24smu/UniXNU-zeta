@@ -428,6 +428,12 @@ UFSHCI 3.0 host with 32 transfer slots, enabled controller, present device and
 ready transfer/task/UIC queues. The probe writes no UFS, PHY, GCC or SMMU
 register. It does not issue SCSI reads, publish storage media or mount root.
 Evidence is in `build/bringup/native-usb/qcom-ufs-inspect/capture/`.
+The extended read-only `qcom-ufs-queues` probe also returned transfer-list
+base `0x9d987000`, transfer doorbell `0`, transfer run/stop `1`, task-list
+base `0x9d988000`, task doorbell `0`, task run/stop `0`, interrupt status
+`0x400` and interrupt enable `0`. Both queues were idle at this checkpoint;
+the firmware's queue addresses are not proof of an XNU DMA mapping. Native
+USB captured the full report, and automatic fastboot return was verified.
 
 An explicit early video acquisition test also hit the exception guard (25.291
 seconds), with only UEFI text visible. XNU's normal screen acquisition occurs

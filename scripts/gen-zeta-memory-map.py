@@ -14,7 +14,9 @@ Rules:
     start, is HobOnlyNoCacheSetting; other reservations are uncached reserved memory;
   * the parts of a stock region that no reservation covers keep the stock label and attributes,
     with a " gapN" suffix when the region was split;
-  * the stock register map is copied unchanged.
+  * the stock register map is copied, except that overlapping stock entries (IMEM Cookie Base inside
+    IMEM Base, USB running into AOSS) are split: in address order an earlier region ends where the next
+    one starts and keeps any tail past it, since every descriptor becomes its own resource HOB.
 Output: ../uefi-zeta/Platforms/Microsoft/zetaPkg/Library/MemoryMapLib/MemoryMapLib.c
 """
 import csv
@@ -75,10 +77,31 @@ def overlaps(a, b):
     return max(a['base'], b['base']) < min(a['base'] + a['size'], b['base'] + b['size'])
 
 
+def disjoint(rows):
+    """Split overlapping register regions: in address order, a region ends where the next one starts."""
+    rows = sorted(rows, key=lambda row: (row['base'], -row['size']))
+    result = []
+    for row in rows:
+        pending = [row]
+        while pending:
+            current = pending.pop(0)
+            later = next((other for other in rows if other is not row and other['base'] > current['base']
+                          and overlaps(current, other)), None)
+            if later is None:
+                result.append(current)
+                continue
+            result.append(dict(current, size=later['base'] - current['base']))
+            tail_base = later['base'] + later['size']
+            if current['base'] + current['size'] > tail_base:
+                pending.append(dict(current, name=f'{current["name"]} tail', base=tail_base,
+                                    size=current['base'] + current['size'] - tail_base))
+    return result
+
+
 def render():
     text = CONFIG.read_text()
     stock = records(section(text, 'MemoryMap'))
-    registers = records(section(text, 'RegisterMap'))
+    registers = disjoint(records(section(text, 'RegisterMap')))
     unusable = {'base': int(text.split('UnusableDDRMemoryStartAddr =')[1].split()[0], 16),
                 'size': int(text.split('UnusableDDRMemorySizeAtBeginning =')[1].split()[0], 16)}
     reserved = reservations()

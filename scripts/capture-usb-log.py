@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Capture the zeta UEFI CDC ACM log, including across USB reconnects (Linux).
+"""Capture zeta firmware and XNU CDC ACM logs across USB reconnects (Linux).
 
 Uses only the standard library and fastboot. Start before booting the phone.
 When capture ends, return to fastboot unless --keep-running is specified.
 The default discovery matches the zeta log product
 as well as VID:PID, so it does not open another phone's serial port.
+serial.log contains the full stream; kernel.log contains only traffic from
+the native zeta XNU USB product, including its final reboot acknowledgement.
 """
 
 import argparse
@@ -42,16 +44,22 @@ def verify_bootloader(args, event):
     raise RuntimeError('Duo did not return to fastboot; log is saved, but bootloader return is unverified')
 
 
-def return_to_bootloader(fd, args, log, event):
+def sync_logs(log, kernel_log=None):
+    os.fsync(log.fileno())
+    if kernel_log is not None:
+        os.fsync(kernel_log.fileno())
+
+
+def return_to_bootloader(fd, args, log, event, kernel_log=None):
     if fd is None:
         # A bounded kernel probe can reset itself after firmware USB stops.
         # Confirm the exact fastboot device instead of requiring a dead port.
-        os.fsync(log.fileno())
+        sync_logs(log, kernel_log)
         event('bootloader_waiting', reason='USB disconnected; checking kernel-requested return')
         verify_bootloader(args, event)
         return 0
     # Persist the captured log before requesting a reset.
-    os.fsync(log.fileno())
+    sync_logs(log, kernel_log)
     pending = BOOTLOADER_COMMAND
     deadline = time.monotonic() + 3
     while pending:
@@ -77,6 +85,8 @@ def return_to_bootloader(fd, args, log, event):
             if not data:
                 break
             log.write(data)
+            if kernel_log is not None:
+                kernel_log.write(data)
             extra += len(data)
             if not args.quiet:
                 sys.stdout.buffer.write(data)
@@ -87,7 +97,7 @@ def return_to_bootloader(fd, args, log, event):
             if exc.errno in (errno.EIO, errno.ENODEV):
                 break
             raise
-    os.fsync(log.fileno())
+    sync_logs(log, kernel_log)
     verify_bootloader(args, event)
     return extra
 
@@ -136,12 +146,15 @@ def capture(args):
     started = time.monotonic()
     total = 0
     fd = None
+    native_kernel = False
     permission_port = None
     permission_deadline = 0
     handoff_seen = False
     recent = b''
     print(f'Waiting for zeta USB log; saving to {output}', file=sys.stderr, flush=True)
-    with (output / 'events.jsonl').open('w') as events, (output / 'serial.log').open('wb', buffering=0) as log:
+    with (output / 'events.jsonl').open('w') as events, \
+            (output / 'serial.log').open('wb', buffering=0) as log, \
+            (output / 'kernel.log').open('wb', buffering=0) as kernel_log:
         def event(kind, **fields):
             record = {'time': datetime.now(timezone.utc).isoformat(),
                       'elapsed': round(time.monotonic() - started, 3), 'event': kind, **fields}
@@ -192,6 +205,7 @@ def capture(args):
                             continue
                         raise
                     permission_port = None
+                    native_kernel = identity.get('product') == 'zeta XNU log'
                     event('connected', **identity)
                 try:
                     readable, _, _ = select.select([fd], [], [], 0.1)
@@ -201,6 +215,8 @@ def capture(args):
                     if not data:
                         raise OSError(errno.ENODEV, 'USB port closed')
                     log.write(data)
+                    if native_kernel:
+                        kernel_log.write(data)
                     total += len(data)
                     recent = (recent + data)[-65536:]
                     if not handoff_seen and b'DARWINBOOT: inputs validated; exiting boot services' in recent:
@@ -223,14 +239,17 @@ def capture(args):
         finally:
             try:
                 if completed and (total or fd is not None) and not args.keep_running:
-                    total += return_to_bootloader(fd, args, log, event)
+                    sync_logs(log, kernel_log)
+                    total += return_to_bootloader(fd, args, log, event,
+                                                  kernel_log if native_kernel else None)
             except (OSError, RuntimeError) as exc:
                 event('bootloader_failed', reason=str(exc))
                 raise
             finally:
                 if fd is not None:
                     os.close(fd)
-                event('finished', bytes=log.tell())
+                sync_logs(log, kernel_log)
+                event('finished', bytes=log.tell(), kernel_bytes=kernel_log.tell())
     return 0 if total else 2
 
 

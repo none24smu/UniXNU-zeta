@@ -71,7 +71,10 @@ python3 scripts/capture-usb-log.py
 ```
 
 It finds the zeta port, saves raw bytes in `build/usb-log/<UTC time>/serial.log`,
-and records connections in `events.jsonl`. It reconnects automatically. Ctrl-C
+and saves traffic from the native XNU product separately in `kernel.log`,
+including its reboot acknowledgement. It records connections in `events.jsonl`
+and reconnects automatically. An empty `kernel.log` means no native XNU bytes
+were captured. Ctrl-C
 ends capture; `--duration 60` ends it after 60 seconds including waiting. After
 a capture with a connected port or received data, the tool saves the log, sends the firmware's
 bootloader command, collects its final output, and verifies fastboot product
@@ -410,9 +413,11 @@ the direct dispatcher while the IOKit wrapper's vector is being registered.
 headers, isolates static symbol collisions, audits imports/deployment, and
 registers its real functions through XNU's versioned shims. Its hardware
 qualification is pending. No pthread panic or initialization path is bypassed.
-The first pthread build compiled the CPU/USB drivers but failed in the
-registration bootstrap's BSD-private header context. UniXNU `30c3543` corrects
-that bootstrap recipe; CI run `39850532370` is the replacement qualification.
+The pthread builds compiled and audited the real component but failed in the
+registration bootstrap's header context. Adding BSD-private definitions to the
+OSFMK recipe was insufficient: its libsa include order and Mach types conflict
+with BSD. UniXNU `ef04d1b` uses the kernel's actual compiled BSD pthread-shim
+recipe instead; CI run `39852163477` is the replacement qualification.
 
 Stage 6 begins with the stock zeta DT's UFS host at `0x01d84000+0x3000`,
 QMP v4 Lahaina PHY at `0x01d87000+0xe10`, SPI 265 (INTID 297), and SMMU

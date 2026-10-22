@@ -18,8 +18,9 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 2. Device repository | This repository |
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
-| 5. Payload and boot image | Kernel builds: xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication. Not booted |
-| 6-8 | Not started |
+| 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
+| 6. Kernel bring-up | Guide bring-up Stage 5, in progress. Paired timing probes passed early `PE_init_platform(FALSE, args)` and `arm_vm_init`; IOKit platform matching and kernel USB logging remain unverified |
+| 7-8 | Storage, root filesystem, and iOS userspace not started |
 
 ## Inputs
 
@@ -45,8 +46,173 @@ cd UniXNU
 ./unixnu build package
 ./unixnu build firmware --uefi ../uefi-zeta
 ./unixnu bootimg --uefi ../uefi-zeta --dtb ../UniXNU-zeta/build/zeta/zeta.dtb --ramdisk none
-fastboot boot out/zeta/boot/boot.img     # RAM only; nothing is flashed
+fastboot -s 0F00EFK214800A boot out/zeta/boot/boot.img
 ```
 
-UniXNU is used at commit `2b88cfc`, the newest whose driver submodule pins are
-all published.
+The local UniXNU build system is at commit `364e98b`. The control kernel is
+from the fork's successful `ios26` CI run `39740998421`; its SHA-256 is
+`5c12fc41e41cc0b07c591558dc1f1a3b17c1fea588e74f374f22a3edf50e9790`.
+
+## USB boot logs
+
+`uefi-zeta`'s `ZetaUsbSerialDxe` exposes the early firmware log and UniXNU
+output as USB CDC ACM (`0525:a4a7`, product `zeta UEFI log`). On Linux this
+appears as `/dev/ttyACM0`, or the next available ACM number. The driver replays
+the early log from its 1 MiB memory ring after USB starts.
+
+Start the host reader before booting the phone, from this repository:
+
+```sh
+python3 scripts/capture-usb-log.py
+```
+
+It finds the zeta port, saves raw bytes in `build/usb-log/<UTC time>/serial.log`,
+and records connections in `events.jsonl`. It reconnects automatically. Ctrl-C
+ends capture; `--duration 60` ends it after 60 seconds including waiting. After
+a capture with a connected port or received data, the tool saves the log, sends the firmware's
+bootloader command, collects its final output, and verifies fastboot product
+`surfaceduo2` at serial `0F00EFK214800A`. `--keep-running` skips the reset.
+An unsuccessful bootloader return exits with an error and retains the log.
+Python's standard library and the `fastboot` executable are required. The host user needs permission to open the
+serial device (usually membership in `dialout`).
+
+For an automatic capture followed by return to fastboot:
+
+```sh
+python3 scripts/capture-usb-log.py --duration 60
+```
+
+The USB control frame is `NUL` followed by `ZETA:REBOOT-BOOTLOADER` and a
+newline. It is recognized across packet boundaries during UEFI boot services.
+The firmware writes bootloader reason `2` into PMK8350 SID 0 SDAM register
+`0x7148`, bits 7:1, preserving bit 0, then verifies the byte by reading it back.
+These are the stock DT's `restart@48` cell and the bootloader reason in the
+stock kernel's `qcom-reboot-reason.c`. The write uses arbiter v5 and checks
+channel ownership and transfer status. Failure cancels the reset and is logged.
+After draining the final log, the stock Qualcomm `ResetRuntimeDxe` performs
+the reset. Its `RESET_PARAM` path is insufficient here: its PON spare setter
+in the XBL `PmicDxeLa` binary is an `EFI_UNSUPPORTED` stub. Older logging
+firmware lacks this command and must be updated once from fastboot.
+
+Automatic return was hardware verified on 2026-10-22. The capture contains
+`SDAM boot reason APID=91 before=0x0 after=0x4`, then the firmware's reset
+message. The host verified fastboot product `surfaceduo2` at serial
+`0F00EFK214800A` about five seconds after the request. Evidence is in
+`build/usb-log/sdam-auto-return/retry-capture/`.
+
+The controller initialization follows Qualcomm's `FastbootUsbDeviceStart`:
+signal UsbConfigDxe's initialization event, call `StartEx`, then allocate
+transfer buffers. Advancing the log cursor waits for successful USB completion,
+so a failed or cancelled send can be retried.
+
+Hardware verified on Surface Duo 2 `0F00EFK214800A` on 2026-10-22:
+Linux bound `cdc_acm` to `ttyACM0`, and the firmware-only test delivered 13,221
+bytes, from SEC initialization through the UniXNU menu and BDS boot attempts.
+Evidence is in `build/usb-log/start-sequence/`.
+
+The installed USB/reset image previously stopped before kernel entry with
+`DARWINBOOT: boot refused: Out of Resources; firmware retained`. DarwinBoot's
+direct framebuffer diagnostics are mirrored to the text console for capture.
+The allocation failure is fixed in the current firmware source: the memory
+publisher now clips a free bank crossing 4 GiB instead of discarding its
+usable low prefix. Reservations remain excluded. A RAM-booted validation image
+allocated the full 256 MiB window at `0xE3604000`, prepared the kernel and boot
+arguments, then returned without leaving boot services. Evidence is in
+`build/bringup/memory-clip/`.
+
+This transport runs during UEFI boot services and flushes before
+`ExitBootServices`. XNU output after that handoff requires a kernel USB
+transport; `serial=3` alone does not provide one.
+
+The payload filesystem is 64 MiB so the combined boot image fits the phone's
+128 MiB `boot_b` partition. A flashable image containing the USB firmware and
+the existing XNU payload and automatic return is at
+`../UniXNU/out/zeta/boot/usb-reset-sdam/boot-flash.img`.
+That installed baseline predates the memory allocation fix. The newer kernel
+probes below were RAM booted and do not replace it.
+
+## Bounded kernel probes
+
+`scripts/patch-zeta-kernel-probe.py` creates a separate kernel copy with a
+terminal reset probe. It verifies the Mach-O entry, target instruction or
+symbol prologue, and unused padding; the original kernel is preserved. The
+probe waits using `CNTPCT_EL0`/`CNTFRQ_EL0`, then requests PSCI `SYSTEM_RESET`.
+The firmware arms the stock PMIC bootloader reason before kernel handoff.
+The capture tool detects the returning fastboot device and verifies its exact
+serial and product even though firmware USB has already stopped.
+
+Hardware results on 2026-10-22:
+
+| Probe | 2-second delay: handoff to fastboot | 8-second delay: handoff to fastboot | Evidence |
+| --- | --- | --- | --- |
+| Kernel entry, before original startup | 7.069 s | 13.022 s | `build/bringup/kernel-timing/hardware-test.json` |
+| Original bootstrap after SCTLR MMU enable and ISB | 6.970 s | 13.217 s | `build/bringup/after-mmu/hardware-test.json` |
+| Entry to `arm_init`, before its C body | 6.769 s | 13.011 s | `build/bringup/arm-init/hardware-test.json` |
+| Return from first `PE_init_platform(FALSE, args)` | 7.067 s | 13.012 s | `build/bringup/c-startup/early-platform-hardware-test.json` |
+| Return from `arm_vm_init`, with corrected entropy seed | 6.970 s | 12.817 s | `build/bringup/entropy-fix/vm-hardware-test.json` |
+
+The roughly six-second change supports execution at each instrumented point.
+Each probe terminates startup at its selected location; it does not establish
+that later initialization works. The optional ramoops record did not survive
+the tested reset path, so no conclusion relies on retained RAM.
+
+The first `PE_init_platform` return establishes progress through the early C
+startup, boot-argument copy, CPU data initialization, and early platform setup.
+It does not establish IOKit platform-provider matching or the later
+`PE_init_platform(TRUE, ...)` call. A probe immediately before `arm_vm_init`
+returned after 6.973 seconds, while probes after it and before its internal
+`arm_vm_prot_init` call returned after 29.235 and 28.830 seconds respectively,
+consistent with the 24-second panic guard plus reset latency. This was the
+failure before the entropy fix below.
+
+The ADT supplied only 64 bytes in `/chosen/random-seed`. Both xnu-12377 source
+and the compiled control kernel require 256 bytes when `early_random()` first
+initializes in `arm_vm_init`; a short seed explicitly panics. The generator
+now supplies 256 bytes from `os.urandom`. The test ADT in
+`build/bringup/entropy-fix/` preserves every other control property. Hardware
+verified return from the first `early_random()` call after 6.873 seconds and
+from `arm_vm_init` with the paired delays above. The 2-second VM probe kernel
+is byte-identical to the failing 64-byte-seed control: only the ADT seed was
+changed. Generated seed length and packed payload hashes were also checked.
+
+A subsequent probe before `machine_startup` returned after 24.803 seconds,
+consistent with the exception guard. The next failure is after VM setup and
+before the end of `arm_init`; it is being isolated around console and later
+platform initialization. No IOKit matching or userspace success is implied.
+
+Kernel USB output requires a native transport after the firmware controller
+shuts down; these timing observations do not provide kernel text.
+
+Example, with a new output path:
+
+```sh
+python3 scripts/patch-zeta-kernel-probe.py CONTROL_KERNEL \
+  --stage after-mmu --reset-delay 2 --output build/probe/kernel.macho
+```
+
+Put that copy into a separate payload, repack its boot image, start capture,
+and RAM boot it using the explicit Duo serial. The patched kernel is a
+diagnostic artifact; use the preserved control kernel for normal bring-up.
+
+For a call inside `arm_init`, use `--reset-after SYMBOL` and optionally
+`--occurrence N`, `--in FUNCTION`, or `--reset-before`. After-call probes replay the original
+call in the trampoline and reset only if it returns. Before-call probes do
+not execute the selected call. Both retain the selected timer delay.
+
+```sh
+python3 scripts/patch-zeta-kernel-probe.py CONTROL_KERNEL \
+  --reset-after _PE_init_platform --reset-delay 2 --guard-early-faults \
+  --output build/platform-probe/kernel.macho
+```
+
+`--guard-early-faults` replaces the active ARM64 exception-vector branches
+and `panic` entry in the diagnostic copy. Exceptions wait 20 seconds before
+reset; panic waits 24 seconds. Normal probe delays must be under 16 seconds
+so these outcomes remain distinct. The tool verifies that bootstrap selects
+`ExceptionVectorsBase`; `LowExceptionVectorBase` is no longer active after
+MMU enable. A deliberate BRK test verified automatic fastboot return after
+25.292 seconds including reboot latency. Evidence is in
+`build/bringup/c-startup/active-fault-control/`. The earlier test that guarded
+only the inactive table stalled and is retained in `fault-control/` as a
+diagnostic implementation failure. These guards replace normal handling and
+must not be used in a normal boot image. They cannot recover a plain spin loop.

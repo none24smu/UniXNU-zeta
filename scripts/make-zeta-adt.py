@@ -198,7 +198,8 @@ def main():
                         ('dram-base', struct.pack('<Q', DRAM_BASE)),
                         ('dram-size', struct.pack('<Q', args.dram_size)),
                         # Stock usb0 DWC3 aperture; firmware prepares the clocks/PHY.
-                        ('unixnu,dwc3-console', struct.pack('<QQ', 0x0a600000, 0x10000)),
+                        ('unixnu,dwc3-console', struct.pack('<QQ', 0x0a600000, 0x100000)),
+                        ('unixnu,qcom-usb0', struct.pack('<I', 1)),
                         # The iPhone18,2 tree selects sha2-384 in /chosen; it names the algorithm only.
                         ('crypto-hash-method', b'sha2-384\0'),
                         *([('root-matching', ('<dict><key>IOProviderClass</key><string>IOMedia</string>'

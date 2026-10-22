@@ -1,0 +1,45 @@
+# Build outputs and caches (re-derivable; nothing important lives here)
+/build/
+/Build/
+/Conf/
+/out/
+/.cache/
+/refer/
+/.local*/
+/Mu_Basecore/
+
+# Local development files
+*.log
+*.terminal
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+*.dSYM/
+
+# Inputs, images and products that never belong in Git
+*.ipsw
+*.dmg
+*.im4p
+*.img
+*.dbr
+*.macho
+*.o
+*.a
+*.dylib
+*.efi
+*.dtb
+*.bc
+*.spv
+*.metallib
+*.bin
+*.mbn
+*.fw
+*.pem
+*.key
+.env
+local.toml

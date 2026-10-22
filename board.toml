@@ -1,0 +1,19 @@
+[board]
+name = "zeta"
+soc = "SM8350"
+description = "Microsoft Surface Duo 2"
+kit = "zeta"                       # the package/ of this repository appears as kits/zeta in the build tree
+
+# Target restore image: iPhone 17 Pro Max, iOS 26.5.2 (the newest iOS 26 whose kernel, xnu-12377.122.8,
+# has published source near it: xnu-12377.121.6). UniXNU's kernel step is pinned to xnu-10063 (iOS 17),
+# so [kernel] stays out of this file until the kernel side is ported. Note that the iOS 26 OS and
+# SystemOS images are Apple Encrypted Archives (.dmg.aea), which the userdata step does not decrypt.
+[ipsw]
+url = "https://updates.cdn-apple.com/2026SpringFCS/fullrestores/140-26432/CF51E589-7C43-4B55-B909-CF585DAD0570/iPhone18,2_26.5.2_23F84_Restore.ipsw"
+product = "iPhone18,2"
+version = "26.5.2"
+build = "23F84"
+device_class = "v54ap"
+chip_id = 0x8150
+board_id = 14
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]   # the small components

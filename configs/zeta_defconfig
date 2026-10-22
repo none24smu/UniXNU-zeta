@@ -7,6 +7,8 @@ CONFIG_XNU_BUILD_SCRIPT="build-xnu-12377.sh"
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 # The CNTP_CTL_EL0 write in fiq_context_init faults on the boot core; CNTV is usable.
 CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
+# Register the source crypto provider before platform UUID hashing.
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
 # Cortex-A55/A78/X1 are ARMv8.2 (Arm TRMs), so PAN is present.
 CONFIG_XNU_NATIVE_PAN=y
 # Panic log from the device tree's pram node, not the Raspberry Pi address 0x3c0fc000.

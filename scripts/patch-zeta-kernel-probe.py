@@ -27,7 +27,9 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             reset_before=False, occurrence=1, guard_early_faults=False, function='_arm_init',
             check_pointer=None, check_return_zero=False, allow_interrupts=False, record_address=RECORD_ADDRESS,
             check_return_one=False, warm_reset=False, check_usb_controller=False,
-            print_kernel_banner=False, poll_native_usb=False, log_faults=False):
+            print_kernel_banner=False, poll_native_usb=False, log_faults=False,
+            instruction_offset=None, expected_instruction=None,
+            check_word=None, expected_word=None):
     if warm_reset and (stage != 'entry' or reset_after or guard_early_faults):
         raise ValueError('Warm-reset retention discovery requires an unguarded entry probe')
     if record_address not in (RECORD_ADDRESS, 0xE3000000):
@@ -42,7 +44,7 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
     data = bytearray(original)
     if struct.unpack_from('<III', data) != (0xFEEDFACF, 0x100000C, 0):
         raise ValueError('Require a plain ARM64 Mach-O kernel')
-    segments, entries, symbol_tables = [], [], []
+    segments, entries, symbol_tables, memory_ranges = [], [], [], []
     cursor = 32
     for _ in range(struct.unpack_from('<I', data, 16)[0]):
         command, size = struct.unpack_from('<II', data, cursor)
@@ -51,6 +53,7 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         if command == 0x19:
             va, vsize, offset, fsize = struct.unpack_from('<QQQQ', data, cursor + 24)
             segments.append((va, min(vsize, fsize), offset))
+            memory_ranges.append((va, va + vsize))
         if command == 5 and size >= 288:
             entries.append(struct.unpack_from('<Q', data, cursor + 16 + 32*8)[0])
         if command == 2 and size == 24:
@@ -109,6 +112,14 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         if not 1 <= occurrence <= len(matches):
             raise ValueError(f'{function} has {len(matches)} calls to {reset_after}, not {occurrence}')
         site_va = matches[occurrence-1]
+    elif stage == 'function-offset':
+        low = symbol(function)
+        high = min(value for values in symbols.values() for value in values if value > low)
+        if instruction_offset is None or expected_instruction is None or instruction_offset < 0 or instruction_offset % 4:
+            raise ValueError('Function-offset requires an aligned offset and exact expected instruction word')
+        site_va = low + instruction_offset
+        if site_va >= high or struct.unpack_from('<I', data, file_offset(site_va, 4))[0] != expected_instruction:
+            raise ValueError('Selected instruction does not match the reviewed function disassembly')
     elif stage == 'function-return':
         low = symbol(function)
         high = min(value for values in symbols.values() for value in values if value > low)
@@ -134,6 +145,18 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         site_va = matches[0] + (0 if stage == 'before-mmu' else 0x20)
     site = file_offset(site_va, 4)
     pointer_va = None
+    word_va = None
+    if check_word is not None or expected_word is not None:
+        if not (check_word and expected_word is not None and 0 <= expected_word <= 0xffffffff and
+                reset_after and reset_before and guard_early_faults and 0 <= reset_delay <= 8):
+            raise ValueError('Word checks require a symbol, uint32 expected value, and guarded before-call probe with delay 0..8')
+        if check_pointer or check_return_zero or check_return_one or check_usb_controller or warm_reset:
+            raise ValueError('Word checks cannot be combined with other conditional probes')
+        word_va = symbol(check_word)
+        if word_va % 4:
+            raise ValueError('Word symbol must be 4-byte aligned')
+        if not any(low <= word_va and word_va + 4 <= high for low, high in memory_ranges):
+            raise ValueError('Word symbol must be within a kernel segment, including zero-fill storage')
     if check_pointer:
         if not (reset_after and reset_before and guard_early_faults and 0 <= reset_delay <= 8):
             raise ValueError('Pointer checks require a guarded before-call probe with delay 0..8 seconds')
@@ -210,6 +233,15 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
     if check_return_zero:
         prefix += '''  mov x6, #12
   cbnz w0, timed_reset
+'''
+    if check_word:
+        prefix += f'''  adrp x7, checked_word
+  ldr w7, [x7, :lo12:checked_word]
+  mov w8, #{expected_word & 0xffff}
+  movk w8, #{expected_word >> 16}, lsl #16
+  mov x6, #12
+  cmp w7, w8
+  b.ne timed_reset
 '''
     if check_return_one:
         prefix += '''  mov x6, #12
@@ -346,6 +378,8 @@ timed_reset:
         definitions = [f'--defsym=probe_callee={callee:#x}'] if callee and not reset_before else []
         if pointer_va is not None:
             definitions.append(f'--defsym=checked_pointer={pointer_va:#x}')
+        if word_va is not None:
+            definitions.append(f'--defsym=checked_word={word_va:#x}')
         if check_usb_controller:
             definitions.append(f'--defsym=probe_mapper={symbol("_ml_io_map"):#x}')
         if print_kernel_banner:
@@ -429,7 +463,13 @@ timed_reset:
               'unexpected_return_reset_delay_seconds': 12 if check_return_one else None,
               'reset_after': reset_after, 'reset_before': reset_before, 'occurrence': occurrence,
               'caller_function': function,
+              'instruction_offset': instruction_offset,
+              'expected_instruction': hex(expected_instruction) if expected_instruction is not None else None,
               'checked_pointer_symbol': check_pointer,
+              'checked_word_symbol': check_word,
+              'checked_word_va': hex(word_va) if word_va is not None else None,
+              'expected_word': expected_word,
+              'word_mismatch_reset_delay_seconds': 12 if check_word else None,
               'checked_pointer_va': hex(pointer_va) if pointer_va is not None else None,
               'null_pointer_reset_delay_seconds': 12 if check_pointer else None,
               'check_return_zero': check_return_zero,
@@ -446,12 +486,13 @@ timed_reset:
               'probe_padding_bytes': cave_size,
               'exception_reset_delay_seconds': 20 if guard_early_faults else None,
               'panic_reset_delay_seconds': 24 if guard_early_faults else None,
-              'stage': {'entry': 1, 'before-mmu': 2, 'after-mmu': 3, 'arm-init': 4, 'call': 5, 'early-fault-test': 6, 'function-return': 7}[stage],
+              'stage': {'entry': 1, 'before-mmu': 2, 'after-mmu': 3, 'arm-init': 4, 'call': 5, 'early-fault-test': 6, 'function-return': 7, 'function-offset': 8}[stage],
               'stage_meaning': {'entry': 'instrumented kernel entry; original startup not executed',
                                 'before-mmu': 'original bootstrap reached SCTLR write; MMU not enabled',
                                 'after-mmu': 'original bootstrap passed MMU enable and ISB',
                                 'arm-init': 'original assembly bootstrap reached arm_init; C body not executed',
                                 'function-return': f'{function} reached its actual RET; W0 checked for 1' if check_return_one else f'{function} reached its actual RET',
+                                'function-offset': f'{function} reached reviewed instruction +{instruction_offset or 0:#x}; selected instruction not executed',
                                 'call': f'{function} reached {"before" if reset_before else "after"} call {occurrence} to {reset_after}',
                                 'early-fault-test': 'deliberate BRK after MMU enable; verifies early exception reset'}[stage],
               'retained_record_verified': False,
@@ -465,7 +506,9 @@ def main():
     parser.add_argument('kernel', type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--reset-delay', type=int, default=0, help='seconds between probe entry and reset (0..30)')
-    parser.add_argument('--stage', choices=['entry', 'before-mmu', 'after-mmu', 'arm-init', 'early-fault-test', 'function-return'], default='entry')
+    parser.add_argument('--stage', choices=['entry', 'before-mmu', 'after-mmu', 'arm-init', 'early-fault-test', 'function-return', 'function-offset'], default='entry')
+    parser.add_argument('--instruction-offset', type=lambda value: int(value, 0), help='function-offset byte offset, from reviewed disassembly')
+    parser.add_argument('--expected-instruction', type=lambda value: int(value, 0), help='exact original ARM64 word at the selected function offset')
     parser.add_argument('--reset-after', help='reset after the named call')
     parser.add_argument('--in', dest='function', default='_arm_init', help='function containing the call (default: _arm_init)')
     parser.add_argument('--reset-before', action='store_true', help='stop at that call without executing it')
@@ -475,6 +518,8 @@ def main():
     parser.add_argument('--record-address', type=lambda value: int(value, 0), default=RECORD_ADDRESS, help='reserved record PA: default ramoops, or 0xe3000000 display diagnostic window')
     parser.add_argument('--warm-reset', action='store_true', help='entry retention test: discover and use PSCI SYSTEM_RESET2 warm reset, otherwise cold reset after 12 s')
     parser.add_argument('--check-pointer', help='before-call pointer check: NULL resets after 12 s, non-NULL uses --reset-delay')
+    parser.add_argument('--check-word', help='before-call uint32 symbol check: mismatch resets after 12 s, match uses --reset-delay')
+    parser.add_argument('--expected-word', type=lambda value: int(value, 0), help='expected uint32 value for --check-word')
     parser.add_argument('--check-return-zero', action='store_true', help='after-call status check: nonzero W0 resets after 12 s, zero uses --reset-delay')
     parser.add_argument('--check-return-one', action='store_true', help='function-return boolean check: W0=1 uses normal delay, any other value uses 12 s')
     parser.add_argument('--check-usb-controller', action='store_true', help='before-call read-only DWC3 mapping/signature test; invalid signature or failed mapping uses 12 s')
@@ -487,7 +532,7 @@ def main():
             raise ValueError('Reset delay must be 0..30 seconds')
         if args.reset_before and not args.reset_after:
             raise ValueError('--reset-before requires --reset-after')
-        if args.stage == 'function-return' and args.reset_after:
+        if args.stage in ('function-return', 'function-offset') and args.reset_after:
             raise ValueError('Function-return probes cannot also select a call')
         if args.occurrence < 1:
             raise ValueError('--occurrence must be positive')
@@ -495,7 +540,8 @@ def main():
                 args.reset_before, args.occurrence, args.guard_early_faults, args.function,
                 args.check_pointer, args.check_return_zero, args.allow_interrupts, args.record_address,
                 args.check_return_one, args.warm_reset, args.check_usb_controller,
-                args.print_kernel_banner, args.poll_native_usb, args.log_faults)
+                args.print_kernel_banner, args.poll_native_usb, args.log_faults,
+                args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

@@ -343,7 +343,9 @@ instruction and actual timer delivery are not yet identified.
 The ARM framebuffer source honors `-v` and logs boot arguments (`b0cb61a`).
 Its source-built platform-success probe, including an explicit XNU banner,
 returned in 13.499 seconds with an 8-second delay. Readable display output is
-still unconfirmed: the supplied photograph shows UEFI DXE driver loading.
+still unconfirmed: the supplied photograph shows UEFI DXE driver loading,
+and the user reports a garbled banner at the bottom right. The captured GOP
+handoff is 1344x1892, 32 bpp, row stride 5376; its width and stride agree.
 Stage 5 is not marked complete on timing alone.
 
 A read-only XNU probe mapped USB0 and accepted its DWC3 signature at physical
@@ -353,6 +355,23 @@ polling CDC integration is under qualification; capture accepts the separate
 product `zeta XNU log`. Host tests cover control requests, data/status phases,
 line coding, completed-byte accounting, split reboot frames and bounded
 command timeout with ASan/UBSan; hardware log capture is still required.
+
+Bounded instruction probes in the native initializer reached the instruction
+before the DCTL core-reset store and the instruction after that store and its
+barrier (6.856/7.055 seconds including the 2-second wait and reboot). The first
+full native-console attempt did not enumerate. Its source timer helper used
+semicolon-separated inline assembly: the Darwin ARM64 assembler emitted ISB
+without the following counter read. UniXNU `51b9336` uses explicit newlines,
+fixes the same pattern in ArmCpu, and audits the compiled console object for
+real counter reads. Hardware qualification of that build remains pending.
+
+`--stage function-offset --in SYMBOL --instruction-offset OFFSET
+--expected-instruction WORD` stops before an exact reviewed instruction;
+it rejects a changed instruction or an offset outside the function.
+Guarded before-call probes can use `--check-word SYMBOL --expected-word VALUE`
+to compare a uint32 diagnostic, including zero-fill globals. A match uses
+the normal 0..8-second delay and a mismatch uses 12 seconds. This supports
+isolating USB initialization failures without assuming USB already works.
 
 The post-reset RAM-log experiment is not usable. No marker was recovered
 from its reserved display window, even with temporary SEC preservation.

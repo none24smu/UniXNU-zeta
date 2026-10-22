@@ -9,6 +9,9 @@ CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
 # Register the source crypto provider before platform UUID hashing.
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
+# Link the real DT platform expert and GICv3 boot CPU provider into XNU 12377.
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
 # Cortex-A55/A78/X1 are ARMv8.2 (Arm TRMs), so PAN is present.
 CONFIG_XNU_NATIVE_PAN=y
 # Panic log from the device tree's pram node, not the Raspberry Pi address 0x3c0fc000.

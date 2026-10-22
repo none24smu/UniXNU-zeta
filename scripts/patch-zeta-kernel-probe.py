@@ -29,7 +29,8 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             check_return_one=False, warm_reset=False, check_usb_controller=False,
             print_kernel_banner=False, poll_native_usb=False, log_faults=False,
             instruction_offset=None, expected_instruction=None,
-            check_word=None, expected_word=None):
+            check_word=None, expected_word=None, acquire_text_console=False,
+            physical_framebuffer=False):
     if warm_reset and (stage != 'entry' or reset_after or guard_early_faults):
         raise ValueError('Warm-reset retention discovery requires an unguarded entry probe')
     if record_address not in (RECORD_ADDRESS, 0xE3000000):
@@ -181,6 +182,10 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         raise ValueError('Console diagnostics require guarded probes after MMU enable')
     if log_faults and not poll_native_usb:
         raise ValueError('Fault text capture requires polling native USB during the reset delay')
+    if acquire_text_console and not (print_kernel_banner and guard_early_faults):
+        raise ValueError('Early text acquisition requires a guarded kernel banner probe')
+    if physical_framebuffer and not acquire_text_console:
+        raise ValueError('Physical framebuffer mapping test requires explicit early text acquisition')
     cave = (entry + 0x7F) & ~0xFF
     if cave <= entry:
         cave += 0x100
@@ -266,6 +271,12 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
   cmp w7, w8
   b.ne timed_reset
 controller_found:
+'''
+    if acquire_text_console:
+        prefix += '''  bl probe_video_console
+  mov x0, xzr
+  mov w1, #4
+  bl probe_acquire_screen
 '''
     if print_kernel_banner:
         prefix += '''  bl probe_boot_args
@@ -385,6 +396,9 @@ timed_reset:
         if print_kernel_banner:
             definitions += [f'--defsym=probe_boot_args={symbol("_PE_boot_args"):#x}',
                             f'--defsym=probe_version={symbol("_version"):#x}']
+        if acquire_text_console:
+            definitions += [f'--defsym=probe_video_console={symbol("_switch_to_video_console"):#x}',
+                            f'--defsym=probe_acquire_screen={symbol("_PE_initialize_console"):#x}']
         if print_kernel_banner or log_faults:
             definitions.append(f'--defsym=probe_printf={symbol("_printf"):#x}')
         if log_faults:
@@ -410,6 +424,42 @@ timed_reset:
         allowed.append((patch, patch+4))
 
     branch(site_va, cave)
+    if physical_framebuffer:
+        # XNU initialize_screen treats bit 0 as the physical-address marker
+        # once kernel_map exists. PE_state.video starts at offset 8 in the
+        # ARM64 pexpert.h ABI. Tag it before the first PE_create_console call.
+        video_setup = symbol('_PE_create_console')
+        if struct.unpack_from('<I', original, file_offset(video_setup, 4))[0] != 0xd10143ff:
+            raise ValueError('Unrecognized PE_create_console stack prologue')
+        map_cave = cave + 0x800
+        map_offset = file_offset(map_cave, 64)
+        if map_cave + 64 > target or any(original[map_offset:map_offset+64]):
+            raise ValueError('No separate verified empty padding for framebuffer mapping trampoline')
+        asm = '''.text
+.global _start
+_start:
+  adrp x9, video_base
+  ldr x10, [x9, :lo12:video_base]
+  orr x10, x10, #1
+  str x10, [x9, :lo12:video_base]
+  sub sp, sp, #0x50
+  b resume_video
+'''
+        with tempfile.TemporaryDirectory(prefix='zeta-video-map-') as temporary:
+            tmp = Path(temporary)
+            (tmp/'map.S').write_text(asm)
+            subprocess.run(['clang', '--target=aarch64-none-elf', '-c', str(tmp/'map.S'), '-o', str(tmp/'map.o')], check=True)
+            subprocess.run(['ld.lld', f'-Ttext={map_cave:#x}', '-e', '_start',
+                            f'--defsym=video_base={symbol("_PE_state")+8:#x}',
+                            f'--defsym=resume_video={video_setup+4:#x}',
+                            str(tmp/'map.o'), '-o', str(tmp/'map.elf')], check=True)
+            subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'map.elf'), str(tmp/'map.bin')], check=True)
+            map_code = (tmp/'map.bin').read_bytes()
+        if len(map_code) > 64:
+            raise ValueError('Framebuffer trampoline exceeded verified padding')
+        data[map_offset:map_offset+len(map_code)] = map_code
+        allowed.append((map_offset, map_offset+len(map_code)))
+        branch(video_setup, map_cave)
     guard_sites = []
     if guard_early_faults:
         # common_start replaces LowExceptionVectorBase with this table
@@ -481,6 +531,8 @@ timed_reset:
               'early_fault_guard_sites': guard_sites,
               'native_irq_fiq_vectors_preserved': allow_interrupts,
               'kernel_banner_printed_at_checkpoint': print_kernel_banner,
+              'early_text_console_acquired': acquire_text_console,
+              'physical_framebuffer_tagged_before_console_setup': physical_framebuffer,
               'native_usb_polled_during_reset_delay': poll_native_usb,
               'fault_text_logging_enabled': log_faults,
               'probe_padding_bytes': cave_size,
@@ -524,6 +576,8 @@ def main():
     parser.add_argument('--check-return-one', action='store_true', help='function-return boolean check: W0=1 uses normal delay, any other value uses 12 s')
     parser.add_argument('--check-usb-controller', action='store_true', help='before-call read-only DWC3 mapping/signature test; invalid signature or failed mapping uses 12 s')
     parser.add_argument('--print-kernel-banner', action='store_true', help='print XNU checkpoint, kernel version and boot args before the bounded wait')
+    parser.add_argument('--acquire-text-console', action='store_true', help='select and acquire the mapped video console before the kernel banner, clearing old firmware text')
+    parser.add_argument('--physical-framebuffer', action='store_true', help='tag PE_state video as physical before its first mapping; requires early text acquisition')
     parser.add_argument('--poll-native-usb', action='store_true', help='poll the linked native USB console throughout the bounded wait')
     parser.add_argument('--log-faults', action='store_true', help='print fault registers or panic arguments before polling native USB until reset; requires a usable kernel stack and console')
     args = parser.parse_args()
@@ -541,7 +595,8 @@ def main():
                 args.check_pointer, args.check_return_zero, args.allow_interrupts, args.record_address,
                 args.check_return_one, args.warm_reset, args.check_usb_controller,
                 args.print_kernel_banner, args.poll_native_usb, args.log_faults,
-                args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word)
+                args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
+                args.acquire_text_console, args.physical_framebuffer)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

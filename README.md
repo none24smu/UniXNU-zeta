@@ -363,7 +363,30 @@ full native-console attempt did not enumerate. Its source timer helper used
 semicolon-separated inline assembly: the Darwin ARM64 assembler emitted ISB
 without the following counter read. UniXNU `51b9336` uses explicit newlines,
 fixes the same pattern in ArmCpu, and audits the compiled console object for
-real counter reads. Hardware qualification of that build remains pending.
+real counter reads. The corrected hardware build reached phase 4 (running),
+with no core-reset timeout and no host connection: conditional word probes
+returned in 23.715 seconds for phase=4 and 33.533 seconds for error!=6.
+Two 8-second initialization waits accounted for the longer delay; these were
+not evidence of a panic. UniXNU `e1c77fc` preserves an active controller across
+serial initialization, buffers text before configuration, and adds the
+ADT-selected SM8350 QSCRATCH VBUS/session override from the Linux USB driver.
+Its build passed; hardware qualification remains pending.
+
+With USB disabled in the ADT, the corrected CPU assembly still hit a synchronous
+exception (25.535 seconds). A before-call probe reached `ml_processor_register`
+(7.260 seconds), while the after-call probe hit the exception guard (25.486
+seconds). The fault is inside that registration path; the exact instruction
+is not identified yet.
+
+An explicit early video acquisition test also hit the exception guard (25.291
+seconds), with only UEFI text visible. XNU's normal screen acquisition occurs
+later in `vcattach`. The probe now supports `--acquire-text-console` with a
+kernel banner. `--physical-framebuffer` additionally marks PE_state.video as
+physical before its first console setup; XNU uses bit 0 for this when VM is up.
+The first tagged-mapping boot did not expose even firmware USB logging, so it
+provides no kernel result and required physical bootloader recovery. The user
+reported a garbled overlay before that attempt's kernel handoff was observed;
+it is not accepted as readable XNU output.
 
 `--stage function-offset --in SYMBOL --instruction-offset OFFSET
 --expected-instruction WORD` stops before an exact reviewed instruction;

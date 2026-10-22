@@ -81,8 +81,18 @@ scan_complete:
 report_smmu:
   adr x0, smmu_format
   bl ufs_printf
+  mrs x8, ID_AA64ISAR0_EL1
+  mrs x9, ID_AA64ISAR1_EL1
+  stp x8, x9, [sp]
+  mrs x8, ID_AA64PFR0_EL1
+  mrs x9, ID_AA64MMFR1_EL1
+  stp x8, x9, [sp, #16]
+  adr x0, cpu_format
+  bl ufs_printf
   ldr x30, [sp, #120]
   add sp, sp, #128
   ret
 smmu_format:
   .asciz "ZETA SMMU RO: CR0=%llx IDR0=%llx IDR1=%llx IDR2=%llx GFSR=%llx groups=%llx valid=%llx matches=%llx index=%llx SMR=%llx S2CR=%llx CBAR=%llx CBA2R=%llx read=%llx\n"
+cpu_format:
+  .asciz "ZETA CPU RO: ISAR0=%llx ISAR1=%llx PFR0=%llx MMFR1=%llx\n"

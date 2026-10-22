@@ -18,7 +18,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 2. Device repository | This repository |
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
-| 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
+| 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
 | Storage and userland | Guide Stage 6 started: BSD reaches the callsite before `IOFindBSDRoot`; SM8350 UFS registers and idle queues are verified. Native block reads, storage publication, root mounting and launchd remain unverified; Guide Stage 7 is not reached |
 
@@ -540,3 +540,16 @@ and all 1,281,536 SystemOS blocks, including RSA signatures and full image
 hashes. Reports are local under `build/root-stage6/`. These are host checks:
 no image has been flashed, no native UFS read or root mount is proven, and
 Stage 6 remains incomplete.
+
+The bounded `qcom-root-memory384` test verified a 384 MiB owned window
+(`0x18000000`) through the same BSD checkpoint and returned to fastboot.
+A 512 MiB request was refused by DarwinBoot before kernel entry; its largest
+available contiguous region was `0x19a78000` bytes. Keep firmware allocation
+failure distinct from a kernel fault.
+
+`qcom-cpu-features` read the boot CPU's architectural ID registers at that
+checkpoint: ISAR0=`0x100010211120`, ISAR1=`0x100001`, PFR0=`0x11112222`,
+MMFR1=`0x10212122`. ISAR1's APA/API/GPA/GPI fields are all zero. This is
+hardware evidence for the boot CPU, not a successful arm64e compatibility
+layer or a survey of every core. The helper only reads ID/SMMU registers,
+and automatic fastboot return was verified.

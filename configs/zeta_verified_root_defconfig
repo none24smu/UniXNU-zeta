@@ -1,0 +1,29 @@
+# Surface Duo 2 (zeta): firmware, UniXNU menu and payload stages, and the xnu-12377 (iOS 26) kernel.
+# The kernel is a DEVELOPMENT BCM2837 build of UniXNU patches/xnu-12377. Only the options that
+# build-xnu-12377.sh reads apply; the other xnu-10063 options (CONFIG_XNU_OWNER_*, ...) do not yet.
+CONFIG_XNU_BUILD_SCRIPT="build-xnu-12377.sh"
+
+# No Raspberry Pi timer routing: on SM8350 its address is the disabled second PCIe controller.
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+# The CNTP_CTL_EL0 write in fiq_context_init faults on the boot core; CNTV is usable.
+CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
+# Register the source crypto provider before platform UUID hashing.
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+# Register the public source pthread provider through XNU's versioned shims.
+CONFIG_XNU_SOURCE_PTHREAD=y
+# Build public IOStorageFamily and the Duo-specific UFS path; MMIO is opt-in.
+CONFIG_XNU_NATIVE_UFS_SM8350=y
+# Link the real DT platform expert and GICv3 boot CPU provider into XNU 12377.
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+# Polling CDC ACM transport after ExitBootServices; ADT selects the USB0 aperture.
+CONFIG_XNU_NATIVE_DWC3_CONSOLE=y
+# Cortex-A55/A78/X1 are ARMv8.2 (Arm TRMs), so PAN is present.
+CONFIG_XNU_NATIVE_PAN=y
+# Panic log from the device tree's pram node, not the Raspberry Pi address 0x3c0fc000.
+CONFIG_XNU_DT_PANIC_REGION=y
+# Off until there is a trust cache to load.
+CONFIG_XNU_TRUST_CACHE_RUNTIME=n
+
+# Signed policies are read from bounded UFS extents; only the public owner anchor is built in.
+CONFIG_XNU_NATIVE_UFS_VERIFIED_ROOT=y

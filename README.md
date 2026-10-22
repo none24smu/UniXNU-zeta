@@ -565,3 +565,29 @@ The driver still enforces the same response checks. Logs and source/binary
 hashes are in `build/native-ufs-tests/sm8350-qemu10-qualified/` in the base
 checkout. This fixture does not qualify XNU allocation/locks, the Duo SMMU,
 real cache coherency or actual storage reads.
+
+## APFS binary compatibility audit
+
+The restore's APFS driver is ARM64e in a stripped MH_FILESET cache. It has
+no original import names for ordinary symbol rebinding. A read-only REA/Ghidra
+inspection of an exact function confirmed authenticated vtable calls and
+returns. The matched macOS KDK has a symbol-bearing APFS 2811.121.1 candidate,
+which differs from the restore's 2811.122.1 and from the iOS C++ vtable layout.
+It is an offline investigation input, not a runnable replacement.
+
+`scripts/audit-zeta-apfs.py` checks a thin KDK ARM64e kext against explicit
+ordinary ARM64 native kernel symbol providers. It decodes all format-7 chains
+and imports, checks GOT/init/term/indirect-symbol coverage, and emits original
+targets or missing/ambiguous native bindings without modifying code or data.
+Unknown formats, malformed extents, bad ordinals, or incomplete required
+coverage fail closed. Exit 3 means decode completed but binding is incomplete;
+exit 0 proves static name/address resolution only. Neither establishes ABI,
+PAC execution, policy correctness, loadability or root mounting.
+
+The actual candidate decoded 6,550 fixups, all 1,278 imports, 1,272 indirect
+symbols, 662 GOT slots and four init/term slots. Against the source pthread
+baseline it resolved 943 imports and refused 335 missing ones. The first
+storage-linked kernel reduces the missing count to 263. The 24 tests include
+pinned actual-artifact counts plus malformed chains and coverage failures.
+No APFS driver has been loaded. Detailed local findings and lineage remain in
+`../work/apfs-stage6/`; root mounting and launchd are still unverified.

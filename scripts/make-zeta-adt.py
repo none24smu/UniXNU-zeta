@@ -49,6 +49,9 @@ CPU_REGS = (0x000, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700)
 BOARD_COMPATIBLE = b'qcom,lahaina-mtp\0qcom,lahaina\0'
 BOARD_MODEL = b'Surface Duo2 MP\0'
 CPU_COMPATIBLE = b'qcom,kryo\0'
+# xnu-12377 prng_random.c requests 4 * SHA512_DIGEST_LENGTH bytes on ARM64.
+# A shorter seed is fatal on the first early_random() call in arm_vm_init.
+BOOTLOADER_ENTROPY_BYTES = 256
 
 # iPhone18,2 identity, from DeviceTree.v54ap.im4p of 23F84.
 MODEL = b'iPhone18,2\0'
@@ -180,7 +183,7 @@ def main():
         ('#address-cells', struct.pack('<I', 2)),
         ('#size-cells', struct.pack('<I', 2)),
     ], [
-        node('chosen', [('random-seed', os.urandom(64)),
+        node('chosen', [('random-seed', os.urandom(BOOTLOADER_ENTROPY_BYTES)),
                         # Without these XNU never publishes IOPlatformUUID and gethostuuid() blocks forever.
                         *([('unique-chip-id', struct.pack('<Q', args.unique_chip_id)), ('chip-id', struct.pack('<I', args.chip_id))]
                           if args.unique_chip_id is not None else []),

@@ -6,6 +6,8 @@ delay. Paired delays isolate entry, the point before the MMU write, or the
 point after the MMU transition, entry to arm_init, or a call inside arm_init.
 Optional fault guards reset after 20 seconds for exceptions and 24 for panic;
 they replace exception handling and are only for bounded bring-up copies.
+Use --allow-vm-faults beyond early bootstrap so normal demand paging reaches
+the original XNU data-abort handlers.
 Firmware arms the PMIC bootloader reason.
 The optional early ramoops record has not survived the tested reset path;
 hardware conclusions use paired timing, not an assumed retained record.
@@ -30,13 +32,16 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             print_kernel_banner=False, poll_native_usb=False, log_faults=False,
             instruction_offset=None, expected_instruction=None,
             check_word=None, expected_word=None, acquire_text_console=False,
-            physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False):
+            physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False,
+            allow_vm_faults=False):
     if warm_reset and (stage != 'entry' or reset_after or guard_early_faults):
         raise ValueError('Warm-reset retention discovery requires an unguarded entry probe')
     if record_address not in (RECORD_ADDRESS, 0xE3000000):
         raise ValueError('Record address must be a verified zeta reserved diagnostic region')
     if allow_interrupts and not guard_early_faults:
         raise ValueError('Interrupt-preserving mode requires fault guards')
+    if allow_vm_faults and not (guard_early_faults and allow_interrupts):
+        raise ValueError('Native VM fault handling requires interrupt-preserving fault guards')
     if guard_early_faults and reset_delay >= 16:
         raise ValueError('With fault guards, normal delay must be below 16 seconds to distinguish outcomes')
     if output.exists() or kernel.resolve() == output.resolve():
@@ -639,6 +644,7 @@ _start:
         allowed.append((map_offset, map_offset+len(map_code)))
         branch(video_setup, map_cave)
     guard_sites = []
+    vm_filters = []
     if guard_early_faults:
         # common_start replaces LowExceptionVectorBase with this table
         # before enabling the MMU. Guard the table active at the probe.
@@ -664,6 +670,50 @@ _start:
             if word & 0xFC000000 != 0x14000000 or following != 0xD503201F:
                 raise ValueError('Unrecognized active exception vector')
             if allow_interrupts and index % 4 in (1, 2):
+                continue
+            if allow_vm_faults and index % 4 == 0:
+                # Demand paging is ordinary kernel operation. Preserve the
+                # interrupted registers and let XNU handle data aborts at the
+                # original vector target, including its fatal-fault policy.
+                destination = cave + 0x400 + (index // 4) * 64
+                offset = file_offset(destination, 64)
+                if destination + 64 > target or any(original[offset:offset+64]):
+                    raise ValueError('No verified empty VM exception-filter padding')
+                immediate = word & 0x3ffffff
+                if immediate & (1 << 25): immediate -= 1 << 26
+                original_handler = address + immediate * 4
+                assembly = '''.text
+.global _start
+_start:
+  stp x8, x9, [sp, #-16]!
+  mrs x8, esr_el1
+  lsr x8, x8, #26
+  cmp w8, #0x24
+  b.eq native_vm
+  cmp w8, #0x25
+  b.eq native_vm
+  ldp x8, x9, [sp], #16
+  b diagnostic_fault
+native_vm:
+  ldp x8, x9, [sp], #16
+  b original_handler
+'''
+                with tempfile.TemporaryDirectory(prefix='zeta-vm-filter-') as temporary:
+                    tmp = Path(temporary)
+                    (tmp/'filter.S').write_text(assembly)
+                    subprocess.run(['clang', '--target=aarch64-none-elf', '-c', str(tmp/'filter.S'), '-o', str(tmp/'filter.o')], check=True)
+                    subprocess.run(['ld.lld', f'-Ttext={destination:#x}', '-e', '_start',
+                                    f'--defsym=diagnostic_fault={cave+exception_offset:#x}',
+                                    f'--defsym=original_handler={original_handler:#x}',
+                                    str(tmp/'filter.o'), '-o', str(tmp/'filter.elf')], check=True)
+                    subprocess.run(['llvm-objcopy', '-O', 'binary', str(tmp/'filter.elf'), str(tmp/'filter.bin')], check=True)
+                    code_filter = (tmp/'filter.bin').read_bytes()
+                if len(code_filter) > 64: raise ValueError('VM filter exceeded verified padding')
+                data[offset:offset+len(code_filter)] = code_filter
+                allowed.append((offset, offset+len(code_filter)))
+                branch(address, destination)
+                vm_filters.append({'vector': hex(address), 'original_handler': hex(original_handler),
+                                   'filter': hex(destination)})
                 continue
             branch(address, cave+exception_offset)
             guard_sites.append(hex(address))
@@ -707,6 +757,7 @@ _start:
               'usb_signature_mismatch_or_map_failure_delay_seconds': 12 if check_usb_controller else None,
               'nonzero_return_reset_delay_seconds': 12 if check_return_zero else None,
               'early_fault_guard_sites': guard_sites,
+              'native_data_abort_filters': vm_filters,
               'native_irq_fiq_vectors_preserved': allow_interrupts,
               'kernel_banner_printed_at_checkpoint': print_kernel_banner,
               'early_text_console_acquired': acquire_text_console,
@@ -747,6 +798,7 @@ def main():
     parser.add_argument('--occurrence', type=int, default=1, help='which call to the symbol (default: 1)')
     parser.add_argument('--guard-early-faults', action='store_true', help='reset 20 s after an early exception or 24 s after panic')
     parser.add_argument('--allow-interrupts', action='store_true', help='preserve native IRQ/FIQ vectors; guard synchronous faults and SError only')
+    parser.add_argument('--allow-vm-faults', action='store_true', help='delegate data aborts to original XNU handlers for demand paging; requires --allow-interrupts')
     parser.add_argument('--record-address', type=lambda value: int(value, 0), default=RECORD_ADDRESS, help='reserved record PA: default ramoops, or 0xe3000000 display diagnostic window')
     parser.add_argument('--warm-reset', action='store_true', help='entry retention test: discover and use PSCI SYSTEM_RESET2 warm reset, otherwise cold reset after 12 s')
     parser.add_argument('--check-pointer', help='before-call pointer check: NULL resets after 12 s, non-NULL uses --reset-delay')
@@ -779,7 +831,7 @@ def main():
                 args.print_kernel_banner, args.poll_native_usb, args.log_faults,
                 args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
                 args.acquire_text_console, args.physical_framebuffer, args.install_boot_irq_early,
-                args.inspect_zeta_ufs)
+                args.inspect_zeta_ufs, args.allow_vm_faults)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

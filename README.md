@@ -19,8 +19,8 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 3. IPSW identity | iPhone18,2 26.5.2 23F84, `board.toml` `[ipsw]` |
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e, and zeta's cores have no pointer authentication |
-| 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. Early IRQ-handler installation advances the hardware boot into BSD, where the next panic requires the source pthread provider |
-| Storage and userland | Guide Stage 6 started: SM8350 UFS register/clock inspection. Native storage publication, root mounting and launchd remain unverified; Guide Stage 7 is not reached |
+| 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
+| Storage and userland | Guide Stage 6 started: BSD reaches the callsite before `IOFindBSDRoot`; SM8350 UFS registers and idle queues are verified. Native block reads, storage publication, root mounting and launchd remain unverified; Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -411,13 +411,36 @@ UniXNU `84f52ac` makes the IRQ ordering fix in the compiled source and preserves
 the direct dispatcher while the IOKit wrapper's vector is being registered.
 `e0742df` additionally builds public libpthread 539.100.4 against XNU 12377's
 headers, isolates static symbol collisions, audits imports/deployment, and
-registers its real functions through XNU's versioned shims. Its hardware
-qualification is pending. No pthread panic or initialization path is bypassed.
+registers its real functions through XNU's versioned shims. No pthread panic
+or initialization path is bypassed.
 The pthread builds compiled and audited the real component but failed in the
 registration bootstrap's header context. Adding BSD-private definitions to the
 OSFMK recipe was insufficient: its libsa include order and Mach types conflict
 with BSD. UniXNU `ef04d1b` uses the kernel's actual compiled BSD pthread-shim
-recipe instead; CI run `39852163477` is the replacement qualification.
+recipe instead. CI run `39852163477` passed, producing kernel SHA-256
+`02e08b2746f93622f55bd464fa95e0d65a571d19d67dd7251c9a3f238d37086c`.
+The `qcom-pthread-init` hardware test uses that compiled CPU fix with no early
+IRQ trampoline. It stops before `pshm_cache_init` in `bsd_init`, after the
+real `pthread_init` returns, and prints the checkpoint only when
+`source_pthread_status == KERN_SUCCESS`. USB captured that banner and the
+Duo returned to fastboot. The CPU driver's final return is still unverified.
+
+Later probes must use `--allow-vm-faults`: the early all-synchronous-fault
+guard otherwise intercepts legitimate demand paging. `qcom-root-discovery`
+stopped at the first write in `skmem_sysctl_init` (ESR `96000046`); this is
+not a Skywalk defect. `qcom-root-native-vm` delegates data aborts to the
+original vector handlers and progresses past that write. It next captures
+the real `_unsafe_kernel_text_initialized` assertion in
+`ml_unsafe_kernel_text` (BRK `bffc`, ELR `fffffff007b2b5d0`). The ADT generator
+now supplies `/chosen/kernel-ctrr-to-be-enabled = <0>`: this platform does
+not enable Apple CTRR, and XNU requires that explicit bootloader contract.
+`qcom-root-ctrr0` repeats the identical kernel with only that ADT property
+added. It initializes loopback `lo0`, reaches the checkpoint immediately
+before the real `IOFindBSDRoot` call, prints its banner over USB, and returns
+to fastboot. The native data-abort handlers resolved the earlier Skywalk
+fault; no networking initialization or assertion was bypassed. The root
+finder itself has not run in this bounded test, and root is not mounted.
+The latest capture is `build/bringup/native-usb/qcom-root-ctrr0/capture/kernel.log`.
 
 Stage 6 begins with the stock zeta DT's UFS host at `0x01d84000+0x3000`,
 QMP v4 Lahaina PHY at `0x01d87000+0xe10`, SPI 265 (INTID 297), and SMMU

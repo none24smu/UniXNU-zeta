@@ -188,6 +188,9 @@ def main():
                         *([('unique-chip-id', struct.pack('<Q', args.unique_chip_id)), ('chip-id', struct.pack('<I', args.chip_id))]
                           if args.unique_chip_id is not None else []),
                         ('osenvironment', b'main\0'),
+                        # Bootloader contract read by ml_unsafe_kernel_text_init.
+                        # This non-Apple platform does not enable Apple CTRR.
+                        ('kernel-ctrr-to-be-enabled', struct.pack('<I', 0)),
                         # Security status of a dev-fused, undemoted board (0,0,1,1), as sheng sets for its identity.
                         ('certificate-production-status', struct.pack('<I', 0)),
                         ('effective-production-status-ap', struct.pack('<I', 0)),

@@ -162,8 +162,8 @@ def main(argv=None):
     except (OSError, ValueError, KeyError) as error:
         print(f'rewrite-zeta-dyld-cache: {error}', file=sys.stderr)
         return 2
-    report = dict(schema='zeta-dyld-cache-rewrite-v1', cache=str(args.cache), proof=str(args.proof),
-                  output=str(args.output), proof_totals=summary['totals'],
+    report = dict(schema='zeta-dyld-cache-rewrite-v1', cache=str(args.cache.resolve()),
+                  proof=str(args.proof.resolve()), output=str(args.output.resolve()), proof_totals=summary['totals'],
                   edits=sum(f['edits'] for f in files), files_changed=sum(1 for f in files if f['edits']),
                   files=files, hardware_tested=False)
     args.report.write_text(json.dumps(report, indent=1) + '\n')

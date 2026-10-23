@@ -107,17 +107,18 @@ def empty_nvram_proxy():
             ('nvram-proxy-data', bytes(image))]
 
 
-def filesystems(blocks):
+def filesystems(blocks, template='/private/var/'):
     """/filesystems in the stock tree's format, with one ephemeral Data entry.
 
-    The entry copies the iPhone18,2 tree's ephemeral-diag-data-vol except for the size. No os_env_type:
+    The entry copies the iPhone18,2 tree's ephemeral-diag-data-vol except for the size and, when given,
+    the template directory that mount(8) copies into the new tmpfs. No os_env_type:
     mount(8) then does not require a Data role volume in the boot container. The kernel publishes the
     entries as vfs.generic.apfs.edt_fstab (UniXNU XNU_EDT_FSTAB)."""
     u32 = lambda value: struct.pack('<I', value)
     data = node('ephemeral-data-vol', [
         ('vol.fs_file', b'/private/var\0'),
         ('vol.fs_type', b'rw\0'),
-        ('vol.fs_mntopts', b'nosuid,nodev,size=%d,template=/private/var/\0' % blocks),
+        ('vol.fs_mntopts', b'nosuid,nodev,size=%d,template=%s\0' % (blocks, template.encode())),
         ('vol.fs_name', b'Data\0'),
         ('vol.fs_ephemeral', b''),
         ('vol.fs_passno', u32(2)),
@@ -169,6 +170,9 @@ def main():
     parser.add_argument('--ephemeral-data-blocks', type=int, default=None,
                         help='/filesystems/fstab with one ephemeral Data entry: mount(8) builds /private/var as a '
                              'tmpfs of this many 512-byte blocks from the root volume\'s /private/var')
+    parser.add_argument('--ephemeral-data-template', default='/private/var/',
+                        help='directory on the root volume copied into the ephemeral Data tmpfs (default /private/var/; '
+                             'its staged_system_apps alone is 1.1 GB)')
     parser.add_argument('--csr-config', type=lambda value: int(value, 0), default=None,
                         help='/chosen/asmb lp-sip0: the CSR flags of the macOS-target kernel (lp-sip1 stays 0). '
                              'Without it csr_config is 0, full SIP')
@@ -178,6 +182,9 @@ def main():
         parser.error('zeta targets iPhone18,2; remove ipad_identity from board.toml [payload.adt]')
     if args.ephemeral_data_blocks is not None and not 0 < args.ephemeral_data_blocks < 1 << 32:
         parser.error('--ephemeral-data-blocks must be a positive 32-bit block count')
+    if not (args.ephemeral_data_template.startswith('/') and args.ephemeral_data_template.endswith('/')
+            and ',' not in args.ephemeral_data_template):
+        parser.error('--ephemeral-data-template must be an absolute directory path ending in / without commas')
     if args.dram_size != DRAM_SIZE:
         parser.error(f'--dram-size must be {DRAM_SIZE:#x}, the DRAM range measured on the phone')
     if args.csr_config is not None and not 0 <= args.csr_config < 1 << 32:
@@ -248,7 +255,8 @@ def main():
               # target and reads them in csr_bootstrap.
               *([node('asmb', [('lp-sip0', struct.pack('<Q', args.csr_config)), ('lp-sip1', struct.pack('<I', 0))])]
                 if args.csr_config is not None else [])]),
-        *([filesystems(args.ephemeral_data_blocks)] if args.ephemeral_data_blocks is not None else []),
+        *([filesystems(args.ephemeral_data_blocks, args.ephemeral_data_template)]
+          if args.ephemeral_data_blocks is not None else []),
         node('cpus', children=cpus),
         *([node('psci', [('compatible', b'arm,psci-1.0\0'), ('method', args.psci_method.encode() + b'\0')])] if len(cpus) > 1 else []),
         # Suspend/resume is not implemented: keep the CPU from parking forever.

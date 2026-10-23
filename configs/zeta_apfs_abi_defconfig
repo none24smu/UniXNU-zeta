@@ -31,3 +31,5 @@ CONFIG_XNU_NATIVE_UFS_VERIFIED_ROOT=y
 # Isolated APFS ABI audit candidate; not an APFS loader or a replacement control.
 # Every kernel/provider C++ object must share this reserved-slot/alignment profile.
 CONFIG_XNU_KDK_IOKIT_ABI=y
+# Real scalar SHA3/pair KPIs plus additional runtime known-answer checks.
+CONFIG_XNU_APFS_CRYPTO_KPIS=y

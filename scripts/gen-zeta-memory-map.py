@@ -16,7 +16,10 @@ Rules:
     with a " gapN" suffix when the region was split;
   * the stock register map is copied, except that overlapping stock entries (IMEM Cookie Base inside
     IMEM Base, USB running into AOSS) are split: in address order an earlier region ends where the next
-    one starts and keeps any tail past it, since every descriptor becomes its own resource HOB.
+    one starts and keeps any tail past it, since every descriptor becomes its own resource HOB;
+  * the DRAM above 4 GiB (HIGH_DRAM) is one conventional memory descriptor, as sheng's map gives UEFI its
+    second bank: stock uefiplat.cfg stops at 4 GiB and ZetaBootMemoryDxe adds only what the MMU setup
+    maps, so without it DarwinBoot's owned window cannot be larger than the biggest run below 4 GiB.
 Output: ../uefi-zeta/Platforms/Microsoft/zetaPkg/Library/MemoryMapLib/MemoryMapLib.c
 """
 import csv
@@ -34,6 +37,10 @@ DTB = ROOT / 'build/zeta/zeta.dtb'
 OUTPUT = UEFI / 'Platforms/Microsoft/zetaPkg/Library/MemoryMapLib/MemoryMapLib.c'
 RESERVED = ('AddMem', 'MEM_RES', 'UNCACHEABLE', 'Reserv', 'UNCACHED_UNBUFFERED_XN')
 HOB_ONLY = ('HobOnlyNoCacheSetting', 'MEM_RES', 'UNCACHEABLE', 'Reserv', 'UNCACHED_UNBUFFERED_XN')
+# ABL's /memory read on the phone (zetaPkg PORTING.md): 0xC0000000+0x1C0000000 runs to 0x280000000. Nothing in the
+# stock tree's reserved-memory lies above 4 GiB.
+HIGH_DRAM = (0x100000000, 0x180000000)
+CONVENTIONAL = ('AddMem', 'SYS_MEM', 'SYS_MEM_CAP', 'Conv', 'WRITE_BACK_XN')
 NAME_BYTES = 31
 LOOKED_UP = ('Display Reserved',)  # SEC, SimpleFb and the frame-buffer log find the splash buffer by this name
 
@@ -128,6 +135,7 @@ def render():
             continue
         for number, (start, end) in enumerate(pieces):
             descriptors.append((f'{row["name"]} gap{number}', start, end - start, row['attrs']))
+    descriptors.append(('DRAM high', *HIGH_DRAM, CONVENTIONAL))
     descriptors.sort(key=lambda item: item[1])
     for index, (name, base, size, _) in enumerate(descriptors):
         if base % 4096 or size % 4096:

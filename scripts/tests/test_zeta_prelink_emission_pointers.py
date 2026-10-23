@@ -39,9 +39,11 @@ def require(condition, message):
 
 AMFI = 'com.apple.driver.AppleMobileFileIntegrity'
 ZLIB = 'com.apple.AppleFSCompression.AppleFSCompressionTypeZlib'
+# tmpfs registers its filesystem from kmod start only: a start and a stop slot.
+TMPFS = 'com.apple.filesystems.tmpfs'
 # Lifecycle slots each optional module adds: start/stop plus constructors
 # and destructors. The APFS closure alone has six kmods and 40 slots.
-EXTRA_LIFECYCLE = {AMFI: 10, ZLIB: 4}
+EXTRA_LIFECYCLE = {AMFI: 10, ZLIB: 4, TMPFS: 2}
 # Independently pinned: this AMFI slice's kmod start wrapper only tail-branches
 # through its empty __realmain, so the emitter points kmod start at the real
 # early policy entry instead. Nothing else may move a start pointer.

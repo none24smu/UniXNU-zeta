@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, __version__ as capstone_version
-from zeta_pauth_plan import plan_section
+from zeta_pauth_plan import is_pauth_mnemonic, lower_word, plan_section
 import zeta_userland_code as code_proof
 
 SPEC = importlib.util.spec_from_file_location('apfs_fixups', Path(__file__).with_name('audit-zeta-apfs.py'))
@@ -83,6 +83,43 @@ def jump_tables(data, image, section):
     return [table[:4] for table in tables]
 
 
+def proven_plan(data, image, section):
+    """Rows for one section whose words do not all decode (hand-written Libm keeps coefficient
+    tables between its functions). Uses the userland control-flow proof from the symbols,
+    function starts and rebase targets: proven PAC words are lowered, and any PAC-shaped word
+    the proof does not reach is an error, as in rewrite-zeta-userland.py."""
+    info = dict(segments=[dict(name=g['name'], vmaddr=g['va'], fileoff=g['fileoff'], filesize=g['filesize'],
+                               sections=[dict(name=x['name'], addr=x['va'], size=x['size'], offset=x['fileoff'])
+                                         for x in g['sections']]) for g in image.segments])
+    target = dict(addr=section['va'], size=section['size'], offset=section['fileoff'])
+    insns, code, table_data, _, _, _ = code_proof.prove(data, info, [target], image.file_at,
+                                                        code_proof.llvm_oracle, gaps=True)
+    rows, unproven = [], []
+    for address in range(section['va'], section['va'] + section['size'], 4):
+        at = section['fileoff'] + address - section['va']
+        word = int.from_bytes(data[at:at + 4], 'little')
+        try:
+            result = lower_word(word)
+        except ValueError as error:
+            if address in code:
+                raise ValueError(f'unlowerable PAC instruction in proven code at {address:#x}: {error}')
+            continue
+        if not result:
+            if address in code and is_pauth_mnemonic(insns[address][0]):
+                raise ValueError(f'unsupported PAuth instruction {insns[address][0]} at {address:#x}')
+            continue
+        if address in code:
+            if insns[address][0] != result[0]:
+                raise ValueError(f'PAuth opcode/decoder disagreement at {address:#x}')
+            rows.append(dict(va=hex(address), fileoff=at, mnemonic=result[0], operands=insns[address][1],
+                             original_word=hex(word), ordinary_word=hex(result[1])))
+        elif address not in table_data:
+            unproven.append(f'{result[0]}@{address:#x}')
+    if unproven:
+        raise ValueError(f'{len(unproven)} PAC-shaped words are not proven code: {", ".join(unproven[:8])}')
+    return rows
+
+
 def instruction_runs(section, ranges):
     """Split one section around the pinned tables; tables must lie inside it."""
     va, end, runs = section['va'], section['va'] + section['size'], []
@@ -123,9 +160,14 @@ def audit_data(data, path):
             detected += found
             runs, inside = instruction_runs(section, sorted(list(ranges) + found))
             rows = []
-            for low, high in runs:
-                at = start + low - section['va']
-                rows += plan_section(data[at:at + high - low], low, at, decoder)
+            try:
+                for low, high in runs:
+                    at = start + low - section['va']
+                    rows += plan_section(data[at:at + high - low], low, at, decoder)
+            except ValueError as error:
+                if not str(error).startswith('incomplete executable instruction decode') or found or inside:
+                    raise
+                rows = proven_plan(data, image, section)
             tables += [dict(section=section['name'], start=hex(a), end=hex(b), label=label) for a, b, label, _ in inside]
             first = start - segment['fileoff']
             covered[first:first + length] = bytes([1]) * length

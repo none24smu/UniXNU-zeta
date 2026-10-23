@@ -30,6 +30,8 @@ LC_UNIXTHREAD, LC_FUNCTION_STARTS, LC_MAIN, LC_SYMTAB = 0x5, 0x26, 0x80000028, 0
 LC_DYLD_CHAINED_FIXUPS = 0x80000034
 # DYLD_CHAINED_PTR_ARM64E rebases hold an absolute address; USERLAND and USERLAND24 an offset from __TEXT.
 DYLD_CHAINED_PTR_ARM64E, DYLD_CHAINED_PTR_ARM64E_USERLAND, DYLD_CHAINED_PTR_ARM64E_USERLAND24 = 1, 9, 12
+# Standalone kexts: the arm64e bit layout with a vm offset from the image header.
+DYLD_CHAINED_PTR_ARM64E_KERNEL = 7
 CONDITIONAL = ('cbz', 'cbnz', 'tbz', 'tbnz')
 STOPS = ('ret', 'retab', 'retaa', 'eret', 'brk', 'udf', 'hlt')
 INDIRECT = ('br', 'braa', 'braaz', 'brab', 'brabz')
@@ -173,7 +175,7 @@ def landing_pads(read, function, lsda):
 
 
 def pointer_targets(data, info):
-    """Rebase targets of LC_DYLD_CHAINED_FIXUPS (arm64e, userland and userland24 chains)."""
+    """Rebase targets of LC_DYLD_CHAINED_FIXUPS (arm64e, kernel, userland and userland24 chains)."""
     base = next(s for s in info['segments'] if s['name'] == '__TEXT')['vmaddr']
     targets, at = set(), 32
     for _ in range(struct.unpack_from('<I', data, 16)[0]):
@@ -192,8 +194,8 @@ def pointer_targets(data, info):
                 continue
             seg = image + info_offset
             _, page_size, pointer_format, segment_offset, _, page_count = struct.unpack_from('<IHHQIH', data, seg)
-            if pointer_format not in (DYLD_CHAINED_PTR_ARM64E, DYLD_CHAINED_PTR_ARM64E_USERLAND,
-                                      DYLD_CHAINED_PTR_ARM64E_USERLAND24):
+            if pointer_format not in (DYLD_CHAINED_PTR_ARM64E, DYLD_CHAINED_PTR_ARM64E_KERNEL,
+                                      DYLD_CHAINED_PTR_ARM64E_USERLAND, DYLD_CHAINED_PTR_ARM64E_USERLAND24):
                 raise ValueError(f'unsupported chained pointer format {pointer_format}')
             absolute = pointer_format == DYLD_CHAINED_PTR_ARM64E
             segment = next(s for s in info['segments'] if s['vmaddr'] - base == segment_offset)

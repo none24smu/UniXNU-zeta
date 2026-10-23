@@ -123,8 +123,11 @@ extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_publis
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
 extern volatile uint32_t native_ufs_root_step __attribute__((weak_import));
 extern const char *volatile native_ufs_root_failure __attribute__((weak_import));
-extern volatile uint32_t native_virtio_ready, native_virtio_read_requests, native_virtio_read_failures;
-extern volatile uint64_t native_virtio_verified_blocks;
+// zeta links no virtio block driver; the counters read as 0 when it is absent.
+extern volatile uint32_t native_virtio_ready __attribute__((weak_import)), native_virtio_read_requests __attribute__((weak_import)),
+                         native_virtio_read_failures __attribute__((weak_import));
+extern volatile uint64_t native_virtio_verified_blocks __attribute__((weak_import));
+#define VIRTIO(name) (&(name) ? (name) : 0)
 extern void native_ufs_progress_text(char *, size_t);
 extern unsigned int vm_page_free_count;
 extern unsigned int vm_page_active_count,vm_page_inactive_count,vm_page_wire_count,vm_page_speculative_count;
@@ -167,7 +170,8 @@ extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
 extern int nprocs;
-extern volatile int native_owner_root_accepted;
+extern volatile int native_ufs_owner_root_accepted;   // the xnu-12377 owner root binding
+#define native_owner_root_accepted native_ufs_owner_root_accepted
 
 extern volatile uint32_t native_legacy_stage __attribute__((weak_import));
 extern volatile uint32_t native_legacy_pm_stage __attribute__((weak_import));
@@ -269,7 +273,7 @@ static void draw(unsigned now) {
     now, now-visible->activity_at, irq_count, thread_count, visible->dropped,
     native_owner_root_accepted, nprocs, vm_page_free_count); line(1,b,0xffffffff);
   snprintf(b,sizeof(b),"%s requests=%llu verified4K=%llu failures=%llu integrity=%u published=%u",
-    native_virtio_ready && !native_ufs_blocks_published ? "OFFLINE VIRTIO" : "UFS",
+    VIRTIO(native_virtio_ready) && !native_ufs_blocks_published ? "OFFLINE VIRTIO" : "UFS",
     visible->reads,visible->verified,visible->failures,native_ufs_integrity_failures,native_ufs_blocks_published);
   if(&native_ufs_root_step && !native_ufs_blocks_published) {
     // Nothing published yet: how far the root start got (probe calls, match, step, last soft-failure reason).
@@ -747,11 +751,11 @@ void boot_progress_irq(uint64_t pc,uint64_t psr,uint64_t sp) {
 void boot_progress_poll(void) {
   if (!enabled || state.frozen || !take()) return;
   unsigned now=seconds();
-  unsigned offline=native_virtio_ready && !native_ufs_blocks_published;
+  unsigned offline=VIRTIO(native_virtio_ready) && !native_ufs_blocks_published;
   unsigned reason=bp_poll(&state,now,
-    offline ? native_virtio_read_requests : __atomic_load_n(&native_ufs_block_reads,__ATOMIC_RELAXED),
-    offline ? native_virtio_verified_blocks : __atomic_load_n(&native_ufs_verified_blocks,__ATOMIC_RELAXED),
-    offline ? native_virtio_read_failures : __atomic_load_n(&native_ufs_block_failures,__ATOMIC_RELAXED));
+    offline ? VIRTIO(native_virtio_read_requests) : __atomic_load_n(&native_ufs_block_reads,__ATOMIC_RELAXED),
+    offline ? VIRTIO(native_virtio_verified_blocks) : __atomic_load_n(&native_ufs_verified_blocks,__ATOMIC_RELAXED),
+    offline ? VIRTIO(native_virtio_read_failures) : __atomic_load_n(&native_ufs_block_failures,__ATOMIC_RELAXED));
   if (state.frozen) { render_snapshot=state;draw(now); }
   boot_progress_reason=reason;
   if(state.frozen) {
@@ -1205,7 +1209,8 @@ void boot_progress_start(void) {
     else __atomic_store_n(&process_worker_status,3,__ATOMIC_RELEASE);
   }
   if(kernel_thread_start_priority(touch_monitor,0,BASEPRI_KERNEL,&thread)==KERN_SUCCESS)thread_deallocate(thread);
-  {unsigned park=1;PE_parse_boot_argn("sheng-cpu0-park",&park,sizeof(park));
+  // zeta: off unless asked for; the park is a sheng frame-rate measure, and the Duo's SMP bring-up has not been measured with it.
+  {unsigned park=0;PE_parse_boot_argn("sheng-cpu0-park",&park,sizeof(park));
    if(park==1 && kernel_thread_start_priority(cpu0_park,0,1,&thread)==KERN_SUCCESS)thread_deallocate(thread);}
   boot_progress_stage(state.continuous ?
     "monitor continuous: deadlines warn only; OS remains running" :
@@ -1300,8 +1305,3 @@ size_t boot_progress_profile_rows(char *out,size_t cap) {
   return at;
 }
 
-// BootLog.c reaches the diagnostic file export (BootDiagExport.c) only through weak references, which do not pull an archive member into
-// the link; this table does.
-extern uint64_t boot_diag_scan(uint64_t);
-extern int boot_diag_stream(int (*)(const void *, uint32_t, void *), void *);
-__attribute__((used)) void *const boot_diag_export_anchor[] = {(void *)boot_diag_scan, (void *)boot_diag_stream};

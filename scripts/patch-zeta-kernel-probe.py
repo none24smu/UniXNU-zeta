@@ -816,7 +816,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('kernel', type=Path)
     parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--reset-delay', type=int, default=0, help='seconds between probe entry and reset (0..30)')
+    parser.add_argument('--reset-delay', type=int, default=0, help='seconds between probe entry and reset (0..300)')
     parser.add_argument('--stage', choices=['entry', 'before-mmu', 'after-mmu', 'arm-init', 'early-fault-test', 'function-return', 'function-offset'], default='entry')
     parser.add_argument('--instruction-offset', type=lambda value: int(value, 0), help='function-offset byte offset, from reviewed disassembly')
     parser.add_argument('--expected-instruction', type=lambda value: int(value, 0), help='exact original ARM64 word at the selected function offset')
@@ -848,8 +848,8 @@ def main():
     parser.add_argument('--log-faults', action='store_true', help='print fault registers or panic arguments before polling native USB until reset; requires a usable kernel stack and console')
     args = parser.parse_args()
     try:
-        if not 0 <= args.reset_delay <= 30:
-            raise ValueError('Reset delay must be 0..30 seconds')
+        if not 0 <= args.reset_delay <= 300:
+            raise ValueError('Reset delay must be 0..300 seconds')
         if args.reset_before and not args.reset_after:
             raise ValueError('--reset-before requires --reset-after')
         if args.stage in ('function-return', 'function-offset') and args.reset_after:

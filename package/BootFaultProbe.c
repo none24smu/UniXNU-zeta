@@ -8,6 +8,9 @@
 #include <kdp/kdp_dyld.h>
 #include <string.h>
 #include <vm/vm_map.h>
+/* xnu-12377 moved current_map() to vm_map_xnu.h and vm_map_region_recurse_64() to vm_map_internal.h. */
+#include <vm/vm_map_xnu.h>
+#include <vm/vm_map_internal.h>
 extern int proc_selfpid(void);
 extern void proc_selfname(char *, int);
 
@@ -141,7 +144,7 @@ void boot_progress_exit_reason(int pid,unsigned signal,char *out,unsigned long c
  while(scanned<(160ull<<20) && (best<2 || !thrown)) {
   vm_map_size_t size=0;natural_t depth=0;vm_region_submap_info_data_64_t info;
   mach_msg_type_number_t count=VM_REGION_SUBMAP_INFO_V2_COUNT_64;
-  if(vm_map_region_recurse_64(map,&addr,&size,&depth,(vm_region_submap_info_64_t)&info,&count)!=KERN_SUCCESS)break;
+  if(vm_map_region_recurse_64(map,(vm_map_offset_ut *)&addr,(vm_map_size_ut *)&size,&depth,(vm_region_submap_info_64_t)&info,&count)!=KERN_SUCCESS)break;
   vm_map_offset_t base=addr;addr+=size;
   if(info.is_submap || (info.protection&(VM_PROT_READ|VM_PROT_WRITE))!=(VM_PROT_READ|VM_PROT_WRITE) ||
      info.user_tag<1 || info.user_tag>11)continue;

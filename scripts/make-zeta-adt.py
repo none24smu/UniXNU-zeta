@@ -107,6 +107,24 @@ def empty_nvram_proxy():
             ('nvram-proxy-data', bytes(image))]
 
 
+def filesystems(blocks):
+    """/filesystems in the stock tree's format, with one ephemeral Data entry.
+
+    The entry copies the iPhone18,2 tree's ephemeral-diag-data-vol except for the size. No os_env_type:
+    mount(8) then does not require a Data role volume in the boot container. The kernel publishes the
+    entries as vfs.generic.apfs.edt_fstab (UniXNU XNU_EDT_FSTAB)."""
+    u32 = lambda value: struct.pack('<I', value)
+    data = node('ephemeral-data-vol', [
+        ('vol.fs_file', b'/private/var\0'),
+        ('vol.fs_type', b'rw\0'),
+        ('vol.fs_mntopts', b'nosuid,nodev,size=%d,template=/private/var/\0' % blocks),
+        ('vol.fs_name', b'Data\0'),
+        ('vol.fs_ephemeral', b''),
+        ('vol.fs_passno', u32(2)),
+        ('vol.fs_mntorder', u32(0))])
+    return node('filesystems', [('e-apfs', u32(1))], [node('fstab', [('max_fs_entries', u32(1))], [data])])
+
+
 def check_board_tree():
     """Compare the constants with the stock tree when it is there (scripts/make-zeta-dtb.py builds it)."""
     if not DTB.is_file():
@@ -148,10 +166,15 @@ def main():
     parser.add_argument('--persistent-data', action='store_true',
                         help='The Data disk keeps its writes across boots: no ephemeral-storage')
     parser.add_argument('--trust-cache', action='store_true', help='TrustCache placeholder')
+    parser.add_argument('--ephemeral-data-blocks', type=int, default=None,
+                        help='/filesystems/fstab with one ephemeral Data entry: mount(8) builds /private/var as a '
+                             'tmpfs of this many 512-byte blocks from the root volume\'s /private/var')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.ipad_identity:
         parser.error('zeta targets iPhone18,2; remove ipad_identity from board.toml [payload.adt]')
+    if args.ephemeral_data_blocks is not None and not 0 < args.ephemeral_data_blocks < 1 << 32:
+        parser.error('--ephemeral-data-blocks must be a positive 32-bit block count')
     if args.dram_size != DRAM_SIZE:
         parser.error(f'--dram-size must be {DRAM_SIZE:#x}, the DRAM range measured on the phone')
     if (args.unique_chip_id is None) != (args.chip_id is None):
@@ -216,6 +239,7 @@ def main():
                                  ([('TrustCache', bytes(16))] if args.trust_cache else [])),
               # Read by the original AppleImage4 at start-up; present and empty here.
               node('manifest-properties')]),
+        *([filesystems(args.ephemeral_data_blocks)] if args.ephemeral_data_blocks is not None else []),
         node('cpus', children=cpus),
         *([node('psci', [('compatible', b'arm,psci-1.0\0'), ('method', args.psci_method.encode() + b'\0')])] if len(cpus) > 1 else []),
         # Suspend/resume is not implemented: keep the CPU from parking forever.

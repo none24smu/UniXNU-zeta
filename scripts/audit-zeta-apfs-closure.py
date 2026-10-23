@@ -34,11 +34,15 @@ REPLACEMENTS = {"com.apple.iokit.IOStorageFamily": "native_source_IOStorageFamil
                 "com.apple.kec.corecrypto": "native_source_corecrypto"}
 
 
+# OSKext orders a pre-release stage below the release: d (development) < a < b < fc < none.
+STAGES = {"d": 0, "a": 1, "b": 2, "f": 3, "fc": 3, "": 4}
+
+
 def version(value):
-    A.require(isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+){0,4}", value),
-              f"unsupported bundle version syntax {value!r}")
-    values = [int(x) for x in value.split(".")]
-    return tuple(values + [0] * (5 - len(values)))
+    match = isinstance(value, str) and re.fullmatch(r"(\d+(?:\.\d+){0,4})(?:(d|a|b|fc|f)(\d+))?", value)
+    A.require(match, f"unsupported bundle version syntax {value!r}")
+    values = [int(x) for x in match.group(1).split(".")]
+    return tuple(values + [0] * (5 - len(values))) + (STAGES[match.group(2) or ""], int(match.group(3) or 0))
 
 
 def index_bundles(directory):

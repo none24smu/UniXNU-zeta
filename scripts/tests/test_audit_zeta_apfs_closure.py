@@ -52,8 +52,15 @@ class ClosureTests(unittest.TestCase):
             C.closure({C.ROOT: metadata(C.ROOT, {"child": "2.0"}), "child": child})
 
     def test_unsupported_version_syntax_does_not_guess_ordering(self):
-        with self.assertRaises(C.A.AuditError):
-            C.version("1.0b3")
+        for value in ("1.0x3", "1.0b", "b3", "1..0", 7):
+            with self.assertRaises(C.A.AuditError):
+                C.version(value)
+
+    def test_prerelease_stages_order_below_the_release(self):
+        # OSKext: development < alpha < beta < final candidate < release (AppleMatch is 1.0.0d1).
+        ordered = ["1.0.0d1", "1.0.0d2", "1.0.0a1", "1.0.0b3", "1.0.0fc1", "1.0.0", "1.0.1d1"]
+        self.assertEqual([C.version(v) for v in ordered], sorted(C.version(v) for v in ordered))
+        self.assertEqual(C.version("1.0"), C.version("1.0.0"))
 
     def test_duplicate_bundle_identifiers_are_rejected(self):
         with tempfile.TemporaryDirectory() as td:

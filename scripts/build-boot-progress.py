@@ -4,7 +4,8 @@
 UniXNU-sheng scripts/build-boot-progress.py, for the 12377 build: the page and the user fault probe compile with
 the flags of osfmk startup.o, from the compile record the first kernel pass leaves. With the kernel Data mount
 (XNU_OWNER_DATA_MOUNT) the launch policy is built too, with the flags of bsd kern_exec.o. The diagnostic log export
-is not built: zeta writes no log to the phone.
+is not built: zeta writes no log to the phone. BootProgressAbsent.S stands in for the sheng drivers zeta does not
+build yet.
 """
 import hashlib
 import json
@@ -59,16 +60,24 @@ def check_object(path):
     raise SystemExit(f'{path.name}: expected an iOS 26 deployment')
 
 
-units = [('BootProgress', startup), ('BootFaultProbe', startup)]
+units = [('BootProgress', startup), ('BootFaultProbe', startup), ('BootProgressAbsent', startup)]
 if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
     units.append(('BootWatchdogPolicy',
                   json.loads((OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))))
 objects = []
 commands = {}
 for name, record in units:
-    source = KIT / (name + '.c')
+    source = KIT / (name + '.c') if (KIT / (name + '.c')).is_file() else KIT / (name + '.S')
     destination = OUT / (name + '.o')
     command = command_for(source, destination, record)
+    if source.suffix == '.S':
+        # The C flags of the record do not apply to the assembler, and a forced C header would not assemble.
+        while '-include' in command:
+            at = command.index('-include')
+            del command[at:at + 2]
+        at = command.index(str(source))
+        command[at:at + 1] = ['-x', 'assembler-with-cpp', str(source)]
+        command.append('-Wno-unused-command-line-argument')
     result = subprocess.run(command, cwd=record['directory'], capture_output=True, text=True, timeout=120)
     (OUT / (name + '.log')).write_text(result.stdout + result.stderr)
     if result.returncode:
@@ -82,7 +91,7 @@ archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), *map(str, objects)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted(KIT.glob('BootProgress*')) + [KIT / (name + '.c') for name, _ in units[1:]] + [KIT / 'Font.h']},
+                for path in sorted(KIT.glob('BootProgress*')) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

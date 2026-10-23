@@ -9,8 +9,12 @@ may change, and every slot must hash its page. The cdhash and file digests
 must be the report's. When the report rebuilt signatures with another page
 size, every file must carry a CodeDirectory of that page size that keeps
 every other field, and the header's signature size must end the file.
+A corecrypto POST HMAC field the report sealed may change too: its old value
+must be the zero-key HMAC-SHA256 of the original __text, its new value that
+of the rewritten __text.
 """
 import hashlib
+import hmac
 import json
 import mmap
 import os
@@ -140,6 +144,12 @@ class RewrittenCacheTests(unittest.TestCase):
                 a = np.frombuffer(old, dtype=np.uint8, count=signature_offset)
                 b = np.frombuffer(new, dtype=np.uint8, count=signature_offset)
                 changed = np.nonzero(a != b)[0]
+                for seal in entry.get('fips_seals', []):
+                    field, text, size = seal['hmac_offset'], seal['text_offset'], seal['text_size']
+                    self.assertEqual(hmac.digest(bytes(32), old[text:text + size], 'sha256'), old[field:field + 32])
+                    self.assertEqual(hmac.digest(bytes(32), new[text:text + size], 'sha256'), new[field:field + 32])
+                    self.assertEqual(new[field:field + 32].hex(), seal['hmac'])
+                    changed = changed[(changed < field) | (changed >= field + 32)]
                 header = (changed >= HEADER_SIGNATURE + 8) & (changed < HEADER_SIGNATURE + 16)
                 if page_shift is None:
                     self.assertFalse(header.any())

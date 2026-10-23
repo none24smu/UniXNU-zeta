@@ -21,6 +21,17 @@ and a trust entry.
 The kernel slides authenticated pointers as plain pointers when it is built
 without ptrauth (vm_shared_region_slide_page_v5), so DATA needs no change.
 
+Lowering changes corecrypto's code, whose FIPS POST integrity test
+(cc_fips_test, launchd's fips boot task) compares an HMAC of it with the
+value stored in __TEXT,__fips_hmacs. Each such field is filled again after
+the edits, by the corecrypto fipspost_get_hmac contract that UniXNU's
+seal-source-crypto-kernel.py follows for the kernel: HMAC-SHA256 with a
+zero key over the first __TEXT or __TEXT_EXEC __text section, which user
+code reads at the header plus the section's file offset. A field is sealed
+only when that offset is header-relative and the original field holds the
+HMAC of the original section, so the contract is proven on Apple's own value.
+No self-test is skipped.
+
 Primary Apple references:
 https://github.com/apple-oss-distributions/dyld/blob/main/dyld/SharedCacheRuntime.cpp
 https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_shared_region.c
@@ -28,6 +39,7 @@ https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_shared_regi
 import argparse
 from collections import Counter
 import hashlib
+import hmac
 import importlib.util
 import json
 from pathlib import Path
@@ -53,6 +65,36 @@ def sibling(name, file):
 
 
 rewriter = sibling('zeta_cache_trust_rewriter', 'rewrite-zeta-userland.py')
+FIPS_HMAC_KEY = bytes(32)
+
+
+def fips_seals(cache):
+    """{file index: [(image path, HMAC field offset, __text offset, __text size)]}: the corecrypto
+    POST HMAC fields whose original value proves the fipspost_get_hmac contract on the original code."""
+    seals = {}
+    for address, path in cache.images:
+        image = dc.Image(cache, address, path)
+        fields = [s for s in image.sections if s['name'] == '__fips_hmacs']
+        if not fields:
+            continue
+        if len(fields) != 1 or fields[0]['size'] != 32:
+            raise ValueError(f'{path}: expected one 32-byte __fips_hmacs field')
+        # fipspost_get_hmac: the first __text of a segment named __TEXT* (strncmp), in load order.
+        text = next((s for s in image.sections if s['name'] == '__text' and s['segment'] in ('__TEXT', '__TEXT_EXEC')), None)
+        if text is None or text['fileoff'] != text['addr'] - address:
+            continue   # user code would hash other bytes; Apple's value does not hold either
+        index, text_offset, room = cache.locate(text['addr'])
+        field_index, field_offset, _ = cache.locate(fields[0]['addr'])
+        if room < text['size'] or field_index != index:
+            raise ValueError(f'{path}: __text and __fips_hmacs are not in one mapping of one file')
+        if text_offset <= field_offset < text_offset + text['size']:
+            raise ValueError(f'{path}: the HMAC field lies in the hashed code')
+        data = cache.files[index].data
+        stored = bytes(data[field_offset:field_offset + 32])
+        if hmac.digest(FIPS_HMAC_KEY, data[text_offset:text_offset + text['size']], 'sha256') != stored:
+            continue   # the original does not pass its own test; leave it as Apple shipped it
+        seals.setdefault(index, []).append((path, field_offset, text_offset, text['size']))
+    return seals
 
 
 def code_directory(data, signature_offset, signature_size):
@@ -192,6 +234,7 @@ def main(argv=None):
             kind, payload = rewriter.im4p_payload(path.read_bytes())
             trusted.update(rewriter.trust_cache_entries(payload))
         edits, grades = load_edits(args.proof, summary)
+        seals = fips_seals(cache)
         args.output.mkdir(parents=True, exist_ok=False)
         files = []
         for index, cache_file in enumerate(cache.files):
@@ -200,7 +243,7 @@ def main(argv=None):
             signature_offset, signature_size = cache_file.signature
             original_cdhash = verify_signature(cache_file.data, signature_offset, signature_size)
             entry = dict(name=cache_file.path.name, original_sha256=original, original_cdhash=original_cdhash)
-            if index not in edits and args.page_shift is None:
+            if index not in edits and index not in seals and args.page_shift is None:
                 shutil.copyfile(cache_file.path, target)
                 files.append(dict(entry, edits=0, sha256=original, cdhash=original_cdhash))
                 continue
@@ -220,8 +263,14 @@ def main(argv=None):
                     raise ValueError(f'{cache_file.path.name}: an original word is not what the proof saw')
                 words[offsets // 4] = table[:, 2].astype(np.uint32)
                 del words
+            sealed = []
+            for path, field, text, size in seals.get(index, []):
+                mac = hmac.digest(FIPS_HMAC_KEY, data[text:text + size], 'sha256')
+                data[field:field + 32] = mac
+                sealed.append(dict(image=path, hmac_offset=field, text_offset=text, text_size=size, hmac=mac.hex()))
             if args.page_shift is None:
-                cdhash, pages = resign(data, signature_offset, signature_size, offsets.tolist())
+                changed = table[:, 0].astype(np.int64).tolist() + [s['hmac_offset'] for s in sealed]
+                cdhash, pages = resign(data, signature_offset, signature_size, changed)
                 new_size = signature_size
             else:
                 signature = bytes(cache_file.data[signature_offset:signature_offset + signature_size])
@@ -240,7 +289,7 @@ def main(argv=None):
             if attributes is None:
                 raise ValueError(f'{cache_file.path.name}: original cdhash is not in the Apple trust caches')
             target.write_bytes(data)
-            files.append(dict(entry, edits=len(table), pages=pages, signature_size=new_size,
+            files.append(dict(entry, edits=len(table), fips_seals=sealed, pages=pages, signature_size=new_size,
                               sha256=hashlib.sha256(data).hexdigest(), cdhash=cdhash,
                               trust_cache_entry=dict(cdhash=cdhash, hash_type=attributes[0], flags=attributes[1],
                                                      constraint_category=attributes[2], copied_from_original=True)))

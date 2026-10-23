@@ -128,10 +128,10 @@ class Image:
                 self.segments[name] = dict(vmaddr=vmaddr, vmsize=vmsize, fileoff=fileoff)
                 for index in range(struct.unpack_from('<I', commands, at + 64)[0]):
                     base = at + 72 + 80 * index
-                    addr, length = struct.unpack_from('<QQ', commands, base + 32)
+                    addr, length, fileoff = struct.unpack_from('<QQI', commands, base + 32)
                     flags, _, reserved2 = struct.unpack_from('<III', commands, base + 64)
                     self.sections.append(dict(segment=name, name=commands[base:base + 16].split(b'\0', 1)[0].decode(),
-                                              addr=addr, size=length, flags=flags, reserved2=reserved2))
+                                              addr=addr, size=length, fileoff=fileoff, flags=flags, reserved2=reserved2))
             elif command == LC_FUNCTION_STARTS:
                 self.function_starts_command = struct.unpack_from('<II', commands, at + 8)
             at += size

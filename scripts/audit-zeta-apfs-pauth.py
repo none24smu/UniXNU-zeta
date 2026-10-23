@@ -49,7 +49,7 @@ def audit(path):
                 requirements=['Every authenticated fixup must be independently bound/rebased to a canonical unsigned address.',
                               'Full C++/BSD ABI and real dependency/provider behavior must be qualified.',
                               'No inline-data relocation may overlap a proposed instruction edit.',
-                              'The thirteen instruction forms have only synthetic EL1 Cortex-A55 coverage; APFS is not executed.',
+                              'The fourteen instruction forms have only synthetic EL1 Cortex-A55 coverage; APFS is not executed.',
                               'Image signatures, root-volume identity and filesystem authentication are separate and remain enforced.'])
 
 

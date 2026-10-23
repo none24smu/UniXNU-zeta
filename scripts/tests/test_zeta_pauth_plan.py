@@ -34,6 +34,11 @@ class EncodingTests(unittest.TestCase):
                              for row in encodings]
                     self.assertEqual(len(words), 2)
                     self.assertEqual(lower_word(words[0])[1], words[1])
+            run = subprocess.run(['llvm-mc', '-triple=aarch64', '-mattr=+pauth', '-show-encoding'],
+                                 input=f'autiza x{reg}\n', text=True, capture_output=True, check=True)
+            encoding = re.search(r'encoding: \[([^]]+)\]', run.stdout).group(1)
+            word = int.from_bytes(bytes(int(v.strip(), 16) for v in encoding.split(',')), 'little')
+            self.assertEqual(lower_word(word), ('autiza', 0xd503201f))
 
     def test_new_pauth_families_are_rejected(self):
         for word in (0x9ac93008, 0xf8200528, 0xd65f0bff, 0xd73f0d09):

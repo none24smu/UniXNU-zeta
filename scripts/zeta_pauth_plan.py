@@ -1,6 +1,6 @@
 """Bounded instruction lowering for an ordinary-pointer ABI experiment.
 
-Only the thirteen forms observed in the pinned APFS artifacts are handled.
+Only the fourteen forms observed in the pinned APFS dependency artifacts are handled.
 This is not pointer authentication emulation: input pointers must already be
 canonical unsigned pointers, and all producers/consumers must share that ABI.
 It does not relocate, bind, initialize or emit a loadable driver. Unknown PAC
@@ -23,7 +23,8 @@ def lower_word(word):
             if word & 31 == 31:
                 raise ValueError('unsupported zero-register PAC destination')
             return name, NOP
-    for base, name in ((0xdac123e0, 'paciza'), (0xdac143e0, 'xpaci'), (0xdac147e0, 'xpacd')):
+    for base, name in ((0xdac123e0, 'paciza'), (0xdac133e0, 'autiza'),
+                       (0xdac143e0, 'xpaci'), (0xdac147e0, 'xpacd')):
         if word & 0xffffffe0 == base:
             if word & 31 == 31:
                 raise ValueError('unsupported zero-register PAC destination')

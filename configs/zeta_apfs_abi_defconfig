@@ -35,3 +35,5 @@ CONFIG_XNU_KDK_IOKIT_ABI=y
 CONFIG_XNU_APFS_CRYPTO_KPIS=y
 # Real XNU policy implementation, restrictive when no local policy is supplied.
 CONFIG_XNU_APFS_CSR=y
+# Isolated current source subset; original crypto provider/POST stay active.
+CONFIG_XNU_APFS_MLDSA=y

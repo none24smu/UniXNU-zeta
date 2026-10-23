@@ -55,11 +55,13 @@ def valid_like_the_loader(data):
 
 
 def owner_entries(report):
-    """(identifier, original cdhash, trust entry) for a userland rewrite report, or for each re-signed
-    file of a shared cache rewrite report."""
+    """(identifier, original cdhash, trust entry) for a userland rewrite report, for each re-signed
+    file of a shared cache rewrite report, or for each image of a tree rewrite report."""
     if report.get('schema') == 'zeta-dyld-cache-rewrite-v1':
         return [(f['name'], f['original_cdhash'], f['trust_cache_entry']) for f in report['files']
                 if 'trust_cache_entry' in f]
+    if report.get('schema') == 'zeta-userland-tree-rewrite-v1':
+        return [(i['paths'][0], i['original_cdhash'], i['trust_cache_entry']) for i in report['images']]
     return [(report['identifier'], report['original_cdhash'], report['trust_cache_entry'])]
 
 
@@ -72,14 +74,18 @@ def build(apple, owners):
         sources.append(dict(name=name, payload_sha256=hashlib.sha256(payload).hexdigest(), entries=len(found)))
     if len(entries) != sum(source['entries'] for source in sources):
         raise ValueError('Apple trust caches repeat a cdhash')
-    added = []
+    added, owned = [], set()
     for identifier, original_cdhash, entry in (item for report in owners for item in owner_entries(report)):
         if not entry['copied_from_original']:
             raise ValueError(f'{identifier}: no original entry to copy attributes from')
         cdhash = bytes.fromhex(entry['cdhash'])
         attributes = bytes([entry['hash_type'], entry['flags'], entry['constraint_category'], 0])
+        # Identical copies of one image at two paths rewrite to the same cdhash.
+        if cdhash in owned and entries[cdhash] == attributes:
+            continue
         if cdhash in entries:
             raise ValueError(f'{entry["cdhash"]} is already trusted')
+        owned.add(cdhash)
         entries[cdhash] = attributes
         added.append(dict(identifier=identifier, cdhash=entry['cdhash'],
                           original_cdhash=original_cdhash, attributes=attributes.hex()))
@@ -98,7 +104,7 @@ def main(argv=None):
     parser.add_argument('--apple-trust-cache', action='append', required=True, type=Path,
                         help='IM4P trust cache from the IPSW (repeatable)')
     parser.add_argument('--rewrite-report', action='append', required=True, type=Path,
-                        help='rewrite-zeta-userland report (repeatable)')
+                        help='rewrite-zeta-userland, -userland-tree or -dyld-cache report (repeatable)')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--report', required=True, type=Path)
     args = parser.parse_args(argv)

@@ -52,6 +52,21 @@ class TrustBundleTests(unittest.TestCase):
                                   [cache])
         self.assertEqual([entry['identifier'] for entry in summary['owner']], ['dsc.01', 'dsc.02'])
 
+    def test_tree_reports_add_each_image_once(self):
+        old_a, old_b, new = b'\x13' * 20, b'\x14' * 20, b'\x93' * 20
+        entry = dict(cdhash=new.hex(), hash_type=2, flags=0, constraint_category=2, copied_from_original=True)
+        tree = dict(schema='zeta-userland-tree-rewrite-v1', images=[
+            dict(paths=['/a/x'], original_cdhash=old_a.hex(), trust_cache_entry=entry),
+            dict(paths=['/b/x'], original_cdhash=old_b.hex(), trust_cache_entry=dict(entry))])
+        apple = [('s', payload((old_a, b'\x02\x00\x02\x00'), (old_b, b'\x02\x00\x02\x00')))]
+        bundle, summary = B.build(apple, [tree])
+        self.assertEqual(summary['entries'], 3)
+        self.assertEqual([entry['identifier'] for entry in summary['owner']], ['/a/x'])
+        # The same cdhash with other attributes is a conflict, not a copy.
+        tree['images'][1]['trust_cache_entry']['constraint_category'] = 0
+        with self.assertRaises(ValueError):
+            B.build(apple, [tree])
+
     def test_refuses_repeats_and_uncopied_attributes(self):
         same = b'\x22' * 20
         with self.assertRaises(ValueError):

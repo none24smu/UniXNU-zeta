@@ -736,12 +736,21 @@ Emission alone does not establish driver execution or Stage 6 completion.
 
 Independent emitted-byte tests verified all 14,168 chained pointers and all
 40 lifecycle pointers, including six corruption tests that fail closed.
-The first prelinked RAM boot was accepted, but the 180-second capture saw
-neither firmware nor native USB and did not verify automatic bootloader
-return. Its execution point is unknown; this is not an APFS startup result.
-Evidence is under `build/bringup/native-usb/qcom-apfs-prelink-v1/`.
-A separate `qcom-apfs-prelink-validate` image is prepared to exercise the
-firmware loader without executing XNU, once physical recovery is complete.
+After the first attempt produced no USB trace, the loader-only
+`qcom-apfs-prelink-validate` RAM boot passed on the device: DarwinBoot parsed,
+allocated and copied the actual image into its 384 MiB window, then retained
+firmware without executing XNU. USB capture returned it to the verified
+bootloader. An exact-source host parser also accepted the kernel and ADT.
+
+The `qcom-apfs-prelink-v1/capture-retry` RAM boot reached native XNU and
+reported an actionable prelink metadata parse error. No drivers registered;
+SystemOS disk/GPT publication still succeeded, followed by verified automatic
+bootloader return at 102.035 seconds. XNU's XML scanner rejects the space in
+ElementTree's `<true />` spelling. The serializer now emits `<true/>` and the
+other supported empty tags consistently. A regression compiles the actual
+XNU tag scanner, rejects the old spelling and accepts the corrected complete
+metadata. Corrected image `qcom-apfs-prelink-xml-v2` passes the independent
+pointer tests; driver execution remains unverified until its runtime test.
 
 Stage 6 remains incomplete: APFS volume publication, root mount/authentication
 and launchd still need runtime proof. Local reports

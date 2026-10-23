@@ -42,6 +42,10 @@ CONFIG_XNU_OWNER_DATA_VOLUME_UUID="288C85FB-CE8C-478B-994A-48109BA10DF0"
 # vfs.generic.apfs.edt_fstab from /filesystems/fstab: getfsent() reads only this on an APFS root, and the
 # KDK APFS kext lacks it. Its ephemeral entry is the Data volume, a tmpfs mount(8) builds from /private/var.
 CONFIG_XNU_EDT_FSTAB=y
+# The GOP display (package/NativeLegacyDisplay.cpp, UniXNU NativeLegacyDisplay with offline-legacy-start): the
+# firmware framebuffer as the original IOMobileFramebufferLegacy under /arm-io, bound by name to the prelinked
+# KDK IOMobileGraphicsFamily. Inert unless offline-mobile-graphics-load=1; needs keepsyms=1.
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 
 # Signed policies are read from bounded UFS extents; only the public owner anchor is built in.
 CONFIG_XNU_NATIVE_UFS_VERIFIED_ROOT=y

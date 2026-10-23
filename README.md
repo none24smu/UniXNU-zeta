@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS driver startup, and both SystemOS/OS APFS volume UUIDs are verified. Root mounting/authentication and launchd remain unverified; Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, and OS root mounting are verified. Root authentication stops the boot; launchd remains unverified and Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -762,6 +762,25 @@ verified bootloader at 107.986 seconds. Full evidence is in
 This proves volume publication and driver execution, not root mounting or
 launchd. The log also reports a missing `system-volume-auth-blob`; the next
 probe crosses normal root selection, mounting and root authentication.
+
+`qcom-apfs-rootauth-v1/capture-retry` selected the OS APFS volume as `disk3s1`
+(major1/minor7), called the real APFS mountroot entry and logged mount-complete.
+The source kernel then obtained the root vnode and stopped at its original
+`rootvp not authenticated after mounting` check. It returned to the verified
+bootloader at 72.871 seconds. This is root-mount proof; no successful root
+authentication, filesystem execution or launchd entry is claimed.
+
+The isolated `zeta_apfs_owner_root_defconfig` enables the candidate
+`XNU_NATIVE_UFS_OWNER_ROOT` bridge on source branch `ios26-ufs-owner-root`.
+It keeps the original Apple root-authentication ioctl first. The separate
+development owner policy can accept a failed Apple path only when the
+mounted root is read-only, its dev_t equals the selected rootdev, exactly
+one read-only IOMedia matches, and a real NativeUfs ancestor authenticates
+that volume UUID against its existing signed policy. Any observed UFS block
+integrity failure rejects the decision. It does not fabricate an Apple
+manifest or change per-read verification. Host tests exercise the actual
+bridge against adversarial registry graphs and the patched BSD callsite with
+the option enabled/disabled. On-device owner authorization is still pending.
 
 Stage 6 remains incomplete: APFS volume publication, root mount/authentication
 and launchd still need runtime proof. Local reports

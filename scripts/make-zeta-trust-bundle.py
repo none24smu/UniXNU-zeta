@@ -55,10 +55,11 @@ def valid_like_the_loader(data):
 
 
 def owner_entries(report):
-    """(identifier, original cdhash, trust entry) for a userland rewrite report, or for each changed
+    """(identifier, original cdhash, trust entry) for a userland rewrite report, or for each re-signed
     file of a shared cache rewrite report."""
     if report.get('schema') == 'zeta-dyld-cache-rewrite-v1':
-        return [(f['name'], f['original_cdhash'], f['trust_cache_entry']) for f in report['files'] if f['edits']]
+        return [(f['name'], f['original_cdhash'], f['trust_cache_entry']) for f in report['files']
+                if 'trust_cache_entry' in f]
     return [(report['identifier'], report['original_cdhash'], report['trust_cache_entry'])]
 
 

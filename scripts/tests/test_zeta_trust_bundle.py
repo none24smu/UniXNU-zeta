@@ -34,7 +34,7 @@ class TrustBundleTests(unittest.TestCase):
         self.assertEqual(rows[1][20:], b'\x02\x00\x02\x00')
         self.assertTrue(B.valid_like_the_loader(bundle))
 
-    def test_cache_rewrite_reports_add_each_changed_file(self):
+    def test_cache_rewrite_reports_add_each_re_signed_file(self):
         old_a, old_b, new_a = b'\x11' * 20, b'\x12' * 20, b'\x91' * 20
         cache = dict(schema='zeta-dyld-cache-rewrite-v1', files=[
             dict(name='dsc.01', edits=3, original_cdhash=old_a.hex(), trust_cache_entry=dict(
@@ -44,6 +44,13 @@ class TrustBundleTests(unittest.TestCase):
                                   [cache])
         self.assertEqual(summary['entries'], 3)
         self.assertEqual([entry['identifier'] for entry in summary['owner']], ['dsc.01'])
+        # Re-signed with another page size, a file without edits still has a new cdhash.
+        new_b = b'\x92' * 20
+        cache['files'][1]['trust_cache_entry'] = dict(cdhash=new_b.hex(), hash_type=2, flags=0,
+                                                      constraint_category=0, copied_from_original=True)
+        bundle, summary = B.build([('c', payload((old_a, b'\x02\x00\x00\x00'), (old_b, b'\x02\x00\x00\x00')))],
+                                  [cache])
+        self.assertEqual([entry['identifier'] for entry in summary['owner']], ['dsc.01', 'dsc.02'])
 
     def test_refuses_repeats_and_uncopied_attributes(self):
         same = b'\x22' * 20

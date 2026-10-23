@@ -16,7 +16,7 @@ from zeta_pauth_plan import lower_word
 
 CASES = {
     'pacia': 0xdac10128, 'paciza': 0xdac123e8, 'autiza': 0xdac133e8, 'pacda': 0xdac10928,
-    'autia': 0xdac11128, 'autda': 0xdac11928,
+    'autia': 0xdac11128, 'autda': 0xdac11928, 'autdza': 0xdac13be8,
     'xpaci': 0xdac143e8, 'xpacd': 0xdac147e8,
     'pacibsp': 0xd503237f, 'autibsp': 0xd50323ff, 'retab': 0xd65f0fff,
     'braa': 0xd71f0909, 'blraa': 0xd73f0909, 'blraaz': 0xd63f091f,

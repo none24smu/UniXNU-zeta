@@ -62,7 +62,7 @@ def check_object(path):
 units = [('BootProgress', startup), ('BootFaultProbe', startup)]
 if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
     units.append(('BootWatchdogPolicy',
-                  json.loads((OBJ / 'bsd/DEVELOPMENT/kern/kern_exec.o.json').read_text().strip().rstrip(','))))
+                  json.loads((OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))))
 objects = []
 commands = {}
 for name, record in units:

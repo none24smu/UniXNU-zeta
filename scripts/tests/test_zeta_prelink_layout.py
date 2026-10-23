@@ -33,6 +33,10 @@ class ActualLayoutTests(unittest.TestCase):
             self.assertEqual(L.align(before['new_va'] + before['original_filesize'], 64), after['new_va'])
         for group in layout['groups']:
             self.assertNotEqual(group['protection'], 7)
+        self.assertEqual([g['segment'] for g in layout['groups'][:3]],
+                         ['__PRELINK_TEXT', '__PLK_TEXT_EXEC', '__PLK_DATA_CONST'])
+        native_text = next(s for s in self.native.segments if s['name'] == '__TEXT')
+        self.assertEqual(layout['groups'][2]['va'] + layout['groups'][2]['size'], native_text['va'])
         for name, image in self.modules.items():
             for segment in image.segments:
                 result = L.translate(layout, name, segment['va'], segment['size'])

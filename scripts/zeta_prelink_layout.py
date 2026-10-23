@@ -8,8 +8,10 @@ PAGE = 0x4000
 U64 = (1 << 64) - 1
 GROUPS = (
     ('__TEXT', '__PRELINK_TEXT', 1),
-    ('__DATA_CONST', '__PLK_DATA_CONST', 1),
     ('__TEXT_EXEC', '__PLK_TEXT_EXEC', 5),
+    # arm_vm_prot_init maps the gap after DATA_CONST up to native __TEXT
+    # RWNX. Constants must follow code so this cannot erase execute mappings.
+    ('__DATA_CONST', '__PLK_DATA_CONST', 1),
     ('__DATA', '__PRELINK_DATA', 3),
     ('__LINKEDIT', '__PLK_LINKEDIT', 1),
 )
@@ -44,10 +46,10 @@ def plan(native, modules, info_bytes=0x10000):
         require(len(names[parent]['sections']) == 1, f'expected one {parent} section')
     require('__PRELINK_INFO' in names and names['__PRELINK_INFO']['size'] == 0,
             'native prelink metadata is already populated')
-    header_base = names['__PRELINK_TEXT']['va']
+    reserved_base = names['__PRELINK_TEXT']['va']
     native_base = min(start for start, _, _ in native_spans)
     native_end = max(start + size for start, size, _ in native_spans)
-    require(header_base % PAGE == 0 and header_base < native_base,
+    require(reserved_base % PAGE == 0 and reserved_base < native_base,
             'no aligned reserved prelink region below native kernel')
     expected = {name for name, _, _ in GROUPS}
     for identifier, image in modules.items():
@@ -62,6 +64,11 @@ def plan(native, modules, info_bytes=0x10000):
         require(text['va'] == image.base == 0 and text['fileoff'] == 0,
                 f'{identifier}: header must be at original VA/file offset zero')
         require(text['filesize'] == text['size'], f'{identifier}: header BSS breaks dense scanner')
+    readonly_bytes = sum(segment['size'] for image in modules.values() for segment in image.segments
+                         if segment['name'] in ('__TEXT', '__TEXT_EXEC', '__DATA_CONST'))
+    header_base = native_base - readonly_bytes
+    require(header_base % PAGE == 0 and header_base >= reserved_base,
+            'readonly groups exceed reserved prelink region')
     groups, mapping = [], {name: {} for name in modules}
     cursor = header_base
     for child_name, parent_name, protection in GROUPS:
@@ -84,6 +91,8 @@ def plan(native, modules, info_bytes=0x10000):
                            protection=protection, children=children))
     groups.append(dict(segment='__PRELINK_INFO', va=align(cursor), size=align(info_bytes),
                        protection=3, children=[]))
+    require(groups[2]['va'] + groups[2]['size'] == native_base,
+            'coalesced constants must immediately precede native text')
     all_spans = native_spans + [(g['va'], g['size'], g['segment']) for g in groups]
     disjoint(all_spans)
     low = min(v[0] for v in all_spans)

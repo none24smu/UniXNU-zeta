@@ -686,12 +686,12 @@ keeps iOS container alignment, and selects actual public storage method
 implementations. It also enables scalar SHA3/digest-pair APIs with additional
 runtime known-answer checks after the intact original crypto POST and before
 registration. Host digest, alias, namespace, sanitizer and fault-injection
-tests pass. Kernel compilation, registration and hardware execution of these
-additions are pending. The proven signed-root control remains separate.
+tests pass. The first ABI build passed on GitHub and its digest self-test
+passed on the Duo. The proven signed-root control remains separate.
 
 `scripts/audit-zeta-apfs-pauth.py` emits an analysis-only instruction plan;
-it does not create a loadable driver. `scripts/check-zeta-pauth.py` passed 26
-synthetic EL1 Cortex-A55 cases covering the 13 observed instruction forms and
+it does not create a loadable driver. `scripts/check-zeta-pauth.py` passed 28
+synthetic EL1 Cortex-A55 cases covering the 14 observed instruction forms and
 their ordinary-pointer equivalents. The complete APFS instruction plan has
 7,941 proposed edits, including authenticated stubs. Every pointer producer,
 consumer and fixup must share the ordinary-pointer contract; these tests do
@@ -702,15 +702,48 @@ Current official Apple corecrypto revision
 The actual AppleImage4 caller uses the matching 2,600-byte context and five
 verification arguments. A separate host source test accepts Apple's valid
 known answer and rejects changed messages/signatures and invalid lengths,
-including a build that isolates 148 internal definitions while preserving
-the three required public APIs. This newer subset is not kernel-integrated.
+including a build that isolates internal definitions while preserving
+the three required public APIs. The kernel-integrated subset compiles 26
+ordinary ARM64 units and isolates 156 definitions; it is not a second
+registered crypto provider. Its valid/invalid known-answer self-test passed
+on the Duo in the full-provider control build.
 
-The next kernel build was refused by GitHub with HTTP 422, "Actions has been
-disabled for this repository," despite repository permissions reporting enabled
-and the workflow active. The prior ABI build stopped at a compile-record
-consistency check; Clang's split `-D` spelling is now handled and tested.
-Until a replacement build passes, no new kernel or APFS candidate can be
-qualified on the device. Stage 6 remains incomplete: APFS volume publication,
-root mount/authentication and launchd still need runtime proof. Local reports
+GitHub Actions is enabled again. Full-provider build 39880985558 passed at
+source `f5a8b74640223435469de4ffbc750c1eae04d957`. Its kernel SHA256 is
+`5c80d335610cf77c0a18d8e188833e3bab38962f3a1dddf3ce10232eaf1a80a6`.
+Against these exact bytes, all 22 shared primary vtables match and all 14,168
+fixups across the six executable dependencies resolve with zero missing,
+ambiguous or invalid bindings. This is a static compatibility gate, not proof
+of private BSD ABI or runtime filesystem compatibility.
+
+The control RAM boot captured native USB, passed the checked ML-DSA result,
+read both signed policy tables and published SystemOS disk/GPT media. Three
+IOKit read requests completed without failure. APFS was absent in that
+control, so it stopped waiting for the signed SystemOS volume and returned
+automatically to the verified bootloader after 109.542 seconds. Evidence is
+under `build/bringup/native-usb/qcom-apfs-providers-f5a8b74/`.
+
+`scripts/emit-zeta-apfs-prelink.py` now emits an experimental ordinary ARM64
+prelinked image after the exact native/module identities, closure and shared
+ABI gates pass. It adjusts every split reference, chained pointer and planned
+PAC instruction, preserves actual kext personalities and security flags, and
+uses the normal OSKext constructors and IOBSD matching path. Native IOStorage,
+crypto and seven KPI metadata interfaces satisfy dependency bookkeeping
+without inserting duplicate implementations. Coalesced header/code/constants
+regions retain their required VM permissions and dense allocation scan.
+Original module code signatures no longer describe the converted bytes.
+Emission alone does not establish driver execution or Stage 6 completion.
+
+Independent emitted-byte tests verified all 14,168 chained pointers and all
+40 lifecycle pointers, including six corruption tests that fail closed.
+The first prelinked RAM boot was accepted, but the 180-second capture saw
+neither firmware nor native USB and did not verify automatic bootloader
+return. Its execution point is unknown; this is not an APFS startup result.
+Evidence is under `build/bringup/native-usb/qcom-apfs-prelink-v1/`.
+A separate `qcom-apfs-prelink-validate` image is prepared to exercise the
+firmware loader without executing XNU, once physical recovery is complete.
+
+Stage 6 remains incomplete: APFS volume publication, root mount/authentication
+and launchd still need runtime proof. Local reports
 are in `../work/apfs-stage6/`, `../work/apfs-crypto/` and
 `../work/apfs-mldsa-host/`.

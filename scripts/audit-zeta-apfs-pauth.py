@@ -16,7 +16,10 @@ SPEC.loader.exec_module(A)
 
 
 def audit(path):
-    data = path.read_bytes()
+    return audit_data(path.read_bytes(), path)
+
+
+def audit_data(data, path):
     image = A.MachO(data, path, candidate=True)
     decoder = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
     decoder.skipdata = True

@@ -6,7 +6,9 @@ boots the given Linux kernel with a busybox initramfs that loads
 linux-apfs-rw, mounts the container read-write, copies the files from an
 ext4 image made with mkfs.ext4 -d, sets owner, group and mode, prints the
 SHA-256 of every written file as read back through APFS, unmounts and
-powers off. The host compares those hashes with the sources. The container
+powers off. The host compares those hashes with the sources. --replace
+removes an existing file first, so a decmpfs-compressed original (which
+linux-apfs-rw cannot write) is replaced by a plain file. The container
 is modified in place; work on a copy. Run apfsck on the result.
 """
 import argparse
@@ -44,14 +46,14 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def plan(directories, files):
+def plan(directories, files, replace=False):
     """Shell plan run by the guest: $1 is the source mount, $2 the APFS mount."""
     lines = ['set -e', 'SRC=$1; DST=$2']
     for path, uid, gid, mode in directories:
         lines += [f'mkdir -p "$DST{path}"', f'chown {uid}:{gid} "$DST{path}"', f'chmod {mode} "$DST{path}"']
     for index, (path, uid, gid, mode) in enumerate(files):
-        lines += [f'cp "$SRC/f{index}" "$DST{path}"', f'chown {uid}:{gid} "$DST{path}"',
-                  f'chmod {mode} "$DST{path}"']
+        lines += ([f'rm -f "$DST{path}"'] if replace else []) + [
+            f'cp "$SRC/f{index}" "$DST{path}"', f'chown {uid}:{gid} "$DST{path}"', f'chmod {mode} "$DST{path}"']
     lines += ['sync'] + [f'echo "GUEST-HASH {index} $(sha256sum "$DST{path}" | cut -d" " -f1)"'
                          for index, (path, _, _, _) in enumerate(files)]
     return '\n'.join(lines) + '\n'
@@ -65,9 +67,14 @@ def main(argv=None):
     parser.add_argument('--busybox', type=Path, default=Path('/usr/bin/busybox'), help='static busybox')
     parser.add_argument('--directory', nargs=4, action='append', default=[], metavar=('PATH', 'UID', 'GID', 'MODE'))
     parser.add_argument('--file', nargs=5, action='append', default=[], metavar=('SOURCE', 'PATH', 'UID', 'GID', 'MODE'))
+    parser.add_argument('--file-list', type=Path, help='JSON list of {source, path, uid, gid, mode}, added to --file')
+    parser.add_argument('--replace', action='store_true', help='remove each existing target file before the copy')
     parser.add_argument('--memory', default='4096')
     parser.add_argument('--report', required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.file_list:
+        args.file += [[entry['source'], entry['path'], entry['uid'], entry['gid'], entry['mode']]
+                      for entry in json.loads(args.file_list.read_text())]
     sources = [Path(source) for source, *_ in args.file]
     targets = [(path, int(uid), int(gid), mode) for _, path, uid, gid, mode in args.file]
     directories = [(path, int(uid), int(gid), mode) for path, uid, gid, mode in args.directory]
@@ -91,7 +98,7 @@ def main(argv=None):
                 (source_dir / f'f{index}').hardlink_to(source.resolve())
             except OSError:
                 shutil.copyfile(source, source_dir / f'f{index}')
-        (source_dir / 'plan.sh').write_text(plan(directories, targets))
+        (source_dir / 'plan.sh').write_text(plan(directories, targets, args.replace))
         total = sum(source.stat().st_size for source in sources)
         size_mb = total // (1 << 20) + 64 + total // (1 << 20) // 16
         subprocess.run(['mkfs.ext4', '-q', '-d', str(source_dir), str(scratch / 'src.ext4'), f'{size_mb}M'], check=True)

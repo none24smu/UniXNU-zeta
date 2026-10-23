@@ -275,6 +275,13 @@ def prove(data, info, sections, va_to_off):
     """Returns (insns, code, table words, tables, anomalies, roots); code maps address to root grade."""
     insns = decode(data, sections)
     strong, weak, starts = seeds(data, info)
+    return prove_roots(insns, data, va_to_off, strong, weak, starts, pointer_targets(data, info))
+
+
+def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, called=()):
+    """The proof from supplied roots. Strong roots are walked first. Then come code pointers and
+    adr/adrp addresses, then calls from other images (called), then bare starts. Each root after the
+    strong ones is accepted only after a strict tentative walk."""
     found, tables, anomalies = walk(insns, data, va_to_off, sorted(a for a in strong if a in insns), set(), set(),
                                     False, starts)
     code = dict.fromkeys(found, 'unwind')
@@ -292,7 +299,6 @@ def prove(data, info, sections, va_to_off):
         data_words.update(table_words(result[1]))
         return True
 
-    pointers = pointer_targets(data, info)
     accepted = dict(pointer=0, start=0)
     while True:
         candidates = sorted(a for a in pointers | materialized(insns, code)
@@ -300,6 +306,11 @@ def prove(data, info, sections, va_to_off):
         if not candidates:
             break
         accepted['pointer'] += sum(attempt(root, 'pointer') for root in candidates)
+    if called:
+        accepted['call'] = 0
+        for root in sorted(called):
+            if root in insns and root not in code and root not in data_words and root not in tried:
+                accepted['call'] += attempt(root, 'call')
     for root in sorted(weak):
         if root in insns and root not in code and root not in data_words and root not in tried:
             accepted['start'] += attempt(root, 'start')
@@ -308,4 +319,6 @@ def prove(data, info, sections, va_to_off):
         raise ValueError(f'jump table overlaps proven code at {conflicts[0]:#x}')
     roots = dict(unwind=len(strong), pointer_accepted=accepted['pointer'], start_accepted=accepted['start'],
                  rejected=rejected)
+    if called:
+        roots['call_accepted'] = accepted['call']
     return insns, code, data_words, tables, anomalies, roots

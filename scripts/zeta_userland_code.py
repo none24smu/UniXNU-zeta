@@ -27,7 +27,9 @@ import struct
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
 
 LC_UNIXTHREAD, LC_FUNCTION_STARTS, LC_MAIN, LC_SYMTAB = 0x5, 0x26, 0x80000028, 0x2
-LC_DYLD_CHAINED_FIXUPS, DYLD_CHAINED_PTR_ARM64E_USERLAND24 = 0x80000034, 12
+LC_DYLD_CHAINED_FIXUPS = 0x80000034
+# DYLD_CHAINED_PTR_ARM64E rebases hold an absolute address; USERLAND and USERLAND24 an offset from __TEXT.
+DYLD_CHAINED_PTR_ARM64E, DYLD_CHAINED_PTR_ARM64E_USERLAND, DYLD_CHAINED_PTR_ARM64E_USERLAND24 = 1, 9, 12
 CONDITIONAL = ('cbz', 'cbnz', 'tbz', 'tbnz')
 STOPS = ('ret', 'retab', 'retaa', 'eret', 'brk', 'udf', 'hlt')
 INDIRECT = ('br', 'braa', 'braaz', 'brab', 'brabz')
@@ -171,7 +173,7 @@ def landing_pads(read, function, lsda):
 
 
 def pointer_targets(data, info):
-    """Rebase targets of LC_DYLD_CHAINED_FIXUPS (arm64e userland24 chains)."""
+    """Rebase targets of LC_DYLD_CHAINED_FIXUPS (arm64e, userland and userland24 chains)."""
     base = next(s for s in info['segments'] if s['name'] == '__TEXT')['vmaddr']
     targets, at = set(), 32
     for _ in range(struct.unpack_from('<I', data, 16)[0]):
@@ -190,8 +192,10 @@ def pointer_targets(data, info):
                 continue
             seg = image + info_offset
             _, page_size, pointer_format, segment_offset, _, page_count = struct.unpack_from('<IHHQIH', data, seg)
-            if pointer_format != DYLD_CHAINED_PTR_ARM64E_USERLAND24:
+            if pointer_format not in (DYLD_CHAINED_PTR_ARM64E, DYLD_CHAINED_PTR_ARM64E_USERLAND,
+                                      DYLD_CHAINED_PTR_ARM64E_USERLAND24):
                 raise ValueError(f'unsupported chained pointer format {pointer_format}')
+            absolute = pointer_format == DYLD_CHAINED_PTR_ARM64E
             segment = next(s for s in info['segments'] if s['vmaddr'] - base == segment_offset)
             for page in range(page_count):
                 start = struct.unpack_from('<H', data, seg + 22 + 2 * page)[0]
@@ -201,7 +205,10 @@ def pointer_targets(data, info):
                 while True:
                     value = struct.unpack_from('<Q', data, cursor)[0]
                     if not value >> 62 & 1:
-                        targets.add(base + (value & (0xffffffff if value >> 63 else 0x7ffffffffff)))
+                        if value >> 63:
+                            targets.add(base + (value & 0xffffffff))
+                        else:
+                            targets.add((0 if absolute else base) + (value & 0x7ffffffffff))
                     step = value >> 51 & 0x7ff
                     if not step:
                         break
@@ -386,11 +393,32 @@ def table_words(tables):
     return words
 
 
-def prove(data, info, sections, va_to_off):
-    """Returns (insns, code, table words, tables, anomalies, roots); code maps address to root grade."""
-    insns = decode(data, sections)
+def image_landing_pads(data, info, va_to_off):
+    """Exception landing pads named by the LSDAs that a standalone image's __unwind_info lists."""
+    section = next((s for g in info['segments'] for s in g['sections'] if s['name'] == '__unwind_info'), None)
+    if section is None:
+        return set()
+    text = next(s for s in info['segments'] if s['name'] == '__TEXT')
+
+    def read(address, length):
+        offset = va_to_off(address, 1)
+        return data[offset:offset + length]
+    pads = set()
+    for function, lsda in unwind_lsdas(data[section['offset']:section['offset'] + section['size']],
+                                       text['vmaddr']).items():
+        pads |= landing_pads(read, function, lsda)
+    return pads
+
+
+def prove(data, info, sections, va_to_off, oracle=None, gaps=False):
+    """Returns (insns, code, table words, tables, anomalies, roots); code maps address to root grade.
+
+    Exception landing pads are a root grade between code pointers and bare starts."""
+    insns = decode(data, sections, oracle)
     strong, weak, starts = seeds(data, info)
-    return prove_roots(insns, data, va_to_off, strong, weak, starts, pointer_targets(data, info))
+    ordered = [('landing', image_landing_pads(data, info, va_to_off))]
+    return prove_roots(insns, data, va_to_off, strong, weak, starts, pointer_targets(data, info), ordered,
+                       gaps=gaps)
 
 
 def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, ordered=(), external=None, gaps=False):

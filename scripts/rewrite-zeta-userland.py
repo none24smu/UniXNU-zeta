@@ -3,11 +3,13 @@
 
 The SM8350 cores have no FEAT_PAuth, and XNU refuses arm64e images on an
 ARM64_V8 host. Control flow is walked from the image's own function starts,
-entry point and symbols (zeta_userland_code). Every non-hint PAC instruction
-it proves to be code is lowered with the qualified plan; a PAC-shaped word
-that is neither proven code nor a decoded jump table stops the rewrite.
-Hint-space forms (pacibsp, autibsp, pacia1716, pacib1716) are architectural
-NOPs without FEAT_PAuth and stay as they are. The report counts edits by the
+entry point and symbols (zeta_userland_code), with llvm-mc decoding the words
+Capstone cannot (AMX, newer SVE) and a last gap grade for dead code after a
+proven terminator. Every non-hint PAC instruction it proves to be code gets
+its ordinary lowering (zeta_userland_pauth); a PAC-shaped word that is neither
+proven code nor a decoded jump table stops the rewrite. Hint-space forms
+(pacibsp, autibsp and friends) are architectural NOPs without FEAT_PAuth and
+stay as they are. The report counts edits by the
 grade of evidence that proved them code. The header becomes
 CPU_SUBTYPE_ARM64_ALL: dyld then grades the process keys-off and still
 accepts arm64e dylibs. Chained fixups stay unchanged; the rewritten
@@ -28,20 +30,21 @@ from pathlib import Path
 import struct
 import sys
 
-from zeta_pauth_plan import is_pauth_mnemonic, lower_word
 import zeta_userland_code as code_proof
+import zeta_userland_pauth as pauth
 
 CPU_TYPE_ARM64 = 0x0100000c
 CPU_SUBTYPE_ARM64_ALL = 0
 CPU_SUBTYPE_ARM64E = 2
 CPU_SUBTYPE_MASK = 0xff000000
-FILETYPES = {2: 'execute', 6: 'dylib', 7: 'dylinker'}
+FILETYPES = {2: 'execute', 6: 'dylib', 7: 'dylinker', 8: 'bundle'}
 LC_SEGMENT_64, LC_CODE_SIGNATURE, LC_DATA_IN_CODE = 0x19, 0x1d, 0x29
 INSTRUCTIONS = 0x80000400
 CSMAGIC_EMBEDDED_SIGNATURE, CSMAGIC_CODEDIRECTORY = 0xfade0cc0, 0xfade0c02
 CSMAGIC_BLOBWRAPPER, CSSLOT_CODEDIRECTORY, CSSLOT_SIGNATURESLOT = 0xfade0b01, 0, 0x10000
 CS_ADHOC, CS_HASHTYPE_SHA256 = 0x2, 2
-HINTS = ('pacibsp', 'autibsp', 'pacia1716', 'pacib1716')
+HINT, HINT_MASK = 0xd503201f, 0xfffff01f
+PAC_NAMES = ('pac', 'aut', 'xpac', 'bra', 'blra', 'reta', 'ldra')
 
 
 def require(condition, message):
@@ -95,7 +98,6 @@ def instruction_sections(info):
             require(section['flags'] & 0xff not in (1, 0xc, 0x12), 'zero-fill instruction section')
             require(section['addr'] % 4 == 0 and section['size'] % 4 == 0, 'unaligned instruction section')
             result.append(section)
-    require(result, 'no instruction sections')
     return result
 
 
@@ -111,7 +113,12 @@ def va_to_off(info):
 def lower(data, info):
     """Edits for proven-code PAC instructions; fails on any unproven PAC word."""
     sections = instruction_sections(info)
-    insns, code, tables_data, tables, anomalies, roots = code_proof.prove(data, info, sections, va_to_off(info))
+    if not sections:
+        # Umbrella and resource-only images: an empty __text, nothing to lower.
+        return [], dict(roots={}, proven_instructions=0, jump_tables=0, jump_table_entries=0, kept={},
+                        edits_by_evidence={}, anomalies={})
+    insns, code, tables_data, tables, anomalies, roots = code_proof.prove(
+        data, info, sections, va_to_off(info), code_proof.llvm_oracle, gaps=True)
     dice = set()
     for offset, length, kind in info['dice']:
         dice.update(range(offset, offset + length, 4))
@@ -122,17 +129,18 @@ def lower(data, info):
             word = struct.unpack_from('<I', data, fileoff)[0]
             mnemonic = insns[address][0]
             try:
-                lowered = lower_word(word)
-            except ValueError:
+                lowered = pauth.lower(word)
+            except ValueError as error:
+                if address in code and fileoff not in dice:
+                    raise ValueError(f'unlowerable PAC instruction in proven code at {address:#x}: {error}')
                 lowered = None
-            if address in code and is_pauth_mnemonic(mnemonic) != bool(lowered):
-                raise ValueError(f'unsupported PAC instruction {mnemonic} in proven code at {address:#x}')
             if not lowered:
+                # Only the hint-space forms decode to a PAC name and need no lowering.
+                require(address not in code or word & HINT_MASK == HINT or not mnemonic.startswith(PAC_NAMES),
+                        f'unsupported PAC instruction {mnemonic} in proven code at {address:#x}')
                 continue
             name, ordinary = lowered
-            if name in HINTS:
-                kept['hint:' + name] += 1
-            elif address in code and fileoff not in dice:
+            if address in code and fileoff not in dice:
                 require(mnemonic == name, f'PAC opcode/decoder disagreement at {address:#x}')
                 edits.append(dict(va=hex(address), fileoff=fileoff, mnemonic=name, evidence=code[address],
                                   original_word=hex(word), ordinary_word=hex(ordinary)))

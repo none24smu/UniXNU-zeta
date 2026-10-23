@@ -34,7 +34,7 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             check_word=None, expected_word=None, acquire_text_console=False,
             physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False,
             allow_vm_faults=False, inspect_zeta_smmu=False, inspect_zeta_ufs_status=False, settle_zeta_ufs_ms=0,
-            allow_user_exceptions=False):
+            allow_user_exceptions=False, sleep_poll_ms=0):
     if not 0 <= settle_zeta_ufs_ms <= 60000 or (settle_zeta_ufs_ms and not inspect_zeta_ufs_status):
         raise ValueError("UFS scheduler wait requires the counter inspector and 0..60000 ms")
     if settle_zeta_ufs_ms and (function != '_bsd_init' or reset_after != '_IOFindBSDRoot' or not reset_before):
@@ -50,6 +50,11 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         raise ValueError('Native EL0 exceptions require --allow-vm-faults')
     if allow_vm_faults and not (guard_early_faults and allow_interrupts):
         raise ValueError('Native VM fault handling requires interrupt-preserving fault guards')
+    # A masked busy wait holds one CPU for the whole delay; sleeping leaves it to the scheduler.
+    if not 0 <= sleep_poll_ms <= 1000:
+        raise ValueError('--sleep-poll-ms must be 0..1000')
+    if sleep_poll_ms and not (allow_user_exceptions and poll_native_usb and reset_after and not reset_before):
+        raise ValueError('--sleep-poll-ms needs a thread context after a call, native EL0 exceptions and USB polling')
     # With native EL0 exceptions and fault logging, the USB log names the outcome, not the timing.
     if guard_early_faults and reset_delay >= 16 and not (allow_user_exceptions and log_faults):
         raise ValueError('With fault guards, normal delay must be below 16 seconds to distinguish outcomes')
@@ -378,6 +383,19 @@ panic_reset:
   b timed_reset
 ''' if guard_early_faults else ''
     counter_end = 'x20' if poll_native_usb else 'x5'
+    # Interrupts stay enabled while sleeping; only the final reset (and every fault path) masks them.
+    sleep_wait = f'''  mrs x4, cntpct_el0
+  mrs x5, cntfrq_el0
+  madd x21, x5, x6, x4
+3:
+  bl probe_usb_poll
+  mov x0, #{sleep_poll_ms}
+  bl probe_sleep
+  mrs x4, cntpct_el0
+  cmp x4, x21
+  b.lo 3b
+  mov x6, xzr
+''' if sleep_poll_ms else ''
     poll = '  bl probe_usb_poll\n' if poll_native_usb else ''
     console_strings = '''
   .org 0x180
@@ -393,7 +411,7 @@ _start:
 {record}
 {prefix}
   mov x6, #{reset_delay}
-timed_reset:
+{sleep_wait}timed_reset:
   msr daifset, #0xf
   mrs x4, cntpct_el0
   mrs x5, cntfrq_el0
@@ -442,6 +460,8 @@ timed_reset:
             definitions.append(f'--defsym=probe_is_serial_console={symbol("_console_is_serial"):#x}')
         if poll_native_usb:
             definitions.append(f'--defsym=probe_usb_poll={symbol("_unixnu_dwc3_poll"):#x}')
+        if sleep_poll_ms:
+            definitions.append(f'--defsym=probe_sleep={symbol("_IOSleep"):#x}')
         if inspect_storage:
             definitions.append(f'--defsym=probe_ufs_inspect={cave+0x800:#x}')
         subprocess.run(['ld.lld', f'-Ttext={cave:#x}', '-e', '_start', *definitions,
@@ -793,6 +813,7 @@ native_vm:
               'zeta_ufs_counters_inspection_read_only': inspect_zeta_ufs_status,
               'zeta_ufs_scheduler_wait_ms': settle_zeta_ufs_ms,
               'native_usb_polled_during_reset_delay': poll_native_usb,
+              'reset_delay_sleep_poll_ms': sleep_poll_ms,
               'fault_text_logging_enabled': log_faults,
               'probe_padding_bytes': cave_size,
               'exception_reset_delay_seconds': 20 if guard_early_faults else None,
@@ -845,6 +866,7 @@ def main():
     parser.add_argument('--settle-zeta-ufs-ms', type=int, default=0, help='yield to the scheduler before reading UFS counters, 0..60000 ms; requires --inspect-zeta-ufs-status')
     parser.add_argument('--inspect-zeta-smmu', action='store_true', help='read SMMUv500 global registers and UFS stream 0xe0 mapping; no register writes')
     parser.add_argument('--poll-native-usb', action='store_true', help='poll the linked native USB console throughout the bounded wait')
+    parser.add_argument('--sleep-poll-ms', type=int, default=0, help='during the normal delay, sleep this many ms between USB polls with interrupts enabled instead of a masked busy wait')
     parser.add_argument('--log-faults', action='store_true', help='print fault registers or panic arguments before polling native USB until reset; requires a usable kernel stack and console')
     args = parser.parse_args()
     try:
@@ -864,7 +886,7 @@ def main():
                 args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
                 args.acquire_text_console, args.physical_framebuffer, args.install_boot_irq_early,
                 args.inspect_zeta_ufs, args.allow_vm_faults, args.inspect_zeta_smmu, args.inspect_zeta_ufs_status, args.settle_zeta_ufs_ms,
-                args.allow_user_exceptions)
+                args.allow_user_exceptions, args.sleep_poll_ms)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. launchd and dyld rewritten offline to the ordinary arm64 ABI, a merged static trust cache, and PID 1 executing the rewritten dyld at EL0 are verified. libignition stops before its first stage; the shared cache is still arm64e. Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. launchd and dyld rewritten offline to the ordinary arm64 ABI, a merged static trust cache, and PID 1 executing the rewritten dyld at EL0 are verified. With `dyld_flags=0x8` from the boot-arg, dyld skips libignition and stops at libSystem because the root has no shared cache; the cache is still arm64e and does not fit the OS container until it is grown. Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -869,9 +869,25 @@ the SystemOS cryptex without an Apple-personalized manifest.
 honors the `dyld_flags` apple string only on internal installs; otherwise
 dyld reads the comm page, which XNU fills only when launchd writes
 `kern.dyld_flags`. The UniXNU option `XNU_DYLD_FLAGS_BOOTARG` copies the
-boot-arg's low half into the comm page at boot. The shared cache must still
-be rewritten and placed at `/System/Library/Caches/com.apple.dyld/` on the
-unsealed root.
+boot-arg's low half into the comm page at boot. `qcom-userland-dyld-v4` ran
+that kernel (CI run 39940605065) with `dyld_flags=0x8`. dyld skipped
+libignition, checked the shared region and stopped at its first dependency:
+"Library not loaded: /usr/lib/libSystem.B.dylib … (no such file, no dyld
+cache)". launchd then exited. A first attempt at the same image never reached
+UEFI and left no log; the retry booted normally.
+
+The shared cache must still be rewritten and placed at
+`/System/Library/Caches/com.apple.dyld/` on the unsealed root. XNU maps cache
+files only from the process's root volume or the preboot cryptex volume
+(`bsd/vm/vm_unix.c`). The 86 cache files without `.symbols` hold 5.2 GB; the
+OS container has 0.5 GB free. `scripts/grow-zeta-apfs-container.py` grows a
+container copy offline. It fills out the last chunk and adds chunks with no
+bitmap block, which APFS reads as all free. It then raises the block, chunk,
+free and maximum-volume counts and the free-queue node limits. The internal
+pool must hold three blocks per chunk and chunk-info block. It moves to the
+added space, and every pool reference is rebased. Grown to one full
+chunk-info block (126 chunks, 16.9 GB), the OS container passes apfsck with
+the same two volume-group notes as the original.
 
 Stage 6 remains incomplete: launchd's `main` has not run. Local reports are in
 `../work/apfs-stage6/`, `../work/amfi-stage6/`, `../work/fscompression-stage6/`,

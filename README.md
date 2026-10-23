@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, and OS root mounting are verified. Root authentication stops the boot; launchd remains unverified and Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. PID 1 reaches the launchd exec, which fails with EBADARCH: launchd is arm64e and the CPU has no pointer authentication. Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -782,7 +782,39 @@ manifest or change per-read verification. Host tests exercise the actual
 bridge against adversarial registry graphs and the patched BSD callsite with
 the option enabled/disabled. On-device owner authorization is still pending.
 
-Stage 6 remains incomplete: APFS volume publication, root mount/authentication
-and launchd still need runtime proof. Local reports
-are in `../work/apfs-stage6/`, `../work/apfs-crypto/` and
-`../work/apfs-mldsa-host/`.
+`qcom-apfs-launchd-exec-v1` then authorized the read-only root through the
+owner policy and reached PID 1. Its first entitlement query faulted on a null
+`amfi` table: no AMFI provider was registered.
+
+The closure auditor now accepts several `--root` bundles. The KDK AMFI union
+adds one executable; all 667 AMFI imports bind against the owner-root kernel.
+The shared-class gate accepts several importers and now maps `IODTNVRAM` to
+its single-inheritance source declaration. All 23 paired tables match, with
+no instance-size mismatch. AMFI's 8 AUTDZA instructions passed the existing
+EL1 Cortex-A55 checks. This AMFI build leaves `__realmain` empty, so its kmod
+start returns without initializing. The emitter therefore points the pinned
+slice's `kmod_info.start` at its exported `_amfi_register_mac_policy`. That
+entry ignores the start arguments and returns zero, like a `MODULE_START`
+build. The security-extension pass calls it before `mac_late` and lockdown.
+The independent pointer test pins this retarget and rejects the empty
+wrapper.
+
+`qcom-amfi-launchd-v1` loaded AMFI as a security extension. AMFI read model
+`iPhone18,2`, registered its MAC policy, and PID 1 passed the entitlement
+query. The launchd exec then failed with ENOTSUP. launchd uses decmpfs type 4
+(zlib resource fork), and no decompressor was registered.
+
+AppleFSCompressionTypeZlib needs only kernel KPIs and binds completely. Its
+`__text` holds four hand-written decoder tables that `LC_DATA_IN_CODE` does
+not declare: LZVN, LZ4, LZFSE and adler32. The instruction planner skips
+those exact ranges, pinned to the slice with their referencing instructions.
+All 256 LZVN entries reach `bti j` landing pads. `qcom-amfi-zlib-launchd-v1`
+started the zlib kext, and launchd's compressed file read without errors.
+The exec then failed with EBADARCH: `/sbin/launchd` and `dyld` are thin arm64e
+(PAC00). `ml_grade_binary` refuses arm64e on this ARM64_V8 host. The SM8350
+cores have no pointer authentication, so running the stock arm64e userland
+needs a deliberate kernel and userland design.
+
+Stage 6 remains incomplete: launchd has not started. Local reports are in
+`../work/apfs-stage6/`, `../work/amfi-stage6/`, `../work/fscompression-stage6/`,
+`../work/apfs-crypto/` and `../work/apfs-mldsa-host/`.

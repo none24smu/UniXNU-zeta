@@ -5,8 +5,10 @@ actual-artifact case reads ZETA_USERLAND_REWRITE_DIR (rewritten images next
 to their <name>.json reports) and resolves each report's input path against
 ZETA_USERLAND_REWRITE_ROOT. It never imports the rewriter or the code proof:
 it diffs the images, decodes every changed word with Capstone, and hashes
-the code pages and CodeDirectory itself. ZETA_USERLAND_TREE_REPORT runs the same
-check on every image of a rewrite-zeta-userland-tree report.
+the code pages and CodeDirectory itself. In the CodeDirectory header only the
+platform identifier (26) and, for executables, CS_RUNTIME may change.
+ZETA_USERLAND_TREE_REPORT runs the same check on every image of a
+rewrite-zeta-userland-tree report.
 """
 import hashlib
 import json
@@ -334,6 +336,12 @@ def check_image(case, original, output, report):
         page_bytes = output[slot << 12:min((slot + 1) << 12, limit)]
         stored = output[cd + hash_offset + 32 * slot:cd + hash_offset + 32 * (slot + 1)]
         case.assertEqual(hashlib.sha256(page_bytes).digest(), stored, f'page {slot}')
+    old_flags, = struct.unpack_from('>I', original, cd + 12)
+    flags, = struct.unpack_from('>I', output, cd + 12)
+    case.assertEqual(flags, old_flags | (0x10000 if report['filetype'] == 'execute' else 0))
+    case.assertEqual(output[cd + 38], 26)
+    header = lambda data: data[cd:cd + 12] + data[cd + 16:cd + 38] + data[cd + 39:cd + hash_offset]
+    case.assertEqual(header(original), header(output), 'CodeDirectory header, identifier or special slots changed')
     special_area = slice(cd + hash_offset - 32 * special, cd + hash_offset)
     case.assertEqual(original[special_area], output[special_area])
     case.assertEqual(hashlib.sha256(original[cd:cd + cd_length]).hexdigest()[:40], report['original_cdhash'])

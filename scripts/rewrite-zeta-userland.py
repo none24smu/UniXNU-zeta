@@ -14,9 +14,20 @@ grade of evidence that proved them code. The header becomes
 CPU_SUBTYPE_ARM64_ALL: dyld then grades the process keys-off and still
 accepts arm64e dylibs. Chained fixups stay unchanged; the rewritten
 dyld's signing instructions are lowered too, so authenticated fixups resolve
-to plain pointers. The ad-hoc CodeDirectory keeps its exact layout; only its
+to plain pointers. The ad-hoc CodeDirectory keeps its exact layout; its
 code-page hashes are recomputed. The trust cache entry copies the original
 entry's hash type, flags and launch-constraint category.
+
+The kernel's AMFI is the macOS KDK build (the restore's iOS AMFI is a
+stripped fileset entry without import names). Its postValidation applies
+macOS platform-binary rules: listed daemons (configd, containermanagerd)
+must run with the hardened runtime, and others (timed, locationd) need a
+platform identifier above 11; iOS signs them with neither and leaves the
+platform identifier 0. macOS 26 signs its platform binaries with platform
+identifier 26 and AMFI hardens every trust-cached one. The owner signature
+supplies the same: platform identifier 26 on every image and CS_RUNTIME on
+executables. iOS already holds its platform code to library validation and
+no unsigned executable memory, so the hardened runtime takes nothing away.
 
 Primary Apple references:
 https://github.com/apple-oss-distributions/dyld/blob/fd8d0c4d52320ebf64db34f3cb280310d905c5ae/dyld/DyldProcessConfig.cpp
@@ -43,6 +54,9 @@ INSTRUCTIONS = 0x80000400
 CSMAGIC_EMBEDDED_SIGNATURE, CSMAGIC_CODEDIRECTORY = 0xfade0cc0, 0xfade0c02
 CSMAGIC_BLOBWRAPPER, CSSLOT_CODEDIRECTORY, CSSLOT_SIGNATURESLOT = 0xfade0b01, 0, 0x10000
 CS_ADHOC, CS_HASHTYPE_SHA256 = 0x2, 2
+CS_RUNTIME = 0x10000
+CD_FLAGS, CD_PLATFORM = 12, 38    # CodeDirectory flags word and platform byte
+PLATFORM_IDENTIFIER = 26          # what macOS 26 signs its platform binaries with
 HINT, HINT_MASK = 0xd503201f, 0xfffff01f
 PAC_NAMES = ('pac', 'aut', 'xpac', 'bra', 'blra', 'reta', 'ldra')
 
@@ -199,12 +213,16 @@ def rewrite(original):
         require(data[at:at + 4] == int(edit['original_word'], 16).to_bytes(4, 'little'), 'stale instruction edit')
         data[at:at + 4] = int(edit['ordinary_word'], 16).to_bytes(4, 'little')
     struct.pack_into('<I', data, 8, CPU_SUBTYPE_ARM64_ALL)
+    flags = directory['flags'] | (CS_RUNTIME if info['filetype'] == 2 else 0)
+    struct.pack_into('>I', data, directory['at'] + CD_FLAGS, flags)
+    data[directory['at'] + CD_PLATFORM] = PLATFORM_IDENTIFIER
     old_hash = cdhash(original, directory)
     resign(data, directory)
     new_hash = cdhash(data, directory)
     # Every byte outside the edits, the subtype word and the code-page hashes is unchanged.
     changed = [i for i in range(len(data)) if data[i] != original[i]]
-    owned = set(range(8, 12))
+    owned = set(range(8, 12)) | set(range(directory['at'] + CD_FLAGS, directory['at'] + CD_FLAGS + 4))
+    owned.add(directory['at'] + CD_PLATFORM)
     for edit in edits:
         owned.update(range(edit['fileoff'], edit['fileoff'] + 4))
     first = directory['at'] + directory['hash_offset']
@@ -212,7 +230,8 @@ def rewrite(original):
     require(set(changed) <= owned, 'rewrite changed bytes it does not own')
     report = dict(schema='zeta-userland-rewrite-v1', filetype=FILETYPES[info['filetype']],
                   identifier=directory['identifier'], original_subtype=hex(info['subtype']),
-                  subtype=hex(CPU_SUBTYPE_ARM64_ALL), instruction_counts=dict(Counter(e['mnemonic'] for e in edits)),
+                  subtype=hex(CPU_SUBTYPE_ARM64_ALL), code_directory_flags=hex(flags),
+                  platform_identifier=PLATFORM_IDENTIFIER, instruction_counts=dict(Counter(e['mnemonic'] for e in edits)),
                   instruction_edits=len(edits), code_proof=proof, data_in_code_ranges=len(info['dice']),
                   code_slots=directory['code_slots'], original_cdhash=old_hash.hex(), cdhash=new_hash.hex(),
                   chained_fixups_unchanged=True, hardware_tested=False)

@@ -31,6 +31,9 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_DYLD_FLAGS_BOOTARG=y
 # Print every exec, spawn and exit on the console: launchd's children are otherwise invisible.
 CONFIG_XNU_PROC_TRACE_CONSOLE=y
+# vfs.generic.apfs.edt_fstab from /filesystems/fstab: getfsent() reads only this on an APFS root, and the
+# KDK APFS kext lacks it. Its ephemeral entry is the Data volume, a tmpfs mount(8) builds from /private/var.
+CONFIG_XNU_EDT_FSTAB=y
 
 # Signed policies are read from bounded UFS extents; only the public owner anchor is built in.
 CONFIG_XNU_NATIVE_UFS_VERIFIED_ROOT=y

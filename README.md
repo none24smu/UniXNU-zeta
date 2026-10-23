@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6 started: Native UFS reads, both owner-signed policy tables, and SystemOS disk/GPT publication are verified. APFS volume publication gates OS publication; root mounting and launchd remain unverified; Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS driver startup, and both SystemOS/OS APFS volume UUIDs are verified. Root mounting/authentication and launchd remain unverified; Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -750,7 +750,18 @@ ElementTree's `<true />` spelling. The serializer now emits `<true/>` and the
 other supported empty tags consistently. A regression compiles the actual
 XNU tag scanner, rejects the old spelling and accepts the corrected complete
 metadata. Corrected image `qcom-apfs-prelink-xml-v2` passes the independent
-pointer tests; driver execution remains unverified until its runtime test.
+pointer tests. Its clean-restart RAM boot captured native XNU, accepted all
+15 metadata entries and sent ten personalities to the catalogue. CoreTrust
+and AppleImage4 loaded through the normal security-extension path; APFS
+logged module startup and registered its sysctls. Actual APFS checkpoint
+searches found SystemOS xid 17 and OS xid 495. The native publisher observed
+both expected volume UUIDs and published OS after SystemOS became ready.
+The probe deliberately stopped before root selection and returned to the
+verified bootloader at 107.986 seconds. Full evidence is in
+`build/bringup/native-usb/qcom-apfs-prelink-xml-v2/capture-clean-retry/`.
+This proves volume publication and driver execution, not root mounting or
+launchd. The log also reports a missing `system-volume-auth-blob`; the next
+probe crosses normal root selection, mounting and root authentication.
 
 Stage 6 remains incomplete: APFS volume publication, root mount/authentication
 and launchd still need runtime proof. Local reports

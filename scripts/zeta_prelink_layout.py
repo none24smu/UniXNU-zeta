@@ -15,6 +15,7 @@ GROUPS = (
     ('__DATA', '__PRELINK_DATA', 3),
     ('__LINKEDIT', '__PLK_LINKEDIT', 1),
 )
+REQUIRED = {'__TEXT', '__TEXT_EXEC', '__LINKEDIT'}
 
 
 def require(value, message):
@@ -34,7 +35,9 @@ def disjoint(spans):
         require(left[1] <= right[0], f'overlapping layout: {left[2]} and {right[2]}')
 
 
-def plan(native, modules, info_bytes=0x10000):
+def plan(native, modules, info_bytes=None):
+    # Display families carry large personality dictionaries.
+    info_bytes = info_bytes or max(0x10000, 0x8000 * len(modules or ()))
     require(modules and info_bytes > 0, 'empty module set or prelink metadata')
     native_spans = [(s['va'], s['size'], s['name']) for s in native.segments if s['size']]
     disjoint(native_spans)
@@ -54,8 +57,11 @@ def plan(native, modules, info_bytes=0x10000):
     expected = {name for name, _, _ in GROUPS}
     for identifier, image in modules.items():
         actual = {s['name'] for s in image.segments if s['size']}
-        require(actual == expected, f'{identifier}: unsupported child segments {actual ^ expected}')
-        require(len(image.segments) == len(expected), f'{identifier}: duplicate or empty child segment')
+        # Small kexts (e.g. Libm) carry no constants or no data; header,
+        # code and linkedit are always required.
+        require(REQUIRED <= actual <= expected,
+                f'{identifier}: unsupported child segments {(actual - expected) | (REQUIRED - actual)}')
+        require(len(image.segments) == len(actual), f'{identifier}: duplicate or empty child segment')
         for segment in image.segments:
             require(segment['va'] % PAGE == 0 and segment['size'] % PAGE == 0,
                     f'{identifier}: unaligned child segment')
@@ -78,7 +84,9 @@ def plan(native, modules, info_bytes=0x10000):
         start = cursor
         children = []
         for identifier in sorted(modules):
-            segment = next(s for s in modules[identifier].segments if s['name'] == child_name)
+            segment = next((s for s in modules[identifier].segments if s['name'] == child_name), None)
+            if segment is None:
+                continue
             cursor = align(cursor)
             require(cursor + segment['size'] <= U64, 'coalesced VM address overflow')
             entry = dict(original_va=segment['va'], new_va=cursor, size=segment['size'],

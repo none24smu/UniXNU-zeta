@@ -9,7 +9,8 @@ SHA-256 of every written file as read back through APFS, unmounts and
 powers off. The host compares those hashes with the sources, and every
 symbolic link's target as read back. --replace
 removes an existing file first, so a decmpfs-compressed original (which
-linux-apfs-rw cannot write) is replaced by a plain file. The container
+linux-apfs-rw cannot write) is replaced by a plain file, and a symbolic
+link where a directory goes. The container
 is modified in place; work on a copy. Run apfsck on the result.
 """
 import argparse
@@ -56,7 +57,8 @@ def plan(directories, files, replace=False, symlinks=()):
     """Shell plan run by the guest: $1 is the source mount, $2 the APFS mount."""
     lines = ['set -e', 'SRC=$1; DST=$2']
     for path, uid, gid, mode in directories:
-        lines += [f'mkdir -p "$DST{path}"', f'chown {uid}:{gid} "$DST{path}"', f'chmod {mode} "$DST{path}"']
+        lines += ([f'if [ -L "$DST{path}" ]; then rm -f "$DST{path}"; fi'] if replace else []) + [
+            f'mkdir -p "$DST{path}"', f'chown {uid}:{gid} "$DST{path}"', f'chmod {mode} "$DST{path}"']
     for index, (path, uid, gid, mode) in enumerate(files):
         lines += ([f'rm -f "$DST{path}"'] if replace else []) + [
             f'cp "$SRC/f{index}" "$DST{path}"', f'chown {uid}:{gid} "$DST{path}"', f'chmod {mode} "$DST{path}"']
@@ -78,13 +80,21 @@ def main(argv=None):
     parser.add_argument('--file', nargs=5, action='append', default=[], metavar=('SOURCE', 'PATH', 'UID', 'GID', 'MODE'))
     parser.add_argument('--symlink', nargs=4, action='append', default=[], metavar=('TARGET', 'PATH', 'UID', 'GID'))
     parser.add_argument('--file-list', type=Path, help='JSON list of {source, path, uid, gid, mode}, added to --file')
-    parser.add_argument('--replace', action='store_true', help='remove each existing target file before the copy')
+    parser.add_argument('--directory-list', type=Path, help='JSON list of {path, uid, gid, mode}, added to --directory')
+    parser.add_argument('--symlink-list', type=Path, help='JSON list of {target, path, uid, gid}, added to --symlink')
+    parser.add_argument('--replace', action='store_true', help='remove each existing target file, and a link where a directory goes')
     parser.add_argument('--memory', default='4096')
     parser.add_argument('--report', required=True, type=Path)
     args = parser.parse_args(argv)
     if args.file_list:
         args.file += [[entry['source'], entry['path'], entry['uid'], entry['gid'], entry['mode']]
                       for entry in json.loads(args.file_list.read_text())]
+    if args.directory_list:
+        args.directory += [[entry['path'], entry['uid'], entry['gid'], entry['mode']]
+                           for entry in json.loads(args.directory_list.read_text())]
+    if args.symlink_list:
+        args.symlink += [[entry['target'], entry['path'], entry['uid'], entry['gid']]
+                         for entry in json.loads(args.symlink_list.read_text())]
     sources = [Path(source) for source, *_ in args.file]
     targets = [(path, int(uid), int(gid), mode) for _, path, uid, gid, mode in args.file]
     directories = [(path, int(uid), int(gid), mode) for path, uid, gid, mode in args.directory]

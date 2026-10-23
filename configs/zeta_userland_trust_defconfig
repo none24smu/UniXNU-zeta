@@ -31,6 +31,9 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_DYLD_FLAGS_BOOTARG=y
 # Print every exec, spawn and exit on the console: launchd's children are otherwise invisible.
 CONFIG_XNU_PROC_TRACE_CONSOLE=y
+# The UniXNU boot progress layer (package/BootProgress.c): the diagnostic page with the last checkpoints and the
+# user fault probe. Inert unless boot-progress=1 or 2; console output still reaches the USB log.
+CONFIG_XNU_BOOT_PROGRESS=y
 # vfs.generic.apfs.edt_fstab from /filesystems/fstab: getfsent() reads only this on an APFS root, and the
 # KDK APFS kext lacks it. Its ephemeral entry is the Data volume, a tmpfs mount(8) builds from /private/var.
 CONFIG_XNU_EDT_FSTAB=y

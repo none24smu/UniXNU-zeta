@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. PID 1 reaches the launchd exec, which fails with EBADARCH: launchd is arm64e and the CPU has no pointer authentication. Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. launchd and dyld rewritten offline to the ordinary arm64 ABI, a merged static trust cache, and PID 1 executing the rewritten dyld at EL0 are verified. libignition stops before its first stage; the shared cache is still arm64e. Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -815,6 +815,64 @@ The exec then failed with EBADARCH: `/sbin/launchd` and `dyld` are thin arm64e
 cores have no pointer authentication, so running the stock arm64e userland
 needs a deliberate kernel and userland design.
 
-Stage 6 remains incomplete: launchd has not started. Local reports are in
+### Userland rewritten to the ordinary arm64 ABI
+
+`scripts/rewrite-zeta-userland.py` lowers every non-hint PAC instruction that
+`scripts/zeta_userland_code.py` proves to be code. `LC_DATA_IN_CODE` is empty,
+while jump tables and hash constants sit in `__text`. The proof therefore
+follows control flow from strong roots: the entry point and unwind-covered
+starts. Chained-fixup and adr/adrp code pointers come next, then bare
+function starts. Each tentative walk must avoid UDF words, undecodable words
+and decoded tables. A sequential walk never runs into the next atom, because
+noreturn calls are followed directly by data. The header becomes
+`CPU_SUBTYPE_ARM64_ALL`, and dyld then grades the process keys-off. The ad-hoc
+code-page hashes are recomputed in place.
+launchd gets 2,388 edits, all unwind-proven. dyld gets 5,269: 2,638
+unwind-proven, 2,592 via code pointers, and 39 in unused syscall stubs. Its
+nine rejected roots are byte tables and SHA constants. An independent test
+diffs the images, decodes every changed word, and rehashes the pages and
+CodeDirectory.
+
+`scripts/make-zeta-trust-bundle.py` builds a single static module. Public XNU
+loads only module 0 as static and skips engineering modules. The module
+merges the 3,576 OS and 116 SystemOS entries with the two new cdhashes; each
+new entry copies the attributes of its original. `zeta_userland_trust_defconfig`
+enables `XNU_TRUST_CACHE_RUNTIME`. The ADT needs `make-zeta-adt.py
+--trust-cache`, or DarwinBoot ignores the bundle.
+
+The 23F84 OS volume is unencrypted and not sealed; the SystemOS cryptex is
+sealed. `scripts/replace-zeta-root-files.py` rewrites only the data blocks of
+each file's zlib resource fork. The fork keeps the same header, chunk count,
+resource map and length. Per-chunk zlib settings are chosen so the new chunks
+fill the data area exactly, and no APFS metadata changes. On the container,
+only the 61 and 105 fork blocks changed. apfs-fuse read both images back with
+their expected hashes, and apfsck passed. `build-zeta-root.py` re-signed the
+windows. `scripts/make-zeta-root-delta.py` then made a sparse image of the 176
+changed blocks: the manifest, the OS GPT, the fork blocks and the OS policy.
+With the owner's approval, it was flashed to `userdata` on 2026-10-23.
+
+`qcom-userland-trust-v1` loaded the static module ("loaded external trust
+cache module: 0"). Before the flash, launchd still failed with EBADARCH.
+`qcom-userland-launchd-v1` ran the same image after the flash. The root
+mounted and authorized as before. The rewritten launchd passed grading and
+AMFI ("Using iOS Platform policy"). The first EL0 instruction abort came at
+`0x10143f0f0`: the rewritten dyld's entry `0x30f0` plus slide `0x10143c000`.
+The probe guard caught that ordinary demand-paging fault.
+`patch-zeta-kernel-probe.py --allow-user-exceptions` now leaves the EL0
+synchronous vector to XNU. In `qcom-userland-dyld-v1` and `-v2`, the
+rewritten dyld called `shared_region_check_np` and started libignition. It
+printed its version and argument block, then produced no further output,
+fault or panic within 30 seconds. On this device, libignition cannot graft
+the SystemOS cryptex without an Apple-personalized manifest.
+
+`dyld_flags=0x8` (skip ignition) had no effect in `qcom-userland-dyld-v3`. PID 1
+honors the `dyld_flags` apple string only on internal installs; otherwise
+dyld reads the comm page, which XNU fills only when launchd writes
+`kern.dyld_flags`. The UniXNU option `XNU_DYLD_FLAGS_BOOTARG` copies the
+boot-arg's low half into the comm page at boot. The shared cache must still
+be rewritten and placed at `/System/Library/Caches/com.apple.dyld/` on the
+unsealed root.
+
+Stage 6 remains incomplete: launchd's `main` has not run. Local reports are in
 `../work/apfs-stage6/`, `../work/amfi-stage6/`, `../work/fscompression-stage6/`,
-`../work/apfs-crypto/` and `../work/apfs-mldsa-host/`.
+`../work/userland-stage6/`, `../work/apfs-crypto/` and `../work/apfs-mldsa-host/`.

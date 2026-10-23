@@ -929,8 +929,9 @@ interrupts enabled, and only the final reset masks them. With it
 refused ("vnode is not SIP-protected"), libSystem is not found, and PID 1
 exits.
 
-The kernel is built for the macOS target, so `CONFIG_CSR` is on, and
-`csr_bootstrap` reads the local boot policy's `lp-sip0` from
+The kernel is an iOS-target build, but `XNU_APFS_CSR`
+(`prepare-apfs-csr-config.py`, for the KDK APFS kext) turns on `config_csr`
+and `config_csr_from_dt`, so `csr_bootstrap` reads the local boot policy's `lp-sip0` from
 `/chosen/asmb`. Without that node, `csr_config` is 0, i.e. full SIP. The
 cache file must then carry `SF_RESTRICTED`, which iOS volumes do not use
 because iOS has no CSR. `make-zeta-adt.py --csr-config 0x2` grants only
@@ -948,8 +949,17 @@ so only the first quarter of every slide page was slid. UniXNU's
 `native-shared-region-small-pages.patch` reads the earlier pages of the
 same slide page, each validated against the code signature. It slides the
 slide page in a scratch buffer and keeps only the requested page. This
-keeps shared cache ASLR, and the root image does not change. Guide Stage 6
-is complete only once launchd runs on hardware with this fix.
+keeps shared cache ASLR, and the root image does not change.
+
+With that fix on hardware (`qcom-userland-pager-v1`), launchd faulted on
+the same word. `vm_shared_region_slide_page_v3`/`_v5` store an
+authenticated rebase only inside `__has_feature(ptrauth_calls)`, so a kernel
+without pointer authentication leaves every auth entry of an arm64e cache
+raw. `native-shared-region-plain-auth.patch` stores the slid plain pointer,
+which is what the lowered userland expects. UniXNU never hit either case:
+the iPadOS 17 arm64 cache has 4 KiB v3 slide pages and no auth entries.
+Guide Stage 6 is complete only once launchd runs on hardware with both
+fixes.
 
 Local reports are in
 `../work/apfs-stage6/`, `../work/amfi-stage6/`, `../work/fscompression-stage6/`,

@@ -174,7 +174,7 @@ def main():
                         help='directory on the root volume copied into the ephemeral Data tmpfs (default /private/var/; '
                              'its staged_system_apps alone is 1.1 GB)')
     parser.add_argument('--csr-config', type=lambda value: int(value, 0), default=None,
-                        help='/chosen/asmb lp-sip0: the CSR flags of the macOS-target kernel (lp-sip1 stays 0). '
+                        help='/chosen/asmb lp-sip0: the CSR flags of a kernel built with XNU_APFS_CSR (lp-sip1 stays 0). '
                              'Without it csr_config is 0, full SIP')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -251,8 +251,8 @@ def main():
                                  ([('TrustCache', bytes(16))] if args.trust_cache else [])),
               # Read by the original AppleImage4 at start-up; present and empty here.
               node('manifest-properties'),
-              # The local boot policy's SIP words. iOS kernels have no CSR; this one is built for the macOS
-              # target and reads them in csr_bootstrap.
+              # The local boot policy's SIP words. iOS kernels have no CSR; XNU_APFS_CSR turns config_csr on
+              # for the KDK APFS kext, so csr_bootstrap reads them.
               *([node('asmb', [('lp-sip0', struct.pack('<Q', args.csr_config)), ('lp-sip1', struct.pack('<I', 0))])]
                 if args.csr_config is not None else [])]),
         *([filesystems(args.ephemeral_data_blocks, args.ephemeral_data_template)]

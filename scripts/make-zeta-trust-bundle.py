@@ -6,7 +6,7 @@ trust cache; later modules are engineering caches, which a public build
 skips (bsd/kern/kern_trustcache.c load_static_trust_cache). The bundle
 therefore holds one version-2 module: every entry of the given Apple trust
 caches (trst static, trcs cryptex) with its attributes unchanged, plus the cdhash of each rewritten
-image with the attributes its report copied from the original entry. The
+image or shared cache file with the attributes its report copied from the original entry. The
 original entries stay; they only match the arm64e images. DarwinBoot
 installs the bundle from Payloads/kernel.macho.trustcache.
 
@@ -54,6 +54,14 @@ def valid_like_the_loader(data):
     return True
 
 
+def owner_entries(report):
+    """(identifier, original cdhash, trust entry) for a userland rewrite report, or for each changed
+    file of a shared cache rewrite report."""
+    if report.get('schema') == 'zeta-dyld-cache-rewrite-v1':
+        return [(f['name'], f['original_cdhash'], f['trust_cache_entry']) for f in report['files'] if f['edits']]
+    return [(report['identifier'], report['original_cdhash'], report['trust_cache_entry'])]
+
+
 def build(apple, owners):
     """apple: [(name, payload)], owners: [report]. Returns (bundle, summary)."""
     entries, sources = {}, []
@@ -64,17 +72,16 @@ def build(apple, owners):
     if len(entries) != sum(source['entries'] for source in sources):
         raise ValueError('Apple trust caches repeat a cdhash')
     added = []
-    for report in owners:
-        entry = report['trust_cache_entry']
+    for identifier, original_cdhash, entry in (item for report in owners for item in owner_entries(report)):
         if not entry['copied_from_original']:
-            raise ValueError(f'{report["identifier"]}: no original entry to copy attributes from')
+            raise ValueError(f'{identifier}: no original entry to copy attributes from')
         cdhash = bytes.fromhex(entry['cdhash'])
         attributes = bytes([entry['hash_type'], entry['flags'], entry['constraint_category'], 0])
         if cdhash in entries:
             raise ValueError(f'{entry["cdhash"]} is already trusted')
         entries[cdhash] = attributes
-        added.append(dict(identifier=report['identifier'], cdhash=entry['cdhash'],
-                          original_cdhash=report['original_cdhash'], attributes=attributes.hex()))
+        added.append(dict(identifier=identifier, cdhash=entry['cdhash'],
+                          original_cdhash=original_cdhash, attributes=attributes.hex()))
     ordered = sorted(entries)
     identifier = uuid.uuid5(uuid.NAMESPACE_URL, 'zeta-trust:' + hashlib.sha256(b''.join(ordered)).hexdigest())
     module = struct.pack('<I16sI', 2, identifier.bytes, len(ordered)) + b''.join(h + entries[h] for h in ordered)

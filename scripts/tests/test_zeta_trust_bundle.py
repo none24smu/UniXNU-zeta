@@ -34,6 +34,17 @@ class TrustBundleTests(unittest.TestCase):
         self.assertEqual(rows[1][20:], b'\x02\x00\x02\x00')
         self.assertTrue(B.valid_like_the_loader(bundle))
 
+    def test_cache_rewrite_reports_add_each_changed_file(self):
+        old_a, old_b, new_a = b'\x11' * 20, b'\x12' * 20, b'\x91' * 20
+        cache = dict(schema='zeta-dyld-cache-rewrite-v1', files=[
+            dict(name='dsc.01', edits=3, original_cdhash=old_a.hex(), trust_cache_entry=dict(
+                cdhash=new_a.hex(), hash_type=2, flags=0, constraint_category=0, copied_from_original=True)),
+            dict(name='dsc.02', edits=0, original_cdhash=old_b.hex(), cdhash=old_b.hex())])
+        bundle, summary = B.build([('c', payload((old_a, b'\x02\x00\x00\x00'), (old_b, b'\x02\x00\x00\x00')))],
+                                  [cache])
+        self.assertEqual(summary['entries'], 3)
+        self.assertEqual([entry['identifier'] for entry in summary['owner']], ['dsc.01'])
+
     def test_refuses_repeats_and_uncopied_attributes(self):
         same = b'\x22' * 20
         with self.assertRaises(ValueError):

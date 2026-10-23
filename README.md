@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. launchd and dyld rewritten offline to the ordinary arm64 ABI, a merged static trust cache, and PID 1 executing the rewritten dyld at EL0 are verified. With `dyld_flags=0x8` from the boot-arg, dyld skips libignition and stops at libSystem because the root has no shared cache; the cache is still arm64e and does not fit the OS container until it is grown. Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. launchd and dyld rewritten offline to the ordinary arm64 ABI, a merged static trust cache, and PID 1 executing the rewritten dyld at EL0 are verified. The shared cache is rewritten the same way (29.6M PAC words lowered, every file re-signed with 4 KiB pages) on a grown OS container. With `dyld_flags=0x8`, dyld maps it and launchd runs: it execs a process and stays up for the full 180 s window. Guide Stage 6 is complete; Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -889,6 +889,43 @@ added space, and every pool reference is rebased. Grown to one full
 chunk-info block (126 chunks, 16.9 GB), the OS container passes apfsck with
 the same two volume-group notes as the original.
 
-Stage 6 remains incomplete: launchd's `main` has not run. Local reports are in
+The cache is rewritten offline like launchd and dyld. `zeta_dyld_cache.py`
+reads its 84 mapped files, slide info v5, images and stub islands.
+`prove-zeta-dyld-cache.py` proves each image's code from unwind starts,
+slide targets, adr/adrp addresses, LSDA landing pads, stub entries, calls
+from other images and bare starts, each after a strict walk. Calls into
+other images or islands end a path. Words Capstone cannot decode go to
+llvm-mc: AMX and SME2 words are straight-line code, branches stay
+undecodable. A last grade takes dead epilogues inside proven functions. Of
+29,577,371 PAC-shaped words in code, 29,577,370 are proven and lowered. The
+remaining one is a float constant in a libsystem_m literal pool.
+`rewrite-zeta-dyld-cache.py` checks each original word, writes the edits and
+re-signs each file. `tests/test_zeta_dyld_cache_rewrite.py` re-checks every
+changed word with Capstone and every page hash with its own parser.
+
+`qcom-userland-cache-map` placed the probe after `vm_shared_region_map_file`.
+dyld found the cache, but the kernel refused its signatures: "disallowing
+unsupported code signature page shift: 14". The Duo kernel uses 4 KiB pages,
+and `cs_validate_codedirectory` accepts only shift 12 or the kernel's own.
+`--page-shift 12` rebuilds every file's CodeDirectory with 4 KiB pages. It
+keeps the header, identifier, special slots and other blobs. dyld requires
+`codeSignatureOffset + codeSignatureSize` to equal the file size. The header
+size is set before hashing and the file grows. All 84 files get new cdhashes,
+and the trust bundle holds 3,778 entries. `write-zeta-apfs-files.py` writes the
+cache into the grown container through a QEMU/KVM guest running
+linux-apfs-rw, so the host loads no module. It checks every file's SHA-256 as
+read back through APFS. The 22.3 GB root image moves the SystemOS window.
+`make-zeta-root-delta.py` writes every block past the old image, with zero
+blocks as FILL chunks.
+
+`qcom-userland-cache-v3` ran that root with the 4 KiB-signed cache and a
+180-second polled console after `load_init_program`. dyld checked the
+shared region, and there was no code-signature or dyld error. launchd did
+not exit and no fault or panic guard fired. A second exec followed, and the
+console stayed up until the timed reset. launchd has run past dyld and
+libSystem into its own code, which completes Guide Stage 6. Its own output is
+not visible yet. The next step is to show what it runs.
+
+Local reports are in
 `../work/apfs-stage6/`, `../work/amfi-stage6/`, `../work/fscompression-stage6/`,
 `../work/userland-stage6/`, `../work/apfs-crypto/` and `../work/apfs-mldsa-host/`.

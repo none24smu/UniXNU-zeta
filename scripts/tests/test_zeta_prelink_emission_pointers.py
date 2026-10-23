@@ -37,6 +37,27 @@ def require(condition, message):
         raise ValueError(message)
 
 
+AMFI = 'com.apple.driver.AppleMobileFileIntegrity'
+ZLIB = 'com.apple.AppleFSCompression.AppleFSCompressionTypeZlib'
+# Lifecycle slots each optional module adds: start/stop plus constructors
+# and destructors. The APFS closure alone has six kmods and 40 slots.
+EXTRA_LIFECYCLE = {AMFI: 10, ZLIB: 4}
+# Independently pinned: this AMFI slice's kmod start wrapper only tail-branches
+# through its empty __realmain, so the emitter points kmod start at the real
+# early policy entry instead. Nothing else may move a start pointer.
+START_OVERRIDES = {
+    (AMFI, '36a4f3e2848990a454dae006b6ac5f82cce82b1e360b2999874036aa7a2187dc'):
+        ('__start', '_amfi_register_mac_policy'),
+}
+
+
+def defined_address(image, name):
+    found = {s['address'] for s in image.symbols
+             if s['name'] == name and s['section'] and not s['type'] & 0xe0}
+    require(len(found) == 1, f'source symbol {name} not unique')
+    return found.pop()
+
+
 class EmissionPointers:
     def __init__(self, report):
         self.report = report
@@ -123,7 +144,12 @@ class EmissionPointers:
             return views[provider]['segments'][segment['name']]['va'] + va - segment['va']
 
         rows, expected_at, lifecycle, kmods, bind_sites, structor_sites = [], {}, [], {}, [], []
+        overrides = []
         for name, source in self.sources.items():
+            override = START_OVERRIDES.get((name, source.identity['sha256']))
+            if override:
+                start_slot = defined_address(source, '_kmod_info') + 180
+                wrapper, entry = (defined_address(source, symbol) for symbol in override)
             for row in self.decoded[name]['fixups']:
                 source_va = int(row['address'], 16)
                 at = parent.file_at(translated(name, source_va, 8), 8)
@@ -142,6 +168,10 @@ class EmissionPointers:
                     original_target = int(row['original_target_before_authentication'], 16)
                     require(original_target == int(row['original_target_without_high8'], 16), 'tagged source rebase')
                     expected = translated(name, original_target)
+                    if override and source_va == start_slot:
+                        require(original_target == wrapper, 'pinned kmod start no longer reaches its wrapper')
+                        expected = translated(name, entry)
+                        overrides.append(dict(module=name, at=at, wrapper=translated(name, wrapper), entry=expected))
                 actual = struct.unpack_from('<Q', data, at)[0]
                 require(actual == expected, f'{name}: pointer mismatch at emitted fileoff {at:#x}')
                 expected_at[(name, source_va)] = (at, expected, row)
@@ -185,7 +215,7 @@ class EmissionPointers:
                              lifecycle_slots=len(slots), packed_kmod_va=hex(kmod_va)))
         return dict(rows=rows, chained_pointers=sum(r['fixups'] for r in rows), lifecycle=lifecycle,
                     lifecycle_slots=len(lifecycle), kmods=kmods, bind_sites=bind_sites,
-                    structor_sites=structor_sites)
+                    structor_sites=structor_sites, start_overrides=overrides)
 
 
 @unittest.skipUnless(os.environ.get('ZETA_PRELINK_EMISSION_DIR'), 'supply actual emitted fixture directory')
@@ -222,9 +252,18 @@ class ActualEmittedPointers(unittest.TestCase):
         self.mutations.append(label)
 
     def test_all_actual_source_chains_and_lifecycle_slots(self):
-        self.assertEqual(len(self.result['kmods']), 6)
-        self.assertEqual(self.result['lifecycle_slots'], 40)
-        self.assertEqual(sum(row['label'] in ('start', 'stop') for row in self.result['lifecycle']), 12)
+        extra = [name for name in EXTRA_LIFECYCLE if name in self.audit.sources]
+        self.assertEqual(len(self.result['kmods']), 6 + len(extra))
+        self.assertEqual(self.result['lifecycle_slots'], 40 + sum(EXTRA_LIFECYCLE[name] for name in extra))
+        self.assertEqual(sum(row['label'] in ('start', 'stop') for row in self.result['lifecycle']), 12 + 2 * len(extra))
+
+    def test_amfi_start_reaches_only_its_real_entry(self):
+        if AMFI not in self.audit.sources:
+            self.skipTest('AMFI is not in this emission')
+        [override] = self.result['start_overrides']
+        start = next(r for r in self.result['lifecycle'] if r['module'] == AMFI and r['label'] == 'start')
+        self.assertEqual((start['at'], start['target']), (override['at'], override['entry']))
+        self.reject_pointer_mutation(override['at'], override['wrapper'], 'amfi-start-back-to-empty-wrapper')
 
     def test_wrong_start_code_target_rejected(self):
         slots = [r for r in self.result['lifecycle'] if r['label'] == 'start']

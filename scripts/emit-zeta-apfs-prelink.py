@@ -29,6 +29,28 @@ C = sibling('closure', 'audit-zeta-apfs-closure.py')
 S = sibling('split', 'audit-zeta-split-info.py')
 P = sibling('pauth', 'audit-zeta-apfs-pauth.py')
 A = C.A
+APFS = 'com.apple.filesystems.apfs'
+AMFI = 'com.apple.driver.AppleMobileFileIntegrity'
+ZLIB = 'com.apple.AppleFSCompression.AppleFSCompressionTypeZlib'
+# Paired shared tables pinned per gated importer set; AMFI adds IODTNVRAM.
+SHARED_TABLES = {frozenset({APFS}): 22, frozenset({APFS, AMFI}): 23, frozenset({APFS, AMFI, ZLIB}): 23}
+# The exact KDK 25F84 AMFI slice. Its kmod start wrapper tail-branches through
+# __realmain, which this build left empty (zero-fill), so OSKext start returns
+# without registering AMFI. OSKext calls kmod_info.start(kmod_info, data); the
+# exported early policy entry ignores both and returns 0, so retargeting that
+# pointer is MODULE_START wiring. The security-extension pass then starts it
+# before mac_late and lockdown seal the AMFI registrations.
+AMFI_START = dict(
+    sha256='36a4f3e2848990a454dae006b6ac5f82cce82b1e360b2999874036aa7a2187dc',
+    kmod_info=0x58000, realmain=0x58a70, wrapper=0x45218, entry=0x3497c,
+    wrapper_code='5f2403d5880000f008c12991100140f9700000b4d19f9cd2110a1fd700008052c0035fd6',
+    entry_code='7f2303d5fd7bbfa9fd03009116fdff9700008052fd7bc1a8ff0f5fd6')
+
+
+def importer_hashes(extra):
+    inputs = extra['inputs']
+    rows = inputs['importers'] if 'importers' in inputs else [inputs['apfs']]
+    return {row.get('slice', row)['sha256'] for row in rows}
 
 
 def gate(native, modules, closure, vtables, extra):
@@ -39,14 +61,48 @@ def gate(native, modules, closure, vtables, extra):
     L.require(vtables['inputs']['native']['sha256'] == native.identity['sha256'] and
               vtables['decode_complete'] and vtables['gate'] == 'identical_observed_slots',
               'primary ABI gate did not pass for this kernel')
+    importers = frozenset(name for name in (APFS, AMFI, ZLIB) if name in modules)
+    L.require(importers in SHARED_TABLES, 'unsupported shared-class importer set')
+    L.require(importer_hashes(extra) == {closure['module_reports'][name]['candidate']['sha256'] for name in importers},
+              'extended shared ABI gate covers different importers')
     L.require(extra['inputs']['native']['sha256'] == native.identity['sha256'] and
-              extra['decode_complete'] and len(extra['gate']['identical']) == 22 and
+              extra['decode_complete'] and len(extra['gate']['identical']) == SHARED_TABLES[importers] and
+              extra['gate']['paired_tables'] == SHARED_TABLES[importers] and
               not extra['gate']['instance_size_mismatches'], 'extended shared ABI gate did not pass')
     L.require(set(extra['gate']['missing_native_providers']) == {'AppleEffaceableStorage', 'CoreAnalyticsHub'},
               'unexpected missing class providers')
     for name, image in modules.items():
         L.require(closure['module_reports'][name]['candidate']['sha256'] == image.identity['sha256'],
                   f'stale module identity: {name}')
+
+
+def retarget_amfi_start(image, layout, rewrite):
+    """Point kmod_info.start at the real _amfi_register_mac_policy entry."""
+    pin = AMFI_START
+    L.require(image.identity['sha256'] == pin['sha256'], 'AMFI start binding is pinned to another slice')
+    defined = {}
+    for symbol in image.symbols:
+        if not symbol['type'] & 0xe0 and symbol['type'] & 0xe == 0xe:
+            defined.setdefault(symbol['name'], set()).add(symbol['address'])
+    for name, key in (('_kmod_info', 'kmod_info'), ('__realmain', 'realmain'),
+                      ('__start', 'wrapper'), ('_amfi_register_mac_policy', 'entry')):
+        L.require(defined.get(name) == {pin[key]}, f'AMFI start symbol moved: {name}')
+    for key in ('wrapper', 'entry'):
+        code = bytes.fromhex(pin[key + '_code'])
+        at = image.file_at(pin[key], len(code))
+        L.require(image.data[at:at + len(code)] == code, f'AMFI {key} code differs')
+    # kmod_info is pack(4); start at +0xb4 must rebase to the wrapper.
+    start = image.file_at(pin['kmod_info'] + 0xb4, 8)
+    rebased = [e for e in rewrite['proposed_edits'] if e['fileoff'] == start and e['width'] == 8]
+    L.require(len(rebased) == 1 and int.from_bytes(bytes.fromhex(rebased[0]['new']), 'little') ==
+              L.translate(layout, AMFI, pin['wrapper']), 'AMFI kmod start does not reach its wrapper')
+    edit = rebased[0]
+    rewrite['counts'][edit['reason']] -= 1
+    edit.update(new=L.translate(layout, AMFI, pin['entry']).to_bytes(8, 'little').hex(),
+                reason='start:_amfi_register_mac_policy')
+    rewrite['counts'][edit['reason']] = 1
+    return dict(kmod_start_fileoff=start, wrapper=hex(L.translate(layout, AMFI, pin['wrapper'])),
+                entry=hex(L.translate(layout, AMFI, pin['entry'])))
 
 
 def converted_module(image, identifier, layout, rewrite):
@@ -101,11 +157,13 @@ def emit(native, modules, index, closure, vtables, extra, xnu_source, storage_so
     gate(native, modules, closure, vtables, extra)
     layout = L.plan(native, modules)
     metadata, encoded, provenance = M.build(native, modules, layout, index, xnu_source, storage_source, crypto_source)
-    converted, rewrites, consumed = {}, {}, {}
+    converted, rewrites, consumed, start_binding = {}, {}, {}, None
     for name, image in modules.items():
         split = S.audit(image.data, image.identity['path'])
         pauth = P.audit_data(image.data, image.identity['path'])
         rewrite = R.module_plan(image, name, layout, split, pauth, closure['module_reports'][name])
+        if name == AMFI:
+            start_binding = retarget_amfi_start(image, layout, rewrite)
         converted[name], consumed[name] = converted_module(image, name, layout, rewrite)
         rewrites[name] = rewrite
     output = bytearray(native.data)
@@ -143,12 +201,15 @@ def emit(native, modules, index, closure, vtables, extra, xnu_source, storage_so
                   structurally_emitted=True, hardware_tested=False, stage6_complete=False,
                   layout=layout, metadata_provenance=provenance, metadata_entries=len(metadata['_PrelinkInfoDictionary']),
                   consumed_link_metadata=consumed,
+                  amfi_start_binding=start_binding,
                   rewrites={name: {key: value for key, value in plan.items() if key != 'proposed_edits'}
                             for name, plan in rewrites.items()},
                   limitations=['Experimental conversion; runtime driver and private BSD ABI remain unverified.',
                                'Original code signatures are invalidated and their commands cleared.',
                                'No separate constructor loop: normal OSKext and IOBSD matching must succeed.',
-                               'Root signature/hash verification and actual mount remain independent gates.'])
+                               'Root signature/hash verification and actual mount remain independent gates.'] +
+                              (['AMFI kmod start is retargeted to its real early entry; its runtime registration is unproven.']
+                               if AMFI in modules else []))
     return bytes(output), report
 
 

@@ -29,13 +29,20 @@ inspect_state:
   adrp x8, ufs_root_diagnostic
   ldr x9, [x8, :lo12:ufs_root_diagnostic]
   str x9, [sp, #48]
-  str wzr, [sp, #64]
+  str wzr, [sp, #72]
   adr x0, probe_arg
-  add x1, sp, #64
+  add x1, sp, #72
   mov w2, #4
   bl ufs_parse_arg
-  ldr w9, [sp, #64]
+  ldr w9, [sp, #72]
   str x9, [sp, #56]
+  adr x0, root_arg
+  add x1, sp, #72
+  str wzr, [sp, #72]
+  mov w2, #4
+  bl ufs_parse_arg
+  ldr w9, [sp, #72]
+  str x9, [sp, #64]
   adr x0, message
   bl ufs_printf
   cbz w19, finished
@@ -52,6 +59,8 @@ finished:
   add sp, sp, #112
   ret
 message:
-  .asciz "ZETA UFS STATE: probe_calls=%llx matched=%llx requested=%llx mapped=%llx status=%llx root_step=%llx stage=%s probe=%llx\n"
+  .asciz "ZETA UFS STATE: probe_calls=%llx matched=%llx requested=%llx mapped=%llx status=%llx root_step=%llx stage=%s probe=%llx root=%llx\n"
 probe_arg:
   .asciz "native-ufs-probe"
+root_arg:
+  .asciz "native-ufs-root"

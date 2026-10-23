@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6 started: Native XNU UFS reads now verify the LUN 0 GPT and read `userdata`; storage publication, root mounting and launchd remain unverified; Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6 started: Native UFS reads, both owner-signed policy tables, and SystemOS disk/GPT publication are verified. APFS volume publication gates OS publication; root mounting and launchd remain unverified; Guide Stage 7 is not reached |
 
 ## Inputs
 
@@ -567,9 +567,38 @@ The prepared iOS 26.5.2 23F84 images have root UUID
 `B792C617-C87F-4706-9CD3-4C3A034C27CB`. Host APFS parsing and a read-only FUSE
 mount succeeded. The real C verifier authenticated all 2,335,744 OS blocks
 and all 1,281,536 SystemOS blocks, including RSA signatures and full image
-hashes. Reports are local under `build/root-stage6/`. These are host checks:
-no image has been flashed, no native UFS read or root mount is proven, and
-Stage 6 remains incomplete.
+hashes. Reports are local under `build/root-stage6/`. Those full-image
+checks were performed on the host. The exact 14,934,867,968-byte root image
+(SHA-256 `d5485701873056c95908388b94bcbc754836c7c70991c7e41f102bafd54b34af`)
+was subsequently flashed to `userdata` at device `0F00EFK214800A`; all 27
+sparse transfer fragments completed successfully. Sparse expansion was
+independently hashed against the prepared image and contains no don't-care
+chunks. Boot/firmware partitions and the selected slot were not changed.
+`build/root-stage6/flash.json` records the exact command and completion.
+A flash success is not a complete device readback or root mount; Stage 6
+remains incomplete.
+
+`qcom-verified-root` subsequently exercised that installed image through
+native XNU. The unique boot arguments confirmed the intended signed-root
+kernel and `native-ufs-root=1 native-ufs-diagnostics=1`. Both windows were
+prepared with successful owner signature/hash-table verification before
+any publication. The production path completed 893 UFS commands and then
+published SystemOS as `disk0`; the public IOStorage GPT driver and BSD client
+published its APFS partition as `disk0s1`, with the real GPT partition UUID
+`B0604FA3-DCF8-5347-BC1C-979F45125DA5`. Three IOKit read requests passed the
+verified block path with zero failures. This does not represent a complete
+14.9 GB device readback.
+
+The diagnostic stopped at `SystemOS signed volume not found`: expected APFS
+volume UUID `B792C617-C87F-4706-9CD3-4C3A034C27CB` was absent. The GPT partition
+UUID is intentionally different and is not substituted for the APFS volume.
+No APFS driver is loaded, so the SystemOS dependency gate keeps OS
+unpublished. The checkpoint remains before `IOFindBSDRoot`; no root mount
+or launchd execution is claimed. The source diagnostic returned to fastboot
+automatically, with the same serial/product verified at 102.498 seconds.
+Evidence: `build/bringup/native-usb/qcom-verified-root/hardware-test.json` and
+`capture/kernel.log`. The next Stage 6 dependency is a compatible APFS driver
+and its real providers, followed by actual volume publication and mount.
 
 The bounded `qcom-root-memory384` test verified a 384 MiB owned window
 (`0x18000000`) through the same BSD checkpoint and returned to fastboot.
@@ -621,3 +650,17 @@ storage-linked kernel reduces the missing count to 263. The 24 tests include
 pinned actual-artifact counts plus malformed chains and coverage failures.
 No APFS driver has been loaded. Detailed local findings and lineage remain in
 `../work/apfs-stage6/`; root mounting and launchd are still unverified.
+
+The additional `scripts/audit-zeta-apfs-vtables.py` gate compares emitted
+primary vtables using actual chained-fixup targets and symbol aliases. Its
+eight tests passed, including the pinned signed-root native kernel and KDK
+artifacts. OSObject and IOService differ by reserved slots; IOStorage,
+IOMedia and IOBlockStorageDevice also have real macOS-only virtuals and
+implementation differences. A padding-only compatibility build is therefore
+rejected. Overriding padding alone would also select the wrong container
+alignment macro in the iOS private header. The KDK kernel reports
+12377.121.10, versus native source 12377.121.6, an additional patchlevel gap.
+Only five primary tables were compared; object layouts, other classes and
+PAC execution remain unqualified. Full word/target evidence and source
+corroboration are in `../work/apfs-stage6/VTABLE-FINDINGS.md` and
+`vtable-compatibility-gate-complete.json`.

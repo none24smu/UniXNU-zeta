@@ -169,6 +169,9 @@ def main():
     parser.add_argument('--ephemeral-data-blocks', type=int, default=None,
                         help='/filesystems/fstab with one ephemeral Data entry: mount(8) builds /private/var as a '
                              'tmpfs of this many 512-byte blocks from the root volume\'s /private/var')
+    parser.add_argument('--csr-config', type=lambda value: int(value, 0), default=None,
+                        help='/chosen/asmb lp-sip0: the CSR flags of the macOS-target kernel (lp-sip1 stays 0). '
+                             'Without it csr_config is 0, full SIP')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.ipad_identity:
@@ -177,6 +180,8 @@ def main():
         parser.error('--ephemeral-data-blocks must be a positive 32-bit block count')
     if args.dram_size != DRAM_SIZE:
         parser.error(f'--dram-size must be {DRAM_SIZE:#x}, the DRAM range measured on the phone')
+    if args.csr_config is not None and not 0 <= args.csr_config < 1 << 32:
+        parser.error('--csr-config must fit 32 bits')
     if (args.unique_chip_id is None) != (args.chip_id is None):
         parser.error('--unique-chip-id and --chip-id must be supplied together')
     if args.unique_chip_id is not None and not (0 < args.unique_chip_id < 1 << 64 and 0 < args.chip_id < 1 << 32):
@@ -238,7 +243,11 @@ def main():
              [node('memory-map', ([('PackedRAMDisk' if args.packed_data_ramdisk else 'RAMDisk', bytes(16))] if ramdisk else []) +
                                  ([('TrustCache', bytes(16))] if args.trust_cache else [])),
               # Read by the original AppleImage4 at start-up; present and empty here.
-              node('manifest-properties')]),
+              node('manifest-properties'),
+              # The local boot policy's SIP words. iOS kernels have no CSR; this one is built for the macOS
+              # target and reads them in csr_bootstrap.
+              *([node('asmb', [('lp-sip0', struct.pack('<Q', args.csr_config)), ('lp-sip1', struct.pack('<I', 0))])]
+                if args.csr_config is not None else [])]),
         *([filesystems(args.ephemeral_data_blocks)] if args.ephemeral_data_blocks is not None else []),
         node('cpus', children=cpus),
         *([node('psci', [('compatible', b'arm,psci-1.0\0'), ('method', args.psci_method.encode() + b'\0')])] if len(cpus) > 1 else []),

@@ -33,7 +33,8 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             instruction_offset=None, expected_instruction=None,
             check_word=None, expected_word=None, acquire_text_console=False,
             physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False,
-            allow_vm_faults=False, inspect_zeta_smmu=False, inspect_zeta_ufs_status=False, settle_zeta_ufs_ms=0):
+            allow_vm_faults=False, inspect_zeta_smmu=False, inspect_zeta_ufs_status=False, settle_zeta_ufs_ms=0,
+            allow_user_exceptions=False):
     if not 0 <= settle_zeta_ufs_ms <= 60000 or (settle_zeta_ufs_ms and not inspect_zeta_ufs_status):
         raise ValueError("UFS scheduler wait requires the counter inspector and 0..60000 ms")
     if settle_zeta_ufs_ms and (function != '_bsd_init' or reset_after != '_IOFindBSDRoot' or not reset_before):
@@ -45,9 +46,12 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
         raise ValueError('Record address must be a verified zeta reserved diagnostic region')
     if allow_interrupts and not guard_early_faults:
         raise ValueError('Interrupt-preserving mode requires fault guards')
+    if allow_user_exceptions and not allow_vm_faults:
+        raise ValueError('Native EL0 exceptions require --allow-vm-faults')
     if allow_vm_faults and not (guard_early_faults and allow_interrupts):
         raise ValueError('Native VM fault handling requires interrupt-preserving fault guards')
-    if guard_early_faults and reset_delay >= 16:
+    # With native EL0 exceptions and fault logging, the USB log names the outcome, not the timing.
+    if guard_early_faults and reset_delay >= 16 and not (allow_user_exceptions and log_faults):
         raise ValueError('With fault guards, normal delay must be below 16 seconds to distinguish outcomes')
     if output.exists() or kernel.resolve() == output.resolve():
         raise ValueError('Output must be a new file distinct from the source kernel')
@@ -687,6 +691,10 @@ _start:
                 raise ValueError('Unrecognized active exception vector')
             if allow_interrupts and index % 4 in (1, 2):
                 continue
+            if allow_user_exceptions and index == 8:
+                # Lower-EL AArch64 synchronous: EL0 system calls, demand paging and
+                # user faults, which XNU turns into signals. Kernel faults stay guarded.
+                continue
             if allow_vm_faults and index % 4 == 0:
                 # Demand paging is ordinary kernel operation. Preserve the
                 # interrupted registers and let XNU handle data aborts at the
@@ -775,6 +783,7 @@ native_vm:
               'early_fault_guard_sites': guard_sites,
               'native_data_abort_filters': vm_filters,
               'native_irq_fiq_vectors_preserved': allow_interrupts,
+              'native_el0_synchronous_vector_preserved': allow_user_exceptions,
               'kernel_banner_printed_at_checkpoint': print_kernel_banner,
               'early_text_console_acquired': acquire_text_console,
               'physical_framebuffer_tagged_before_console_setup': physical_framebuffer,
@@ -818,6 +827,7 @@ def main():
     parser.add_argument('--guard-early-faults', action='store_true', help='reset 20 s after an early exception or 24 s after panic')
     parser.add_argument('--allow-interrupts', action='store_true', help='preserve native IRQ/FIQ vectors; guard synchronous faults and SError only')
     parser.add_argument('--allow-vm-faults', action='store_true', help='delegate data aborts to original XNU handlers for demand paging; requires --allow-interrupts')
+    parser.add_argument('--allow-user-exceptions', action='store_true', help='leave the lower-EL AArch64 synchronous vector native (EL0 syscalls, paging, user faults); requires --allow-vm-faults')
     parser.add_argument('--record-address', type=lambda value: int(value, 0), default=RECORD_ADDRESS, help='reserved record PA: default ramoops, or 0xe3000000 display diagnostic window')
     parser.add_argument('--warm-reset', action='store_true', help='entry retention test: discover and use PSCI SYSTEM_RESET2 warm reset, otherwise cold reset after 12 s')
     parser.add_argument('--check-pointer', help='before-call pointer check: NULL resets after 12 s, non-NULL uses --reset-delay')
@@ -853,7 +863,8 @@ def main():
                 args.print_kernel_banner, args.poll_native_usb, args.log_faults,
                 args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
                 args.acquire_text_console, args.physical_framebuffer, args.install_boot_irq_early,
-                args.inspect_zeta_ufs, args.allow_vm_faults, args.inspect_zeta_smmu, args.inspect_zeta_ufs_status, args.settle_zeta_ufs_ms)
+                args.inspect_zeta_ufs, args.allow_vm_faults, args.inspect_zeta_smmu, args.inspect_zeta_ufs_status, args.settle_zeta_ufs_ms,
+                args.allow_user_exceptions)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

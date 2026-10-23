@@ -2,11 +2,13 @@
 """Build the boot progress library (kits/zeta) against the xnu-12377 objects of this tree.
 
 UniXNU-sheng scripts/build-boot-progress.py, for the 12377 build: the page and the user fault probe compile with
-the flags of osfmk startup.o, from the compile record the first kernel pass leaves. The launch policy and the
-diagnostic log export are not built; zeta has no kernel Data mount yet and writes no log to the phone.
+the flags of osfmk startup.o, from the compile record the first kernel pass leaves. With the kernel Data mount
+(XNU_OWNER_DATA_MOUNT) the launch policy is built too, with the flags of bsd kern_exec.o. The diagnostic log export
+is not built: zeta writes no log to the phone.
 """
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -16,10 +18,10 @@ OBJ = ROOT / 'build/xnu-12377.121.6/ios-obj/DEVELOPMENT_ARM64_BCM2837'
 KIT = ROOT / 'kits/zeta'
 OUT = ROOT / 'build/boot-progress'
 OUT.mkdir(parents=True, exist_ok=True)
-record = json.loads((OBJ / 'osfmk/DEVELOPMENT/startup.o.json').read_text().strip().rstrip(','))
+startup = json.loads((OBJ / 'osfmk/DEVELOPMENT/startup.o.json').read_text().strip().rstrip(','))
 
 
-def command_for(source, destination):
+def command_for(source, destination, record):
     command = []
     arguments = record['arguments']
     index = 0
@@ -57,12 +59,16 @@ def check_object(path):
     raise SystemExit(f'{path.name}: expected an iOS 26 deployment')
 
 
+units = [('BootProgress', startup), ('BootFaultProbe', startup)]
+if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
+    units.append(('BootWatchdogPolicy',
+                  json.loads((OBJ / 'bsd/DEVELOPMENT/kern/kern_exec.o.json').read_text().strip().rstrip(','))))
 objects = []
 commands = {}
-for name in ('BootProgress', 'BootFaultProbe'):
+for name, record in units:
     source = KIT / (name + '.c')
     destination = OUT / (name + '.o')
-    command = command_for(source, destination)
+    command = command_for(source, destination, record)
     result = subprocess.run(command, cwd=record['directory'], capture_output=True, text=True, timeout=120)
     (OUT / (name + '.log')).write_text(result.stdout + result.stderr)
     if result.returncode:
@@ -76,7 +82,7 @@ archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), *map(str, objects)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted(KIT.glob('BootProgress*')) + [KIT / 'BootFaultProbe.c', KIT / 'Font.h']},
+                for path in sorted(KIT.glob('BootProgress*')) + [KIT / (name + '.c') for name, _ in units[1:]] + [KIT / 'Font.h']},
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

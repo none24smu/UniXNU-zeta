@@ -23,6 +23,11 @@
 #include <string.h>
 
 extern "C" uintptr_t native_kext_symbol(const char *bundleID, const char *symbol);
+// The boot progress page (package/BootProgress.c) repaints the panel until the system owns it.
+extern "C" int boot_progress_prepare_scanout(void) __attribute__((weak_import));
+extern "C" void boot_progress_cancel_scanout(void) __attribute__((weak_import));
+extern "C" boolean_t ml_get_interrupts_enabled(void);
+extern "C" boolean_t ml_at_interrupt_context(void);
 extern "C" void native_legacy_display_late_probe(void);
 
 namespace {
@@ -171,6 +176,18 @@ bool surfaceBounds(uint32_t width, uint32_t height, uint64_t stride, uint64_t al
 
 void kick(IOService *self);
 
+// sheng's native_legacy_prepare_scanout: yield to an in-flight diagnostic writer, never spin on a preempted one.
+bool prepareScanout() {
+    if (!boot_progress_prepare_scanout) return true;
+    if (ml_at_interrupt_context() || !ml_get_interrupts_enabled()) return false;
+    for (unsigned attempt = 0; attempt < 100; ++attempt) {
+        if (boot_progress_prepare_scanout()) return true;
+        IOSleep(1);
+    }
+    if (boot_progress_cancel_scanout) boot_progress_cancel_scanout();
+    return false;
+}
+
 // Retire the swap after the copy and its store barrier: memory scanout completion, not a vblank or a fence.
 void finishTransfer(IOService *self, Display *display, const void *request) {
     if (bootArg("offline-legacy-retire") != 1 && bootArg("offline-legacy-cpu-present") != 1) return;
@@ -191,6 +208,7 @@ void kickOnce(IOService *self, Display *display) {
     const uint32_t width = display->width, height = display->height;
     if (!surface) {
         // A validated blank swap (every layer disabled over black): fill the scanout.
+        if (!prepareScanout()) return;
         for (uint32_t row = 0; row < height; ++row) {
             auto line = reinterpret_cast<volatile uint32_t *>(destination + (uint64_t)row * display->rowBytes);
             for (uint32_t x = 0; x < width; ++x) line[x] = 0xff000000U;
@@ -205,6 +223,10 @@ void kickOnce(IOService *self, Display *display) {
     if (!memory || !surfaceBounds(width, height, stride, allocation, memory->getLength())) return;
     IOMemoryMap *source = memory->map(kIOMapAnywhere | kIOMapReadOnly);
     if (!source || !source->getVirtualAddress() || source->getLength() < allocation) {
+        OSSafeReleaseNULL(source);
+        return;
+    }
+    if (!prepareScanout()) {
         OSSafeReleaseNULL(source);
         return;
     }

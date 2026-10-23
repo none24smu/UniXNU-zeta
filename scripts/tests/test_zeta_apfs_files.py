@@ -25,6 +25,13 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(lines[removal + 1], f'cp "$SRC/f{index}" "$DST{path}"')
         self.assertIn('chmod 4755 "$DST/usr/bin/su"', lines)
 
+    def test_symlinks_follow_files_and_are_read_back(self):
+        lines = W.plan([], [('/d/f', 0, 0, '644')], symlinks=[("/var/db/it's", '/d/l', 0, 0)]).splitlines()
+        link = lines.index("ln -sfn '/var/db/it'\\''s' \"$DST/d/l\"")
+        self.assertGreater(link, lines.index('cp "$SRC/f0" "$DST/d/f"'))
+        self.assertEqual(lines[link + 1], 'chown -h 0:0 "$DST/d/l"')
+        self.assertEqual(lines[-1], 'echo "GUEST-LINK 0 $(readlink "$DST/d/l")"')
+
 
 if __name__ == '__main__':
     unittest.main()

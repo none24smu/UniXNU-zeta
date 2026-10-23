@@ -6,7 +6,8 @@ boots the given Linux kernel with a busybox initramfs that loads
 linux-apfs-rw, mounts the container read-write, copies the files from an
 ext4 image made with mkfs.ext4 -d, sets owner, group and mode, prints the
 SHA-256 of every written file as read back through APFS, unmounts and
-powers off. The host compares those hashes with the sources. --replace
+powers off. The host compares those hashes with the sources, and every
+symbolic link's target as read back. --replace
 removes an existing file first, so a decmpfs-compressed original (which
 linux-apfs-rw cannot write) is replaced by a plain file. The container
 is modified in place; work on a copy. Run apfsck on the result.
@@ -46,7 +47,12 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def plan(directories, files, replace=False):
+def quote(text):
+    """A single-quoted shell word."""
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def plan(directories, files, replace=False, symlinks=()):
     """Shell plan run by the guest: $1 is the source mount, $2 the APFS mount."""
     lines = ['set -e', 'SRC=$1; DST=$2']
     for path, uid, gid, mode in directories:
@@ -54,8 +60,11 @@ def plan(directories, files, replace=False):
     for index, (path, uid, gid, mode) in enumerate(files):
         lines += ([f'rm -f "$DST{path}"'] if replace else []) + [
             f'cp "$SRC/f{index}" "$DST{path}"', f'chown {uid}:{gid} "$DST{path}"', f'chmod {mode} "$DST{path}"']
+    for target, path, uid, gid in symlinks:
+        lines += [f'ln -sfn {quote(target)} "$DST{path}"', f'chown -h {uid}:{gid} "$DST{path}"']
     lines += ['sync'] + [f'echo "GUEST-HASH {index} $(sha256sum "$DST{path}" | cut -d" " -f1)"'
                          for index, (path, _, _, _) in enumerate(files)]
+    lines += [f'echo "GUEST-LINK {index} $(readlink "$DST{path}")"' for index, (_, path, _, _) in enumerate(symlinks)]
     return '\n'.join(lines) + '\n'
 
 
@@ -67,6 +76,7 @@ def main(argv=None):
     parser.add_argument('--busybox', type=Path, default=Path('/usr/bin/busybox'), help='static busybox')
     parser.add_argument('--directory', nargs=4, action='append', default=[], metavar=('PATH', 'UID', 'GID', 'MODE'))
     parser.add_argument('--file', nargs=5, action='append', default=[], metavar=('SOURCE', 'PATH', 'UID', 'GID', 'MODE'))
+    parser.add_argument('--symlink', nargs=4, action='append', default=[], metavar=('TARGET', 'PATH', 'UID', 'GID'))
     parser.add_argument('--file-list', type=Path, help='JSON list of {source, path, uid, gid, mode}, added to --file')
     parser.add_argument('--replace', action='store_true', help='remove each existing target file before the copy')
     parser.add_argument('--memory', default='4096')
@@ -78,6 +88,7 @@ def main(argv=None):
     sources = [Path(source) for source, *_ in args.file]
     targets = [(path, int(uid), int(gid), mode) for _, path, uid, gid, mode in args.file]
     directories = [(path, int(uid), int(gid), mode) for path, uid, gid, mode in args.directory]
+    symlinks = [(target, path, int(uid), int(gid)) for target, path, uid, gid in args.symlink]
     with tempfile.TemporaryDirectory(dir=args.report.parent) as scratch:
         scratch = Path(scratch)
         root = scratch / 'initramfs'
@@ -98,7 +109,7 @@ def main(argv=None):
                 (source_dir / f'f{index}').hardlink_to(source.resolve())
             except OSError:
                 shutil.copyfile(source, source_dir / f'f{index}')
-        (source_dir / 'plan.sh').write_text(plan(directories, targets, args.replace))
+        (source_dir / 'plan.sh').write_text(plan(directories, targets, args.replace, symlinks))
         total = sum(source.stat().st_size for source in sources)
         size_mb = total // (1 << 20) + 64 + total // (1 << 20) // 16
         subprocess.run(['mkfs.ext4', '-q', '-d', str(source_dir), str(scratch / 'src.ext4'), f'{size_mb}M'], check=True)
@@ -117,12 +128,17 @@ def main(argv=None):
             failures.append(f'{path}: read back {hashes.get(index)}, expected {expected}')
         files.append(dict(source=str(source), path=path, uid=uid, gid=gid, mode=mode, bytes=source.stat().st_size,
                           sha256=expected, guest_sha256=hashes.get(index)))
+    links = {int(m.group(1)): m.group(2) for m in re.finditer(r'GUEST-LINK (\d+) (.*)', console)}
+    for index, (target, path, _, _) in enumerate(symlinks):
+        if links.get(index, '').strip() != target:
+            failures.append(f'{path}: link reads back {links.get(index)!r}, expected {target!r}')
     for marker in ('GUEST: plan ok', 'GUEST: unmounted', 'GUEST: done'):
         if not any(marker in line for line in guest):
             failures.append(f'guest never printed {marker!r}')
     report = dict(schema='zeta-apfs-file-write-v1', container=str(args.container), kernel=str(args.kernel),
                   kernel_sha256=sha256(args.kernel), module_sha256=sha256(args.module), directories=[
                       dict(path=p, uid=u, gid=g, mode=m) for p, u, g, m in directories],
+                  symlinks=[dict(target=t, path=p, uid=u, gid=g) for t, p, u, g in symlinks],
                   files=files, guest_log=guest, failures=failures, container_sha256=sha256(args.container))
     args.report.write_text(json.dumps(report, indent=1) + '\n')
     if failures:

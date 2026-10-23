@@ -20,7 +20,7 @@ Steps follow the [UniXNU porting checklist](https://unixnu.com/porting/).
 | 4. ADT | `scripts/make-zeta-adt.py`: zeta hardware (GIC, CPUs, timer, DRAM measured on the phone) with the iPhone18,2 identity from the IPSW device tree |
 | 5. Payload and boot image | xnu-12377.121.6 (iOS 26.5) DEVELOPMENT BCM2837 from UniXNU `ios26` (`patches/xnu-12377`), linked on the GitHub macOS runner with Xcode 26.6. DarwinBoot loads the kernel, ADT, and boot arguments. Paired reset probes reached `arm_init` after the original assembly bootstrap and MMU enable. Not prelinked with the 23F84 kexts yet: they are arm64e; the tested boot CPU reports no pointer authentication |
 | 6. Kernel bring-up | Guide Stage 5 checks verified over native USB: kernel version/arguments, original MMU/C startup, actual `ArmDTPlatform::configure()` success return, required ADT nodes and NVRAM proxy. The compiled IRQ ordering fix and real source pthread provider now reach and return from BSD pthread initialization on hardware |
-| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. launchd and dyld rewritten offline to the ordinary arm64 ABI, a merged static trust cache, and PID 1 executing the rewritten dyld at EL0 are verified. The shared cache is rewritten the same way (29.6M PAC words lowered, every file re-signed with 4 KiB pages) on a grown OS container. With `dyld_flags=0x8`, dyld maps it and launchd runs: it execs a process and stays up for the full 180 s window. Guide Stage 6 is complete; Guide Stage 7 is not reached |
+| Storage and userland | Guide Stage 6: Native UFS reads, both owner-signed policy tables, APFS startup, both volume UUIDs, OS root mounting, owner root authorization, early AMFI registration and decmpfs zlib reads are verified. launchd and dyld rewritten offline to the ordinary arm64 ABI, a merged static trust cache, and PID 1 executing the rewritten dyld at EL0 are verified. The shared cache is rewritten the same way (29.6M PAC words lowered, every file re-signed with 4 KiB pages) on a grown OS container. An earlier report that launchd stayed up was wrong: the probe's masked wait hid the console. The cache map needs the ADT's SIP words (`--csr-config 0x2`); with them the cache maps and launchd runs in it until it faults on a pointer the 4 KiB kernel left unslid (pager fix pending verification). Guide Stage 6 is not complete |
 
 ## Inputs
 
@@ -919,12 +919,37 @@ read back through APFS. The 22.3 GB root image moves the SystemOS window.
 blocks as FILL chunks.
 
 `qcom-userland-cache-v3` ran that root with the 4 KiB-signed cache and a
-180-second polled console after `load_init_program`. dyld checked the
-shared region, and there was no code-signature or dyld error. launchd did
-not exit and no fault or panic guard fired. A second exec followed, and the
-console stayed up until the timed reset. launchd has run past dyld and
-libSystem into its own code, which completes Guide Stage 6. Its own output is
-not visible yet. The next step is to show what it runs.
+180-second polled console after `load_init_program`. The console showed
+dyld's first `check_np` and nothing after it, which was read as launchd
+running. That reading was wrong. The probe's wait masked interrupts and
+busy-polled one CPU for the whole delay, which stalled the system and hid
+every later line. `--sleep-poll-ms` now sleeps between USB polls with
+interrupts enabled, and only the final reset masks them. With it
+(`qcom-userland-sleep-v1`) the real outcome is visible. The cache map is
+refused ("vnode is not SIP-protected"), libSystem is not found, and PID 1
+exits.
+
+The kernel is built for the macOS target, so `CONFIG_CSR` is on, and
+`csr_bootstrap` reads the local boot policy's `lp-sip0` from
+`/chosen/asmb`. Without that node, `csr_config` is 0, i.e. full SIP. The
+cache file must then carry `SF_RESTRICTED`, which iOS volumes do not use
+because iOS has no CSR. `make-zeta-adt.py --csr-config 0x2` grants only
+`CSR_ALLOW_UNRESTRICTED_FS`, the iOS behaviour for this check. With it
+(`qcom-userland-csr-v1`) the cache maps and launchd runs in it. It then
+dies of SIGSEGV. The `exception_log_max_pid=1` boot-arg names a bad access
+at `0x86be6afc6de6c600`, and that word appears once in the cache: libdyld's
+`__DATA_CONST,__helper` vtable pointer, as a raw slide-info-v5 auth entry.
+
+Slide info v5 describes 16 KiB pages, while this kernel uses 4 KiB pages.
+For each 4 KiB page, `shared_region_pager_data_request` copied a whole
+16 KiB slide page into the 4 KiB destination page, overrunning physical
+memory. It also started each page's pointer chain at the 16 KiB page start,
+so only the first quarter of every slide page was slid. UniXNU's
+`native-shared-region-small-pages.patch` reads the earlier pages of the
+same slide page, each validated against the code signature. It slides the
+slide page in a scratch buffer and keeps only the requested page. This
+keeps shared cache ASLR, and the root image does not change. Guide Stage 6
+is complete only once launchd runs on hardware with this fix.
 
 Local reports are in
 `../work/apfs-stage6/`, `../work/amfi-stage6/`, `../work/fscompression-stage6/`,

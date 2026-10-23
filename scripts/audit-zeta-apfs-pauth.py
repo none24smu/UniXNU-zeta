@@ -9,6 +9,7 @@ import sys
 
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, __version__ as capstone_version
 from zeta_pauth_plan import plan_section
+import zeta_userland_code as code_proof
 
 SPEC = importlib.util.spec_from_file_location('apfs_fixups', Path(__file__).with_name('audit-zeta-apfs.py'))
 A = importlib.util.module_from_spec(SPEC)
@@ -50,6 +51,38 @@ def embedded_data(data, image):
     return ranges
 
 
+def jump_tables(data, image, section):
+    """Jump tables clang leaves inside an instruction section, as embedded data.
+
+    Each hardened dispatch is decoded exactly (zeta_userland_code.jump_table: the clamp gives the
+    entry count), and every entry must land on a decoded instruction of the section outside the
+    tables. The adrp/add pair that addresses a table is its referencing instruction."""
+    low, high = section['va'], section['va'] + section['size']
+    insns = code_proof.decode(data, [dict(offset=section['fileoff'], size=section['size'], addr=low)])
+    found = {}
+    for pc, instruction in sorted(insns.items()):
+        if instruction != ('br', 'x16'):
+            continue
+        table = code_proof.jump_table(insns, data, image.file_at, pc)
+        if not table:
+            continue
+        start, end = table['table'], table['table'] + 4 * table['entries']
+        if not low <= start < end <= high:
+            continue
+        references = tuple((at, word_at(data, image, at)) for at in (pc - 20, pc - 16))
+        found.setdefault((start, end), (start, end, f'jump table of the dispatch at {pc:#x}', references, table['targets']))
+    tables = sorted(found.values())
+    for (start, end, label, *_), following in zip(tables, tables[1:]):
+        if following[0] < end:
+            raise ValueError(f'{label} overlaps another jump table')
+    for start, end, label, _, targets in tables:
+        for target in targets:
+            if (not low <= target < high or insns[target][0].startswith('.') or
+                    any(other[0] <= target < other[1] for other in tables)):
+                raise ValueError(f'{label}: entry target {target:#x} is not an instruction of the section')
+    return [table[:4] for table in tables]
+
+
 def instruction_runs(section, ranges):
     """Split one section around the pinned tables; tables must lie inside it."""
     va, end, runs = section['va'], section['va'] + section['size'], []
@@ -73,6 +106,7 @@ def audit_data(data, path):
     decoder.skipdata = True
     sections, edits, tables = [], [], []
     ranges = embedded_data(data, image)
+    detected = []
     for segment in image.segments:
         if not segment['initial_protection'] & 4:
             continue
@@ -82,7 +116,12 @@ def audit_data(data, path):
             if section['zero_fill']:
                 raise ValueError('zero-fill executable section is unsupported')
             start, length = section['fileoff'], section['size']
-            runs, inside = instruction_runs(section, ranges)
+            found = jump_tables(data, image, section)
+            for table in found:
+                if any(pinned[0] < table[1] and table[0] < pinned[1] for pinned in ranges):
+                    raise ValueError(f'{table[2]} overlaps a pinned table')
+            detected += found
+            runs, inside = instruction_runs(section, sorted(list(ranges) + found))
             rows = []
             for low, high in runs:
                 at = start + low - section['va']
@@ -98,7 +137,7 @@ def audit_data(data, path):
                 raise ValueError('nonzero executable bytes outside admitted instruction sections')
     if not sections or not edits:
         raise ValueError('no admitted executable sections or PAuth instructions')
-    if len(tables) != len(ranges):
+    if len(tables) != len(ranges) + len(detected):
         raise ValueError('pinned embedded table outside the executable sections')
     return dict(schema='zeta-apfs-pauth-plan-v1', input=image.identity,
                 decoder=f'capstone {capstone_version}', analysis_only=True, instruction_decode_complete=True,

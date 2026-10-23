@@ -305,13 +305,14 @@ def jump_table(insns, data, va_to_off, pc):
             return None
         values += [int(group, 0) for group in match.groups()]
     page, low, anchor = values
-    # The clamp: cmp x16, #N (or a register holding N) then csel x16, x16, xzr, ls.
+    # The clamp: cmp x16, #N (or a register holding N) then csel x16, x16, xzr, ls. Kernel code
+    # has csneg x16, x16, xzr, ls, the same selection (the negated zero register is zero).
     limit = None
     for at in range(pc - 24, pc - 24 - 4 * 8, -4):
         found = insns.get(at)
         if not found:
             break
-        if found == ('csel', 'x16, x16, xzr, ls'):
+        if found in (('csel', 'x16, x16, xzr, ls'), ('csneg', 'x16, x16, xzr, ls')):
             for before in range(at - 4, at - 4 * 6, -4):
                 compare = insns.get(before)
                 if compare and compare[0] == 'cmp' and compare[1].startswith('x16, '):

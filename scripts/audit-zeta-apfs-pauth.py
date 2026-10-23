@@ -15,6 +15,54 @@ A = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(A)
 
 
+# Hand-written decoder tables inside __text, absent from LC_DATA_IN_CODE.
+# Pinned per exact slice: (start, end, label, referencing instruction words).
+# Each table is addressed PC-relatively within its segment, so it moves with
+# the code; it must only never be decoded or rewritten as instructions.
+EMBEDDED_DATA = {
+    'dba9d8092b391ba303da29d66b4c6867ac1d0d4d6b7b6b96f7b29ef1a7f52517': (
+        (0x4800, 0x4a00, 'lzvn opcode jump table', ((0x44cc, 0x100019b0),)),
+        (0x4ec0, 0x50d0, 'lz4 shuffle and step tables', ((0x4cdc, 0x10000f2c), (0x4ce0, 0x10001f0d))),
+        (0x74c0, 0x76c8, 'lzfse bit masks', ((0x73b0, 0x9000000c), (0x73b4, 0x9113018c))),
+        (0xa060, 0xa088, 'adler32 constants', ((0x9ed4, 0xb0000007), (0x9edc, 0x910180e7))),
+    ),
+}
+BTI_J = 0xd503249f
+
+
+def word_at(data, image, va):
+    return int.from_bytes(data[image.file_at(va, 4):image.file_at(va, 4) + 4], 'little')
+
+
+def embedded_data(data, image):
+    ranges = EMBEDDED_DATA.get(image.identity['sha256'], ())
+    for start, end, label, references in ranges:
+        for va, word in references:
+            if word_at(data, image, va) != word:
+                raise ValueError(f'{label}: referencing instruction differs at {va:#x}')
+    if ranges and ranges[0][2] == 'lzvn opcode jump table':
+        # Every signed 16-bit entry must reach a BTI J landing pad in its decoder.
+        start, end = ranges[0][:2]
+        for at in range(start, end, 2):
+            target = start + int.from_bytes(data[image.file_at(at, 2):image.file_at(at, 2) + 2], 'little', signed=True)
+            if not 0x44c0 <= target < start or word_at(data, image, target) != BTI_J:
+                raise ValueError(f'lzvn jump table entry at {at:#x} does not reach a landing pad')
+    return ranges
+
+
+def instruction_runs(section, ranges):
+    """Split one section around the pinned tables; tables must lie inside it."""
+    va, end, runs = section['va'], section['va'] + section['size'], []
+    inside = [r for r in ranges if va <= r[0] < end]
+    for start, stop, label, _ in inside:
+        if stop > end or start % 4 or stop % 4 or start < va:
+            raise ValueError(f'{label}: table crosses its section or instruction alignment')
+        runs.append((va, start))
+        va = stop
+    runs.append((va, end))
+    return [(a, b) for a, b in runs if b > a], inside
+
+
 def audit(path):
     return audit_data(path.read_bytes(), path)
 
@@ -23,7 +71,8 @@ def audit_data(data, path):
     image = A.MachO(data, path, candidate=True)
     decoder = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
     decoder.skipdata = True
-    sections, edits = [], []
+    sections, edits, tables = [], [], []
+    ranges = embedded_data(data, image)
     for segment in image.segments:
         if not segment['initial_protection'] & 4:
             continue
@@ -33,7 +82,12 @@ def audit_data(data, path):
             if section['zero_fill']:
                 raise ValueError('zero-fill executable section is unsupported')
             start, length = section['fileoff'], section['size']
-            rows = plan_section(data[start:start + length], section['va'], start, decoder)
+            runs, inside = instruction_runs(section, ranges)
+            rows = []
+            for low, high in runs:
+                at = start + low - section['va']
+                rows += plan_section(data[at:at + high - low], low, at, decoder)
+            tables += [dict(section=section['name'], start=hex(a), end=hex(b), label=label) for a, b, label, _ in inside]
             first = start - segment['fileoff']
             covered[first:first + length] = bytes([1]) * length
             edits += rows
@@ -44,9 +98,11 @@ def audit_data(data, path):
                 raise ValueError('nonzero executable bytes outside admitted instruction sections')
     if not sections or not edits:
         raise ValueError('no admitted executable sections or PAuth instructions')
+    if len(tables) != len(ranges):
+        raise ValueError('pinned embedded table outside the executable sections')
     return dict(schema='zeta-apfs-pauth-plan-v1', input=image.identity,
                 decoder=f'capstone {capstone_version}', analysis_only=True, instruction_decode_complete=True,
-                instruction_sections=sections, instruction_counts=dict(Counter(e['mnemonic'] for e in edits)),
+                instruction_sections=sections, embedded_data=tables, instruction_counts=dict(Counter(e['mnemonic'] for e in edits)),
                 edits=edits, driver_loadable=False, hardware_tested=False,
                 pointer_contract='Canonical unsigned pointers throughout the complete producer/consumer closure; this does not emulate PAC authentication.',
                 requirements=['Every authenticated fixup must be independently bound/rebased to a canonical unsigned address.',

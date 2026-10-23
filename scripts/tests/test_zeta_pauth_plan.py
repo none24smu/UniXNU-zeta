@@ -62,5 +62,30 @@ class EncodingTests(unittest.TestCase):
                 lower_word(word)
 
 
+
+class EmbeddedDataTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('pauth_audit', SCRIPTS / 'audit-zeta-apfs-pauth.py')
+        cls.audit = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.audit)
+
+    def test_tables_split_their_section(self):
+        section = dict(va=0x4000, size=0x1000)
+        runs, inside = self.audit.instruction_runs(section, ((0x4800, 0x4a00, 'table', ()), (0x6000, 0x6010, 'other', ())))
+        self.assertEqual(runs, [(0x4000, 0x4800), (0x4a00, 0x5000)])
+        self.assertEqual([r[2] for r in inside], ['table'])
+
+    def test_table_crossing_section_or_alignment_rejected(self):
+        section = dict(va=0x4000, size=0x1000)
+        for bad in ((0x4ff0, 0x5010, 'crossing', ()), (0x4802, 0x4a00, 'unaligned', ())):
+            with self.subTest(label=bad[2]), self.assertRaises(ValueError):
+                self.audit.instruction_runs(section, (bad,))
+
+    def test_pinned_ranges_are_ordered_and_disjoint(self):
+        for ranges in self.audit.EMBEDDED_DATA.values():
+            for left, right in zip(ranges, ranges[1:]):
+                self.assertLessEqual(left[1], right[0])
+
 if __name__ == '__main__':
     unittest.main()

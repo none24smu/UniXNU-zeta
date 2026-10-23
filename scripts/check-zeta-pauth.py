@@ -16,16 +16,17 @@ from zeta_pauth_plan import lower_word
 
 CASES = {
     'pacia': 0xdac10128, 'paciza': 0xdac123e8, 'autiza': 0xdac133e8, 'pacda': 0xdac10928,
-    'autia': 0xdac11128, 'autda': 0xdac11928, 'autdza': 0xdac13be8,
+    'pacdb': 0xdac10d28, 'autia': 0xdac11128, 'autib': 0xdac11528, 'autda': 0xdac11928,
+    'autdb': 0xdac11d28, 'autdza': 0xdac13be8,
     'xpaci': 0xdac143e8, 'xpacd': 0xdac147e8,
-    'pacibsp': 0xd503237f, 'autibsp': 0xd50323ff, 'retab': 0xd65f0fff,
-    'braa': 0xd71f0909, 'blraa': 0xd73f0909, 'blraaz': 0xd63f091f,
+    'pacibsp': 0xd503237f, 'autibsp': 0xd50323ff, 'pacia1716': 0xd503211f, 'pacib1716': 0xd503215f,
+    'retab': 0xd65f0fff, 'braa': 0xd71f0909, 'braaz': 0xd61f091f, 'blraa': 0xd73f0909, 'blraaz': 0xd63f091f,
 }
 
 
 def assembly(name, word, expected_undefined):
     linked = name in ('blraa', 'blraaz')
-    branch = name in ('braa', 'blraa', 'blraaz')
+    branch = name in ('braa', 'braaz', 'blraa', 'blraaz')
     operand = 'adr x8, target' if branch else 'ldr x8, =0xfffffff008123450'
     lr = 'mov x30, #0x5678' if branch else 'adr x30, after'
     expected_lr = 'adr x22, after' if linked else 'mov x22, x30'
@@ -145,7 +146,8 @@ def main():
         for variant, word in (('original', original), ('ordinary', lowered[1])):
             directory = out / f'{name}-{variant}'
             directory.mkdir()
-            negative = variant == 'original' and name not in ('pacibsp', 'autibsp')
+            # Hint-space forms already execute as NOPs without FEAT_PAuth.
+            negative = variant == 'original' and name not in ('pacibsp', 'autibsp', 'pacia1716', 'pacib1716')
             source = directory / 'entry.S'
             source.write_text(assembly(name, word, negative))
             obj, elf = directory / 'entry.o', directory / 'guest.elf'

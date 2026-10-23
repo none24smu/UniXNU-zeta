@@ -1,6 +1,7 @@
 """Bounded instruction lowering for an ordinary-pointer ABI experiment.
 
-Only the fifteen forms observed in the pinned APFS and AMFI dependency artifacts are handled.
+Only the twenty-one forms observed in the pinned APFS and AMFI dependency artifacts
+and the 23F84 launchd and dyld are handled.
 This is not pointer authentication emulation: input pointers must already be
 canonical unsigned pointers, and all producers/consumers must share that ABI.
 It does not relocate, bind, initialize or emit a loadable driver. Unknown PAC
@@ -13,12 +14,14 @@ RET = 0xd65f03c0
 
 
 def lower_word(word):
-    exact = {0xd503237f: 'pacibsp', 0xd50323ff: 'autibsp', 0xd65f0fff: 'retab'}
+    exact = {0xd503237f: 'pacibsp', 0xd50323ff: 'autibsp', 0xd65f0fff: 'retab',
+             0xd503211f: 'pacia1716', 0xd503215f: 'pacib1716'}
     if word in exact:
         name = exact[word]
         return name, RET if name == 'retab' else NOP
-    for base, name in ((0xdac10000, 'pacia'), (0xdac10800, 'pacda'),
-                       (0xdac11000, 'autia'), (0xdac11800, 'autda')):
+    for base, name in ((0xdac10000, 'pacia'), (0xdac10800, 'pacda'), (0xdac10c00, 'pacdb'),
+                       (0xdac11000, 'autia'), (0xdac11400, 'autib'), (0xdac11800, 'autda'),
+                       (0xdac11c00, 'autdb')):
         if word & 0xfffffc00 == base:
             if word & 31 == 31:
                 raise ValueError('unsupported zero-register PAC destination')
@@ -36,6 +39,11 @@ def lower_word(word):
             if register == 31:
                 raise ValueError('unsupported zero-register branch destination')
             return name, result | (register << 5)
+    if word & 0xfffffc1f == 0xd61f081f:
+        register = (word >> 5) & 31
+        if register == 31:
+            raise ValueError('unsupported zero-register branch destination')
+        return 'braaz', 0xd61f0000 | (register << 5)
     if word & 0xfffffc1f == 0xd63f081f:
         register = (word >> 5) & 31
         if register == 31:

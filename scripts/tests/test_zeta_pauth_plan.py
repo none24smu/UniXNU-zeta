@@ -23,6 +23,7 @@ class EncodingTests(unittest.TestCase):
         import re
         for reg in (0, 8, 16, 29, 30):
             for original, wanted in ((f'braa x{reg}, x17', f'br x{reg}'),
+                                     (f'braaz x{reg}', f'br x{reg}'),
                                      (f'blraa x{reg}, x17', f'blr x{reg}'),
                                      (f'blraaz x{reg}', f'blr x{reg}')):
                 with self.subTest(original=original):
@@ -34,9 +35,11 @@ class EncodingTests(unittest.TestCase):
                              for row in encodings]
                     self.assertEqual(len(words), 2)
                     self.assertEqual(lower_word(words[0])[1], words[1])
-            for name in ('autiza', 'autdza'):
+            for name, operands in (('autiza', f'x{reg}'), ('autdza', f'x{reg}'), ('pacdb', f'x{reg}, x9'),
+                                   ('autib', f'x{reg}, x9'), ('autdb', f'x{reg}, sp'),
+                                   ('pacia1716', ''), ('pacib1716', '')):
                 run = subprocess.run(['llvm-mc', '-triple=aarch64', '-mattr=+pauth', '-show-encoding'],
-                                     input=f'{name} x{reg}\n', text=True, capture_output=True, check=True)
+                                     input=f'{name} {operands}\n', text=True, capture_output=True, check=True)
                 encoding = re.search(r'encoding: \[([^]]+)\]', run.stdout).group(1)
                 word = int.from_bytes(bytes(int(v.strip(), 16) for v in encoding.split(',')), 'little')
                 self.assertEqual(lower_word(word), (name, 0xd503201f))
@@ -57,7 +60,7 @@ class EncodingTests(unittest.TestCase):
                                       0x1000, 0, decoder()), [])
 
     def test_auth_branch_zero_target_is_rejected(self):
-        for word in (0xd71f0be0, 0xd73f0be0, 0xd63f0bff):
+        for word in (0xd71f0be0, 0xd61f0bff, 0xd73f0be0, 0xd63f0bff):
             with self.assertRaisesRegex(ValueError, 'zero-register branch'):
                 lower_word(word)
 

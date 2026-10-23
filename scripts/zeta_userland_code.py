@@ -34,7 +34,8 @@ INDIRECT = ('br', 'braa', 'braaz', 'brab', 'brabz')
 CALLS = ('bl', 'blr', 'blraa', 'blraaz', 'blrab', 'blrabz')
 TARGET = re.compile(r'#(-?0x[0-9a-f]+|-?[0-9]+)$')
 # The hardened dispatch clang emits for arm64e, newest instruction last.
-DISPATCH = (('adrp', r'x17, #(0x[0-9a-f]+)'), ('add', r'x17, x17, #(0x[0-9a-f]+)'),
+# Capstone prints immediates below ten in decimal.
+DISPATCH = (('adrp', r'x17, #(0x[0-9a-f]+)'), ('add', r'x17, x17, #(0x[0-9a-f]+|[0-9])'),
             ('ldrsw', r'x16, \[x17, x16, lsl #2\]'), ('adr', r'x17, #(0x[0-9a-f]+)'),
             ('add', r'x16, x17, x16'), ('br', r'x16'))
 
@@ -118,6 +119,57 @@ def unwind_encodings(data, info, text_base):
     return result
 
 
+def unwind_lsdas(blob, text_base):
+    """Function address -> LSDA address, from the LSDA index of an __unwind_info blob."""
+    version, _, _, _, _, index_off, index_count = struct.unpack_from('<7I', blob)
+    if version != 1:
+        raise ValueError('unsupported __unwind_info version')
+    result = {}
+    if index_count < 2:
+        return result
+    first = struct.unpack_from('<I', blob, index_off + 8)[0]
+    last = struct.unpack_from('<I', blob, index_off + 12 * (index_count - 1) + 8)[0]
+    for at in range(first, last, 8):
+        function, lsda = struct.unpack_from('<II', blob, at)
+        result[text_base + function] = text_base + lsda
+    return result
+
+
+def encoded(data, at, encoding):
+    """One call-site table value: (value, next offset)."""
+    if encoding == 0x01:
+        return uleb128(data, at, len(data))
+    if encoding == 0x03:
+        return struct.unpack_from('<I', data, at)[0], at + 4
+    if encoding == 0x0b:
+        return struct.unpack_from('<i', data, at)[0], at + 4
+    raise ValueError(f'unsupported LSDA call-site encoding {encoding:#x}')
+
+
+def landing_pads(read, function, lsda):
+    """Landing pads of one LSDA (the Itanium C++ ABI exception table), with LPStart at the function."""
+    header = read(lsda, 32)
+    if header[0] != 0xff:
+        raise ValueError(f'LSDA at {lsda:#x} has an explicit LPStart')
+    at = 1
+    if header[at] != 0xff:
+        _, at = uleb128(header, at + 1, len(header))
+    else:
+        at += 1
+    call_site_encoding = header[at]
+    length, at = uleb128(header, at + 1, len(header))
+    table = read(lsda, at + length)
+    pads = set()
+    while at < len(table):
+        _, at = encoded(table, at, call_site_encoding)
+        _, at = encoded(table, at, call_site_encoding)
+        pad, at = encoded(table, at, call_site_encoding)
+        _, at = uleb128(table, at, len(table))
+        if pad:
+            pads.add(function + pad)
+    return pads
+
+
 def pointer_targets(data, info):
     """Rebase targets of LC_DYLD_CHAINED_FIXUPS (arm64e userland24 chains)."""
     base = next(s for s in info['segments'] if s['name'] == '__TEXT')['vmaddr']
@@ -173,7 +225,11 @@ def materialized(insns, code):
     return found
 
 
-def decode(data, sections):
+def decode(data, sections, oracle=None):
+    """{address: (mnemonic, operands)}; a word Capstone cannot decode has a '.'-prefixed mnemonic.
+
+    oracle, when given, maps a set of such words to {word: (mnemonic, operands)} for those it
+    knows to be straight-line instructions (llvm_oracle)."""
     decoder = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
     decoder.skipdata = True
     table = {}
@@ -181,7 +237,54 @@ def decode(data, sections):
         start = section['offset']
         for address, size, mnemonic, operands in decoder.disasm_lite(data[start:start + section['size']], section['addr']):
             table[address] = (mnemonic, operands)
+    if oracle:
+        unknown = {}
+        for section in sections:
+            low, high = section['addr'], section['addr'] + section['size']
+            for address, (mnemonic, _) in table.items():
+                if mnemonic.startswith('.') and low <= address < high:
+                    unknown[address] = struct.unpack_from('<I', data, section['offset'] + address - low)[0]
+        known = oracle(set(unknown.values()))
+        for address, word in unknown.items():
+            if word in known:
+                table[address] = known[word]
     return table
+
+
+AMX_MASK, AMX_BASE = 0xfffff000, 0x00201000
+LLVM_FEATURES = ('+v9.5a,+sve2,+sve2-aes,+sve2-sha3,+sve2-sm4,+sve2-bitperm,+sve2p1,+sme2p1,+sme-f64f64,'
+                 '+sme-i16i64,+sme-f16f16,+sme-lutv2,+bf16,+i8mm,+mops,+cssc,+sha3,+sm4,+fp16fml,+rcpc3,+lse128,'
+                 '+the,+d128,+gcs,+ite,+lut,+faminmax,+fp8,+jsconv,+complxnum,+rand,+mte,+ls64,+wfxt,+hbc,+flagm,'
+                 '+altnzcv,+pauth,+predres,+sb,+specrestrict,+ssbs,+tme')
+# Anything that can change the flow of control stays undecodable, so a walk never steps over it.
+LLVM_CONTROL = re.compile(r'(b|bl|br|blr|b\..*|bc\..*|cb.*|tbn?z|ret.*|eret.*|bra.*|blra.*|brk|hlt|udf|svc|hvc|smc)')
+
+
+def llvm_oracle(words):
+    """Straight-line instructions among words Capstone cannot decode: Apple AMX words
+    (0x00201000-0x00201fff, which do not branch) and whatever llvm-mc decodes with every A-profile
+    feature (SME2, newer SVE) unless it is a branch, return, trap or exception."""
+    import subprocess
+    known = {word: ('amx', f'{(word >> 5) & 0x7f}, {word & 0x1f}') for word in words
+             if word & AMX_MASK == AMX_BASE}
+    rest = sorted(word for word in words if word not in known)
+    if not rest:
+        return known
+    text = ''.join(f'0x{w & 0xff:02x} 0x{(w >> 8) & 0xff:02x} 0x{(w >> 16) & 0xff:02x} 0x{w >> 24:02x}\n'
+                   for w in rest)
+    result = subprocess.run(['llvm-mc', '--disassemble', '-triple=aarch64', f'-mattr={LLVM_FEATURES}'],
+                            input=text, capture_output=True, text=True, check=False)
+    invalid = {int(m.group(1)) for m in re.finditer(r'<stdin>:(\d+):\d+: warning: invalid instruction encoding',
+                                                   result.stderr)}
+    lines = iter(line.strip() for line in result.stdout.splitlines()
+                 if line.startswith('\t') and not line.lstrip().startswith('.'))
+    for number, word in enumerate(rest, 1):
+        if number in invalid:
+            continue
+        mnemonic, _, operands = next(lines).partition('\t')
+        if not LLVM_CONTROL.fullmatch(mnemonic):
+            known[word] = (mnemonic, operands.strip())
+    return known
 
 
 def jump_table(insns, data, va_to_off, pc):
@@ -193,7 +296,7 @@ def jump_table(insns, data, va_to_off, pc):
         match = found and found[0] == mnemonic and re.fullmatch(pattern, found[1])
         if not match:
             return None
-        values += [int(group, 16) for group in match.groups()]
+        values += [int(group, 0) for group in match.groups()]
     page, low, anchor = values
     # The clamp: cmp x16, #N (or a register holding N) then csel x16, x16, xzr, ls.
     limit = None
@@ -225,13 +328,22 @@ def jump_table(insns, data, va_to_off, pc):
                 targets=sorted({anchor + entry for entry in entries}))
 
 
-def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries):
-    """Follow control flow; a strict walk returns None instead of stopping at a doubtful word."""
+def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries, external=None):
+    """Follow control flow; a strict walk returns None instead of stopping at a doubtful word.
+
+    external, when given, covers code outside these sections that another proof owns (an image
+    calling another directly inside a shared cache); reaching it is recorded in external.reached
+    and ends that path without counting against the walk."""
     found_code, tables, anomalies, work = set(), [], [], list(roots)
     while work:
-        pc = work.pop()
+        pc, after_call = work.pop(), False
         while pc not in code and pc not in found_code:
             found = insns.get(pc)
+            if found is None and external is not None and pc in external:
+                external.reached.add(pc)
+                break
+            if strict and found and found[0] == 'udf' and after_call:
+                break  # the trap clang places after a call to a noreturn function
             if found is None or found[0].startswith('.') or pc in data_words or (strict and found[0] == 'udf'):
                 if strict:
                     return None
@@ -240,12 +352,14 @@ def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries):
                 anomalies.append(dict(kind=kind, address=hex(pc)))
                 break
             mnemonic, operands = found
+            # A call's stack-argument cleanup still counts as following the call.
+            after_call = mnemonic in CALLS or (after_call and mnemonic == 'add' and operands.startswith('sp, sp, #'))
             found_code.add(pc)
             target = TARGET.search(operands)
             if mnemonic == 'b':
                 work.append(int(target.group(1), 0))
                 break
-            if mnemonic == 'bl' or mnemonic.startswith('b.') or mnemonic in CONDITIONAL:
+            if mnemonic == 'bl' or mnemonic.startswith(('b.', 'bc.')) or mnemonic in CONDITIONAL:
                 work.append(int(target.group(1), 0))
             elif mnemonic in STOPS:
                 break
@@ -257,8 +371,9 @@ def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries):
                 break
             pc += 4
             if pc in boundaries:
-                # Only a call to a noreturn function may run into the next atom.
-                if strict and mnemonic not in CALLS:
+                # Only a call to a noreturn function may run into the next atom, unless that atom
+                # is already proven code (offlineasm places a global label every few instructions).
+                if strict and not after_call and pc not in code and pc not in found_code:
                     return None
                 break
     return found_code, tables, anomalies
@@ -278,20 +393,21 @@ def prove(data, info, sections, va_to_off):
     return prove_roots(insns, data, va_to_off, strong, weak, starts, pointer_targets(data, info))
 
 
-def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, called=()):
+def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, ordered=(), external=None):
     """The proof from supplied roots. Strong roots are walked first. Then come code pointers and
-    adr/adrp addresses, then calls from other images (called), then bare starts. Each root after the
-    strong ones is accepted only after a strict tentative walk."""
+    adr/adrp addresses, then each (grade, roots) of ordered in turn (exception landing pads, stub
+    entries, calls from other images), then bare starts. Each root after the strong ones is accepted
+    only after a strict tentative walk."""
     found, tables, anomalies = walk(insns, data, va_to_off, sorted(a for a in strong if a in insns), set(), set(),
-                                    False, starts)
+                                    False, starts, external)
     code = dict.fromkeys(found, 'unwind')
     data_words = table_words(tables)
     tried, rejected = set(), []
 
     def attempt(root, grade):
         tried.add(root)
-        result = walk(insns, data, va_to_off, [root], code, data_words, True, starts)
-        if result is None or (code.keys() | result[0]) & table_words(result[1]):
+        result = walk(insns, data, va_to_off, [root], code, data_words, True, starts, external)
+        if result is None or any(word in code or word in result[0] for word in table_words(result[1])):
             rejected.append(dict(address=hex(root), grade=grade))
             return False
         code.update(dict.fromkeys(result[0], grade))
@@ -306,19 +422,32 @@ def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, called=(
         if not candidates:
             break
         accepted['pointer'] += sum(attempt(root, 'pointer') for root in candidates)
-    if called:
-        accepted['call'] = 0
-        for root in sorted(called):
+    for grade, extra in ordered:
+        accepted.setdefault(grade, 0)
+        for root in sorted(extra):
             if root in insns and root not in code and root not in data_words and root not in tried:
-                accepted['call'] += attempt(root, 'call')
+                accepted[grade] += attempt(root, grade)
     for root in sorted(weak):
         if root in insns and root not in code and root not in data_words and root not in tried:
             accepted['start'] += attempt(root, 'start')
+    # A root that ran into a start proven only later is tried again until nothing changes.
+    while True:
+        retry, rejected[:] = rejected[:], []
+        progress = False
+        for entry in retry:
+            root = int(entry['address'], 16)
+            if root in code or root in data_words:
+                continue
+            if attempt(root, entry['grade']):
+                accepted[entry['grade']] = accepted.get(entry['grade'], 0) + 1
+                progress = True
+        if not progress:
+            break
     conflicts = sorted(code.keys() & data_words)
     if conflicts:
         raise ValueError(f'jump table overlaps proven code at {conflicts[0]:#x}')
     roots = dict(unwind=len(strong), pointer_accepted=accepted['pointer'], start_accepted=accepted['start'],
                  rejected=rejected)
-    if called:
-        roots['call_accepted'] = accepted['call']
+    for grade, _ in ordered:
+        roots[f'{grade}_accepted'] = accepted[grade]
     return insns, code, data_words, tables, anomalies, roots

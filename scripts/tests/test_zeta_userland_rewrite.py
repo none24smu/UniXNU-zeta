@@ -125,6 +125,78 @@ class CodeProofTests(unittest.TestCase):
                               dict(name='__DATA', vmaddr=0x100004000, fileoff=0x200)])
         self.assertEqual(self.c.pointer_targets(bytes(data), info), {0x100001234, 0x100002000})
 
+    def test_strict_walks_accept_the_trap_after_a_noreturn_call(self):
+        data = assemble('bl #8\nudf #0\nret\nudf #0\n')
+        insns = self.c.decode(data, [dict(offset=0, size=len(data), addr=BASE)])
+        walk = lambda root: self.c.walk(insns, data, None, [root], set(), set(), True, set())
+        self.assertEqual(walk(BASE)[0], {BASE, BASE + 8})
+        self.assertIsNone(walk(BASE + 12))
+
+    def test_external_code_ends_a_path_without_failing_it(self):
+        class External(set):
+            reached = set()
+        data = assemble('bl #0x100\nret\n')
+        insns = self.c.decode(data, [dict(offset=0, size=len(data), addr=BASE)])
+        external = External({BASE + 0x100})
+        found = self.c.walk(insns, data, None, [BASE], set(), set(), True, set(), external)
+        self.assertEqual(found[0], {BASE, BASE + 4})
+        self.assertEqual(external.reached, {BASE + 0x100})
+
+    def test_oracle_steps_over_amx_and_sme_but_not_branches(self):
+        sme = assemble('.arch_extension sme2\nfmla za.s[w8, 0, vgx4], {z0.s-z3.s}, z4.s\n')
+        amx = struct.pack('<I', 0x00201000 | 17 << 5)
+        retab = assemble('retab\n')
+        data = sme + amx + retab
+        section = [dict(offset=0, size=len(data), addr=BASE)]
+        self.assertIsNone(self.c.walk(self.c.decode(data, section), data, None, [BASE], set(), set(), True, set()))
+        insns = self.c.decode(data, section, self.c.llvm_oracle)
+        self.assertEqual(insns[BASE][0], 'fmla')
+        self.assertEqual(insns[BASE + 4], ('amx', '17, 0'))
+        found = self.c.walk(insns, data, None, [BASE], set(), set(), True, set())
+        self.assertEqual(found[0], {BASE, BASE + 4, BASE + 8})
+        # Branches, traps and returns are never given to a walk as straight-line words.
+        self.assertEqual(self.c.llvm_oracle({0x54000050, 0xd65f0fff, 0xd4200020, 0}), {})
+
+    def test_stack_cleanup_after_a_noreturn_call_may_reach_the_next_atom(self):
+        # bl to the ret at 0x101c; its cleanup runs into the atom at 0x1008. 0x1010 runs into 0x1014.
+        data = assemble('bl #0x1c\nadd sp, sp, #0x10\npacibsp\nret\nmov x0, x1\npacibsp\nret\nret\n')
+        insns = self.c.decode(data, [dict(offset=0, size=len(data), addr=BASE)])
+        found = self.c.walk(insns, data, None, [BASE], set(), set(), True, {BASE + 8})
+        self.assertEqual(found[0], {BASE, BASE + 4, BASE + 0x1c})
+        self.assertIsNone(self.c.walk(insns, data, None, [BASE + 16], set(), set(), True, {BASE + 20}))
+
+    def test_falling_into_proven_code_and_retrying_rejected_roots(self):
+        # Root 0x1000 falls into the start at 0x1008, which only a later root proves.
+        data = assemble('mov x0, x1\npacia x0, x1\nmov x2, x3\nret\n')
+        insns = self.c.decode(data, [dict(offset=0, size=len(data), addr=BASE)])
+        self.assertIsNone(self.c.walk(insns, data, None, [BASE], set(), set(), True, {BASE + 8}))
+        proven = dict.fromkeys([BASE + 8, BASE + 12], 'start')
+        self.assertEqual(self.c.walk(insns, data, None, [BASE], proven, set(), True, {BASE + 8})[0], {BASE, BASE + 4})
+        _, code, _, _, _, roots = self.c.prove_roots(insns, data, None, set(), {BASE, BASE + 8}, {BASE, BASE + 8},
+                                                     set())
+        self.assertEqual(set(code), {BASE, BASE + 4, BASE + 8, BASE + 12})
+        self.assertEqual((roots['start_accepted'], roots['rejected']), (2, []))
+
+    def test_hinted_conditional_branch_is_followed(self):
+        data = struct.pack('<I', 0x54000050) + assemble('ret\nret\n')   # bc.eq #+8
+        insns = self.c.decode(data, [dict(offset=0, size=len(data), addr=BASE)])
+        found = self.c.walk(insns, data, None, [BASE], set(), set(), True, set())
+        self.assertEqual(found[0], {BASE, BASE + 4, BASE + 8})
+
+    def test_lsda_index_and_call_site_table(self):
+        # __unwind_info with two first-level entries and one LSDA pair (function 0x100, LSDA 0x40).
+        blob = struct.pack('<7I', 1, 28, 0, 0, 0, 28, 2) + struct.pack('<3I', 0x100, 0, 52)
+        blob += struct.pack('<3I', 0x200, 0, 60) + struct.pack('<II', 0x100, 0x40)
+        self.assertEqual(len(blob), 60)
+        self.assertEqual(self.c.unwind_lsdas(blob, 0x1000), {0x1100: 0x1040})
+        # LPStart omitted, type table at uleb 0x10, 8 bytes of uleb128 call sites:
+        # (0x00, 0x10, no pad, no action) and (0x10, 0x08, pad 0x30, action 1).
+        lsda = bytes([0xff, 0x9b, 0x10, 0x01, 8]) + bytes([0x00, 0x10, 0x00, 0x00, 0x10, 0x08, 0x30, 0x01])
+        read = lambda address, length: (lsda + bytes(64))[address - 0x1040:address - 0x1040 + length]
+        self.assertEqual(self.c.landing_pads(read, 0x1100, 0x1040), {0x1130})
+        with self.assertRaises(ValueError):
+            self.c.landing_pads(lambda a, n: (bytes([0x00]) + bytes(63))[:n], 0x1100, 0x1040)
+
 
 def segments(data):
     """Instruction sections, code signature and subtype, read independently."""

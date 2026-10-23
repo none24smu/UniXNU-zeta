@@ -58,6 +58,14 @@ def replace_versions(value, version):
     return value
 
 
+def encode(metadata):
+    # XNU's getTag accepts <true/> but rejects ElementTree's <true />:
+    # after skipping whitespace it expects an attribute '=' even at '/'.
+    # Text '<' is escaped by ElementTree, so only actual empty tags match.
+    xml = ET.tostring(xml_value(metadata), encoding='utf-8')
+    return re.sub(rb'<(dict|array|true|false|data|string|key) />', rb'<\1/>', xml) + b'\0'
+
+
 def native_release(native):
     symbols = [s for s in native.symbols if s['name'] == '_osrelease' and s['section']]
     require(len(symbols) == 1, 'expected native osrelease constant')
@@ -118,7 +126,7 @@ def build(native, modules, layout, index, xnu_source, storage_source, crypto_sou
     identity = hashlib.sha256((native.identity['sha256'] + ''.join(
         modules[key].identity['sha256'] for key in sorted(modules))).encode()).digest()[:16]
     metadata = dict(_PrelinkInfoDictionary=entries, _PrelinkKCID=identity)
-    encoded = ET.tostring(xml_value(metadata), encoding='utf-8') + b'\0'
+    encoded = encode(metadata)
     info = layout['groups'][-1]
     require(len(encoded) <= info['size'], 'serialized metadata exceeds reserved segment')
     return metadata, encoded, provenance

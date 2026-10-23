@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -25,7 +27,7 @@ def decode(node):
         return node.tag == 'true'
     if node.tag == 'data':
         import base64
-        return base64.b64decode(node.text)
+        return base64.b64decode(node.text or '')
     return node.text or ''
 
 
@@ -36,6 +38,13 @@ class SerializationTests(unittest.TestCase):
         for invalid in (-1, 1 << 64):
             with self.assertRaises(ValueError):
                 M.xml_value(invalid)
+
+    def test_empty_elements_use_kernel_spelling_without_changing_text(self):
+        original = dict(flags=[True, False], empty={}, array=[], data=b'', text='keep /> unchanged')
+        encoded = M.encode(original)
+        self.assertNotIn(b' />', encoded.replace(b'keep /> unchanged', b''))
+        self.assertIn(b'<true/>', encoded)
+        self.assertEqual(decode(ET.fromstring(encoded.rstrip(b'\0'))), original)
 
 
 @unittest.skipUnless(os.environ.get('ZETA_PRELINK_FIXTURE_ROOT'), 'supply pinned artifacts')
@@ -90,6 +99,38 @@ class EmittedMetadataTests(unittest.TestCase):
                 bad['binding']['static_binding_complete'] = False
             with self.assertRaises(ValueError):
                 self.E.gate(self.native, self.modules, bad, vtables, extra)
+
+    def test_serialization_against_actual_xnu_tag_scanner(self):
+        source = (self.root / 'work/xnu-12377/libkern/c++/OSUnserializeXML.y').read_text()
+        # Compile the actual lexer helper, rather than assuming that a host
+        # XML parser accepts exactly XNU's restricted XML dialect.
+        scanner = source[source.index('#define TAG_MAX_LENGTH'):source.index('static char *\ngetString')]
+        header = '''#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+typedef struct {char *parseBuffer; int parseBufferIndex; int lineNumber;} parser_state_t;
+'''
+        main = '''int main(int argc,char **argv){
+if(argc!=2)return 3;
+parser_state_t state={argv[1],0,1};
+while(state.parseBuffer[state.parseBufferIndex]){
+if(state.parseBuffer[state.parseBufferIndex]!='<'){state.parseBufferIndex++;continue;}
+char tag[TAG_MAX_LENGTH],a[TAG_MAX_ATTRIBUTES][TAG_MAX_LENGTH],v[TAG_MAX_ATTRIBUTES][TAG_MAX_LENGTH];int n;
+if(getTag(&state,tag,&n,a,v)==TAG_BAD)return 2;
+}return 0;}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'scanner.c').write_text(header + scanner + main)
+            subprocess.run(['cc', '-Wall', '-Wextra', '-Werror', str(path / 'scanner.c'), '-o', str(path / 'scanner')], check=True)
+            def check(xml):
+                return subprocess.run([str(path / 'scanner'), xml], check=False).returncode
+            self.assertEqual(check('<dict><key>x</key><true /></dict>'), 2)
+            self.assertEqual(check(M.encode(dict(x=True, y=False, data=b'', array=[], dictionary={}, text='')).rstrip(b'\0').decode()), 0)
+            info = next(s for s in self.parent.segments if s['name'] == '__PRELINK_INFO')
+            raw = self.parent.data[info['fileoff']:info['fileoff'] + info['filesize']].split(b'\0', 1)[0]
+            # Re-encode all actual metadata through the corrected serializer.
+            self.assertEqual(check(M.encode(decode(ET.fromstring(raw))).rstrip(b'\0').decode()), 0)
 
 
 if __name__ == '__main__':

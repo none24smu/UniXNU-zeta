@@ -34,6 +34,11 @@ CONFIG_XNU_PROC_TRACE_CONSOLE=y
 # The UniXNU boot progress layer (package/BootProgress.c): the diagnostic page with the last checkpoints and the
 # user fault probe. Inert unless boot-progress=1 or 2; console output still reaches the USB log.
 CONFIG_XNU_BOOT_PROGRESS=y
+# The Data volume: the packed Data seed (scripts/make-zeta-data-seed.py) served by NativeRamBlock and mounted
+# read-write at /private/var by the kernel before launchd, as on sheng. The seed's volume UUID selects it.
+CONFIG_XNU_NATIVE_RAM_BLOCK=y
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="288C85FB-CE8C-478B-994A-48109BA10DF0"
 # vfs.generic.apfs.edt_fstab from /filesystems/fstab: getfsent() reads only this on an APFS root, and the
 # KDK APFS kext lacks it. Its ephemeral entry is the Data volume, a tmpfs mount(8) builds from /private/var.
 CONFIG_XNU_EDT_FSTAB=y

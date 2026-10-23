@@ -29,6 +29,8 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 # Seed the dyld comm page flags from dyld_flags=; PID 1 then honours dyld_flags=0x8 (skip libignition,
 # whose cryptex graft needs an Apple-personalized manifest) and maps the root shared cache.
 CONFIG_XNU_DYLD_FLAGS_BOOTARG=y
+# Print every exec, spawn and exit on the console: launchd's children are otherwise invisible.
+CONFIG_XNU_PROC_TRACE_CONSOLE=y
 
 # Signed policies are read from bounded UFS extents; only the public owner anchor is built in.
 CONFIG_XNU_NATIVE_UFS_VERIFIED_ROOT=y

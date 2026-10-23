@@ -660,7 +660,57 @@ implementation differences. A padding-only compatibility build is therefore
 rejected. Overriding padding alone would also select the wrong container
 alignment macro in the iOS private header. The KDK kernel reports
 12377.121.10, versus native source 12377.121.6, an additional patchlevel gap.
-Only five primary tables were compared; object layouts, other classes and
-PAC execution remain unqualified. Full word/target evidence and source
+That first gate compared five primary tables. Full word/target evidence and source
 corroboration are in `../work/apfs-stage6/VTABLE-FINDINGS.md` and
 `vtable-compatibility-gate-complete.json`.
+
+The extended `scripts/audit-zeta-apfs-extra-vtables.py` gate now accounts for
+all 24 directly imported C++ class prefixes: 22 paired primary tables and
+two real external providers. Nineteen paired tables differ only by reserved
+methods; IOStorage, IOMedia and IOPartitionScheme also differ in actual
+storage contracts. The emitted registered instance-size constants match for
+all 20 paired ordinary object classes. This does not qualify member offsets,
+nested metaclass tables or private BSD structures. Eleven tests passed.
+
+`scripts/audit-zeta-apfs-closure.py` traverses actual packaged dependencies,
+decodes all six required KDK executables and binds their imports together
+against the linked native kernel. KDK IOStorageFamily and corecrypto binaries
+are excluded because their native source implementations already exist.
+The signed-root control leaves 247 unique names missing: 233 reserved C++
+methods, three IOStorage methods, CSR and ten crypto APIs. All 14,168 fixups
+decode; no ambiguous or invalid bindings were found. Eleven tests passed.
+Re-run both gates against the actual rebuilt candidate before judging its ABI.
+
+The isolated `zeta_apfs_abi_defconfig` selects whole-kernel reserved slots,
+keeps iOS container alignment, and selects actual public storage method
+implementations. It also enables scalar SHA3/digest-pair APIs with additional
+runtime known-answer checks after the intact original crypto POST and before
+registration. Host digest, alias, namespace, sanitizer and fault-injection
+tests pass. Kernel compilation, registration and hardware execution of these
+additions are pending. The proven signed-root control remains separate.
+
+`scripts/audit-zeta-apfs-pauth.py` emits an analysis-only instruction plan;
+it does not create a loadable driver. `scripts/check-zeta-pauth.py` passed 26
+synthetic EL1 Cortex-A55 cases covering the 13 observed instruction forms and
+their ordinary-pointer equivalents. The complete APFS instruction plan has
+7,941 proposed edits, including authenticated stubs. Every pointer producer,
+consumer and fixup must share the ordinary-pointer contract; these tests do
+not establish APFS execution or pointer authentication emulation.
+
+Current official Apple corecrypto revision
+`9612a959abb6eac0aac3ee6a7245c46365c9d81b` supplies the missing ML-DSA APIs.
+The actual AppleImage4 caller uses the matching 2,600-byte context and five
+verification arguments. A separate host source test accepts Apple's valid
+known answer and rejects changed messages/signatures and invalid lengths,
+including a build that isolates 148 internal definitions while preserving
+the three required public APIs. This newer subset is not kernel-integrated.
+
+The next kernel build was refused by GitHub with HTTP 422, "Actions has been
+disabled for this repository," despite repository permissions reporting enabled
+and the workflow active. The prior ABI build stopped at a compile-record
+consistency check; Clang's split `-D` spelling is now handled and tested.
+Until a replacement build passes, no new kernel or APFS candidate can be
+qualified on the device. Stage 6 remains incomplete: APFS volume publication,
+root mount/authentication and launchd still need runtime proof. Local reports
+are in `../work/apfs-stage6/`, `../work/apfs-crypto/` and
+`../work/apfs-mldsa-host/`.

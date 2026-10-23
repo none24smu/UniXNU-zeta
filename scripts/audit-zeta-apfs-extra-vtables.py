@@ -5,6 +5,7 @@ Uses the existing emitted-vtable parser without editing it. Missing native real
 providers, unqualified hierarchies, slot differences and nested metaclasses are
 reported separately. No outcome establishes whole-APFS ABI/runtime compatibility.
 An alternate --native permits a later isolated compatibility-profile comparison.
+Repeat --apfs to gate the union of several importers, such as APFS and AMFI.
 """
 import argparse
 from collections import Counter
@@ -22,6 +23,7 @@ SPEC.loader.exec_module(V)
 KERNEL_HEADERS = {
     "IOBufferMemoryDescriptor": "iokit/IOKit/IOBufferMemoryDescriptor.h",
     "IOGeneralMemoryDescriptor": "iokit/IOKit/IOMemoryDescriptor.h",
+    "IODTNVRAM": "iokit/IOKit/IONVRAM.h",
     "IOMemoryDescriptor": "iokit/IOKit/IOMemoryDescriptor.h",
     "IORegistryEntry": "iokit/IOKit/IORegistryEntry.h",
     "IOService": "iokit/IOKit/IOService.h",
@@ -173,7 +175,13 @@ def instance_size_argument(image, cls):
 
 
 def audit(native, providers, apfs, xnu_source, storage_source, record_sizes=False):
-    imports = V.imported_cpp_classes(apfs)
+    importers = apfs if isinstance(apfs, list) else [apfs]
+    V.F.require(importers, "no importing module")
+    imports = {}
+    for image in importers:
+        for cls, symbols in V.imported_cpp_classes(image).items():
+            imports.setdefault(cls, []).extend(s for s in symbols if s not in imports.get(cls, ()))
+    imports = dict(sorted(imports.items()))
     comparisons, missing_native, unqualified, failures = {}, {}, {}, {}
     classes = {}
     for cls, symbols in imports.items():
@@ -218,7 +226,8 @@ def audit(native, providers, apfs, xnu_source, storage_source, record_sizes=Fals
     observed_sizes = {cls: row["instance_size_observation"] for cls, row in classes.items()
                       if row.get("instance_size_observation", {}).get("both_arguments_proven")}
     return dict(schema="zeta-apfs-extra-vtables-v1", analysis_only=True, decode_complete=not failures and not unqualified,
-                inputs=dict(native=native.identity, kdk_providers=[p.identity for p in providers], apfs=apfs.identity),
+                inputs=dict(native=native.identity, kdk_providers=[p.identity for p in providers],
+                            **(dict(apfs=apfs.identity) if apfs is importers[0] else dict(importers=[i.identity for i in importers]))),
                 imported_class_count=len(imports), imported_cpp_names=sum(map(len, imports.values())),
                 supporting_base_declarations={"OSCollection": hierarchy("OSCollection", xnu_source, storage_source)},
                 classes=classes, comparisons=comparisons, gate=gate,
@@ -242,7 +251,7 @@ def main(argv=None):
     parser.add_argument("--native", required=True, type=Path, help="alternate ordinary ARM64 kernel under comparison")
     parser.add_argument("--kdk-provider", required=True, action="append", type=Path,
                         help="repeat for KDK kernel, IOStorageFamily, EffaceableStorage and CoreAnalyticsFamily")
-    parser.add_argument("--apfs", required=True, type=Path)
+    parser.add_argument("--apfs", required=True, action="append", type=Path, help="repeat for each importing module")
     parser.add_argument("--xnu-source", required=True, type=Path)
     parser.add_argument("--storage-source", required=True, type=Path)
     parser.add_argument("--record-instance-sizes", action="store_true",
@@ -254,7 +263,9 @@ def main(argv=None):
         native = V.Image(args.native)
         V.F.require(native.identity["cpu_subtype"] == "0x0", "native comparison input must be ordinary ARM64")
         providers = [V.Image(p) for p in args.kdk_provider]
-        report = audit(native, providers, V.Image(args.apfs), args.xnu_source, args.storage_source,
+        importers = [V.Image(p) for p in args.apfs]
+        report = audit(native, providers, importers[0] if len(importers) == 1 else importers,
+                       args.xnu_source, args.storage_source,
                        record_sizes=args.record_instance_sizes)
         code = report["gate"]["exit_code"]
     except (OSError, V.F.AuditError) as error:

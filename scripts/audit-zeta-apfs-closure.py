@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Decode/bind the complete packaged KDK APFS executable closure, read-only.
 
+Repeat --root to audit one union closure, such as APFS plus AMFI.
+
 IOStorageFamily/corecrypto are source replacements already linked into --native;
 their KDK binaries are never included as providers. Other declared executable
 dependencies retain their actual KDK implementations. Binding addresses in those
@@ -63,7 +65,9 @@ def index_bundles(directory):
 
 def closure(index, root=ROOT):
     """Exact declared dependency traversal; replacements do not load KDK code."""
-    pending, seen, nodes, edges = [root], set(), {}, []
+    pending = [root] if isinstance(root, str) else list(root)
+    A.require(pending and len(set(pending)) == len(pending), "empty or repeated closure roots")
+    seen, nodes, edges = set(), {}, []
     while pending:
         name = pending.pop(0)
         if name in seen:
@@ -243,12 +247,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native", required=True, type=Path)
     parser.add_argument("--kdk-extensions", required=True, type=Path)
-    parser.add_argument("--root", default=ROOT)
+    parser.add_argument("--root", action="append", help=f"repeatable; default {ROOT}")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     A.require(not args.output.exists(), "refusing to overwrite report")
     try:
-        report = audit(args.native, args.kdk_extensions, args.root)
+        roots = args.root or [ROOT]
+        report = audit(args.native, args.kdk_extensions, roots[0] if len(roots) == 1 else roots)
         code = 2 if not report["decode_complete"] else 0 if report["binding"]["static_binding_complete"] else 3
     except (OSError, ValueError, plistlib.InvalidFileException) as error:
         report = dict(schema="zeta-apfs-executable-closure-v1", analysis_only=True, decode_complete=False,

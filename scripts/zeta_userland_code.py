@@ -393,11 +393,15 @@ def prove(data, info, sections, va_to_off):
     return prove_roots(insns, data, va_to_off, strong, weak, starts, pointer_targets(data, info))
 
 
-def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, ordered=(), external=None):
+def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, ordered=(), external=None, gaps=False):
     """The proof from supplied roots. Strong roots are walked first. Then come code pointers and
     adr/adrp addresses, then each (grade, roots) of ordered in turn (exception landing pads, stub
     entries, calls from other images), then bare starts. Each root after the strong ones is accepted
-    only after a strict tentative walk."""
+    only after a strict tentative walk.
+
+    gaps, when set, adds a last grade: code left inside a proven atom after a proven terminator
+    (a dead epilogue or error exit nothing branches to), accepted only by the same strict walk,
+    which may not run into another atom."""
     found, tables, anomalies = walk(insns, data, va_to_off, sorted(a for a in strong if a in insns), set(), set(),
                                     False, starts, external)
     code = dict.fromkeys(found, 'unwind')
@@ -443,6 +447,24 @@ def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, ordered=
                 progress = True
         if not progress:
             break
+    if gaps:
+        accepted['gap'] = 0
+        atoms = sorted(starts)
+        while True:
+            progress = False
+            for index, start in enumerate(atoms):
+                if start not in code:
+                    continue
+                end = atoms[index + 1] if index + 1 < len(atoms) else max(insns) + 4
+                for pc in range(start, end - 4, 4):
+                    after = pc + 4
+                    if (pc in code and (insns[pc][0] in STOPS or insns[pc][0] in INDIRECT or insns[pc][0] == 'b')
+                            and after in insns and after not in code and after not in data_words
+                            and after not in tried and attempt(after, 'gap')):
+                        accepted['gap'] += 1
+                        progress = True
+            if not progress:
+                break
     conflicts = sorted(code.keys() & data_words)
     if conflicts:
         raise ValueError(f'jump table overlaps proven code at {conflicts[0]:#x}')
@@ -450,4 +472,6 @@ def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, ordered=
                  rejected=rejected)
     for grade, _ in ordered:
         roots[f'{grade}_accepted'] = accepted[grade]
+    if gaps:
+        roots['gap_accepted'] = accepted['gap']
     return insns, code, data_words, tables, anomalies, roots

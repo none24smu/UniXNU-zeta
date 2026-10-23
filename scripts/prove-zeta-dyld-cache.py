@@ -8,7 +8,9 @@ are pointer roots. Exception landing pads from its LSDAs and the entries of
 its stub sections are structural roots, and its other function starts are
 bare roots. Words Capstone cannot decode are given to llvm-mc with every
 A-profile feature: Apple AMX words and SME2 or newer SVE instructions are
-straight-line code a walk steps over; branches stay undecodable. Images in
+straight-line code a walk steps over; branches stay undecodable. Last, code
+left inside a proven atom after a proven terminator (dead epilogues and
+error exits) is proven by the same strict walk. Images in
 a cache call each other directly, so a walk that reaches another image's
 code or a stub island records the target and stops there (Coverage). A
 second pass re-proves every image that still holds unproven PAC words, with
@@ -37,7 +39,7 @@ import zeta_dyld_cache as dc
 import zeta_userland_code as code
 import zeta_userland_pauth as pauth
 
-GRADES = ('unwind', 'pointer', 'landing', 'stub', 'call', 'start')
+GRADES = ('unwind', 'pointer', 'landing', 'stub', 'call', 'start', 'gap')
 PAC_MASKS = ((0xffff0000, 0xdac10000), (0xffe0fc00, 0x9ac03000), (0xfffff81f, 0xd61f081f),
              (0xfffff81f, 0xd63f081f), (0xfffff800, 0xd71f0800), (0xfffff800, 0xd73f0800),
              (0xfffffbff, 0xd65f0bff), (0xfffffbff, 0xd69f0bff), (0xff200400, 0xf8200400))
@@ -87,7 +89,7 @@ def prove_code(cache, sections, strong, weak, starts, ordered, label):
     coverage = STATE['coverage']
     coverage.reached = set()
     _, proven, data_words, tables, anomalies, roots = code.prove_roots(
-        insns, data, va_to_off, strong, weak, starts, pointers, ordered, coverage)
+        insns, data, va_to_off, strong, weak, starts, pointers, ordered, coverage, gaps=True)
     edits, unproven, unlowerable, kept = [], [], [], Counter()
     for section in sections:
         words = np.frombuffer(data, dtype='<u4', count=section['size'] // 4, offset=section['offset'])

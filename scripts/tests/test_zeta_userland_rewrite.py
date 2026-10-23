@@ -177,6 +177,25 @@ class CodeProofTests(unittest.TestCase):
         self.assertEqual(set(code), {BASE, BASE + 4, BASE + 8, BASE + 12})
         self.assertEqual((roots['start_accepted'], roots['rejected']), (2, []))
 
+    def test_gap_grade_proves_dead_epilogues_but_not_tables(self):
+        # Atom 0x1000: loop with a trap exit and a dead epilogue. Atom 0x101c: a ret, then table words.
+        # Atom 0x1028: a ret, then a gap that would run into the data atom 0x1030.
+        data = assemble('pacibsp\ncbz x0, #8\nb #-4\nbrk #0\nmov x0, #7\nretab\nnop\n'
+                        'ret\n.word 0x10, 0x20\n'
+                        'ret\nmov x1, x2\n.word 0x30\n')
+        section = [dict(offset=0, size=len(data), addr=BASE)]
+        insns = self.c.decode(data, section)
+        strong = {BASE, BASE + 0x1c, BASE + 0x28}
+        starts = strong | {BASE + 0x30}
+        _, code, _, _, _, roots = self.c.prove_roots(insns, data, None, strong, set(), starts, set())
+        self.assertNotIn(BASE + 0x14, code)
+        self.assertNotIn('gap_accepted', roots)
+        _, code, _, _, _, roots = self.c.prove_roots(insns, data, None, strong, set(), starts, set(), gaps=True)
+        self.assertEqual((code[BASE + 0x10], code[BASE + 0x14], code[BASE + 0x18]), ('gap',) * 3)
+        self.assertNotIn(BASE + 0x20, code)
+        self.assertNotIn(BASE + 0x2c, code)
+        self.assertEqual(roots['gap_accepted'], 2)   # the epilogue and the nop padding after it
+
     def test_hinted_conditional_branch_is_followed(self):
         data = struct.pack('<I', 0x54000050) + assemble('ret\nret\n')   # bc.eq #+8
         insns = self.c.decode(data, [dict(offset=0, size=len(data), addr=BASE)])

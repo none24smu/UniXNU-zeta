@@ -6,6 +6,10 @@
 //   3  GENI SPI init and clock, reset the digitizer, then the HID-over-SPI handshake: reset response, device descriptor,
 //      report descriptor (logged in hex)
 //   4  also log the input reports it sends for zeta-touch-listen=<s> (default 30) seconds: report id, length, first bytes
+// `zeta-touch-mt=1` then switches the firmware to heat frames as the stock HAL does (feature 0x05, panel state 0x38) and reads
+// them for zeta-touch-listen2=<s> (default 120, 0 = for good): each panel's 21 x 30 grid goes through the stock heat
+// library's finger path (HeatTouch.h), and the contacts, mapped into the spanned screen (zeta-touch-flip=<bits>), are
+// published for the digitizer in HidInputProbe.cpp (zeta-touch-hid=1).
 // `zeta-touch-hz=<Hz>` (default 8 MHz, the DT allows 32 MHz), `zeta-touch-dma=1` lets an engine whose FIFO interface is
 // disabled use the SE DMA engine through an apps SMMU bypass stream (sheng's path).
 //
@@ -38,6 +42,7 @@ extern "C" {
 #undef geni_dma
 #include "SmmuBypass.h"
 }
+#include "HeatTouch.h"
 
 extern "C" {
 // [0] stage reached, [1] last error, [2] reset responses, [3] input reports, [4] bad headers
@@ -59,6 +64,16 @@ extern "C" void native_touch_set_sink(void (*sink)(void *), void *context) {
 }
 
 namespace {
+// sheng TouchProbe.cpp's publish: the finger set under the seqlock, then the sink. Coordinates 0..32767 across the span.
+void publish(unsigned count, const int *ids, const int *xs, const int *ys) {
+    native_touch_seq = native_touch_seq + 1;
+    __asm__ volatile("dmb ish" ::: "memory");
+    native_touch_count = count;
+    for (unsigned i = 0; i < count && i < 12; ++i) {native_touch_xs[i] = xs[i]; native_touch_ys[i] = ys[i]; native_touch_ids[i] = ids[i];}
+    __asm__ volatile("dmb ish" ::: "memory");
+    native_touch_seq = native_touch_seq + 1;
+    if (void (*sink)(void *) = __atomic_load_n(&gTouchSink, __ATOMIC_ACQUIRE)) sink(gTouchSinkContext);
+}
 constexpr uint64_t kGcc = 0x00100000, kGccLength = 0x60000;
 constexpr uint32_t kVote = 0x52008, kGpll0Vote = 0x52018, kGpll0Mode = 0x0;
 constexpr uint32_t kVoteBits = 1u << 6 | 1u << 7 | 1u << 8 | 1u << 9 | 1u << 14;
@@ -395,11 +410,53 @@ struct Touch {
     // chunks {u32 offset, u32 count, cells}; Zeta's panels are 30 x 21 sensors, one chunk of 630 (SurfaceHeatProcessorLogic::
     // ParseFullFrame). Diagnostics only: the first frames whole, then the grid of each frame whose cells move away from the
     // panel's first frame, and the frame rate.
-    static constexpr unsigned kCells = 630, kGridRows = 30, kGridCols = 21, kHeatAt = 29;
+    static constexpr unsigned kCells = heat::kCells, kGridRows = heat::kRows, kGridCols = heat::kCols, kHeatAt = 29;
     uint8_t heatBase[2][kCells] = {};
     bool heatHaveBase[2] = {};
     unsigned heatFrames[2] = {}, heatGrids[2] = {}, heatDumps[2] = {}, heatRate[2] = {}, metaRate[2] = {}, metaDumps[2] = {};
     uint64_t heatRateStart = 0;
+    // The fingers of each panel (heat::Tracker), mapped into the spanned screen: the left panel (0x3c) from x 0, the right
+    // panel (0x0a) after it and the hinge gap; across a panel is the grid's rows (its short side), along it the columns.
+    // zeta-touch-flip: bit 0 flips across the panels, bit 1 flips along them, bit 2 swaps the panels.
+    heat::Tracker trackers[2];
+    heat::Contact panelShown[2][heat::kMaxContacts];
+    int panelCount[2] = {};
+    uint64_t lastGrid[2] = {};
+    unsigned flip = 0, hinge = 64, contactLogs = 0;
+    static constexpr int kPanelWidth = 1344, kPanelHeight = 1892;
+    void fingers(unsigned panel, int nfound, const heat::Contact *found) {
+        const int before = panelCount[panel];
+        panelCount[panel] = trackers[panel].update(found, nfound, panelShown[panel]);
+        if (!before && !panelCount[panel]) return;
+        int ids[heat::kMaxContacts * 2], xs[heat::kMaxContacts * 2], ys[heat::kMaxContacts * 2];
+        unsigned count = 0;
+        const int width = 2 * kPanelWidth + (int)hinge;
+        for (unsigned p = 0; p < 2; ++p)
+            for (int i = 0; i < panelCount[p] && count < 12; ++i) {
+                float across = panelShown[p][i].y / heat::kActiveRow, along = panelShown[p][i].x / heat::kActiveColumn;
+                if (flip & 1) across = 1 - across;
+                if (flip & 2) along = 1 - along;
+                const bool left = (p == 1) != ((flip & 4) != 0);
+                const float px = (left ? 0 : kPanelWidth + (int)hinge) + across * (kPanelWidth - 1);
+                ids[count] = (int)p * 16 + panelShown[p][i].id;
+                xs[count] = (int)(px * 32767 / (width - 1));
+                ys[count] = (int)(along * 32767);
+                if (contactLogs < 300) {
+                    ++contactLogs;
+                    IOLog("zeta-touch: contact %s id %d mm %d.%02d,%d.%02d screen %d,%d\n", p ? "left" : "right", panelShown[p][i].id,
+                          (int)panelShown[p][i].x, (int)(panelShown[p][i].x * 100) % 100, (int)panelShown[p][i].y, (int)(panelShown[p][i].y * 100) % 100,
+                          (int)px, (int)(along * (kPanelHeight - 1)));
+                }
+                ++count;
+            }
+        publish(count, ids, xs, ys);
+    }
+    // Grids come only while the panel sees a touch: a panel with fingers that sends none for 80 ms has been lifted.
+    void liftQuiet() {
+        const uint64_t now = mach_absolute_time();
+        for (unsigned p = 0; p < 2; ++p)
+            if (trackers[p].count && now - lastGrid[p] > 80ull * 19200) fingers(p, 0, nullptr);
+    }
     void heat(unsigned panel, size_t length) {
         // Each scan cycle also sends a metadata frame under the same report id (no 630-cell chunk), which Parser::
         // ProcessReceiveMessage reads; count both kinds.
@@ -422,6 +479,9 @@ struct Touch {
         const uint8_t *cells = in + kHeatAt;
         ++heatFrames[panel];
         ++heatRate[panel];
+        heat::Contact found[heat::kMaxContacts];
+        fingers(panel, heat::detect(cells, found), found);
+        lastGrid[panel] = now;
         if (!heatHaveBase[panel]) {memcpy(heatBase[panel], cells, kCells); heatHaveBase[panel] = true; return;}
         int lo = 0, hi = 0;
         unsigned loAt = 0, hiAt = 0;
@@ -449,8 +509,11 @@ struct Touch {
     void listen(unsigned seconds) {
         unsigned counts[256] = {}, shown[256] = {}, pointers = 0;
         const uint64_t end = mach_absolute_time() + (uint64_t)seconds * 19200000;
-        while (mach_absolute_time() < end) {
-            if (!waitIrq(100)) continue;
+        flip = bootArg("zeta-touch-flip");
+        hinge = bootArg("zeta-span-hinge", 64);
+        while (!seconds || mach_absolute_time() < end) {
+            liftQuiet();
+            if (!waitIrq(20)) continue;
             size_t length = 0;
             const int type = input(&length);
             if (type < 0) {IOSleep(5); continue;}
@@ -491,6 +554,7 @@ void run(void *, wait_result_t) {
     IOLog("zeta-touch: listen done\n");
     if (const unsigned value = bootArg("zeta-touch-mt")) {
         touch.mode(value);
+        // zeta-touch-listen2=0: keep reading (the digitizer stays live for the session).
         touch.listen(bootArg("zeta-touch-listen2", 120));
         IOLog("zeta-touch: listen after mode switch done\n");
     }

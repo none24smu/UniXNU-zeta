@@ -49,9 +49,11 @@ enum : unsigned {
     kVerifySwap = 409, kPowerAction = 469,
     // Pure in IOMobileFramebufferService; sheng's iOS 17 slots 213 and 337 in the same order.
     kSupportedFrameInfo = 319, kCollectCompletionReports = 452,
+    // Pure: disp_has_no_clients_gated asks it before reprogramDisplayWithDummySwap_gated (slot 454).
+    kWantsDummySwap = 460,
 };
 // The other pure slots (sheng 211, 245, 246, 306, 307, 338, 345): no GOP contract, so they stop with the caller.
-constexpr unsigned kGuarded[] = {317, 352, 353, 419, 420, 453, 460};
+constexpr unsigned kGuarded[] = {317, 352, 353, 419, 420, 453};
 struct SlotName {unsigned slot; const char *symbol;};
 const SlotName kOverridden[] = {
     {kFree, "__ZN25IOMobileFramebufferLegacy4freeEv"},
@@ -70,7 +72,9 @@ const SlotName kOverridden[] = {
 // Instance and request offsets from the KDK disassembly.
 constexpr size_t kWidth = 0x1900, kHeight = 0x1904;            // get_display_size
 constexpr size_t kCurrentSwap = 0x1790;                          // swap_complete_gated(bool)
-constexpr size_t kPendingHead = 0x17a8, kPendingTail = 0x17b0;   // swap_start_gated's tail queue
+// swap_queue_finalize_gated moves a verified request from swap_start_gated's queue (+0x17a8) into this tail queue,
+// then calls swap_begin_gated: the backend takes its swaps here (swap_wait and swap_expiration walk it too).
+constexpr size_t kReadyHead = 0x1798, kReadyTail = 0x17a0;
 constexpr size_t kRequestNext = 0xc78, kRequestPrevious = 0xc80;
 constexpr size_t kRequestSurfaces = 0xac0;                       // swap_submit, three layers
 constexpr unsigned kLayers = 3;
@@ -100,7 +104,7 @@ struct Display {
     uint32_t width, height, rowBytes;
     bool primary, logicalPM, transferred, kicking, rekick;
     const void *validated[8];
-    unsigned logged, presented;
+    unsigned logged, presented, stalls;
     // sheng-vsync=<Hz>: a work-loop timer stands in for the vblank the GOP scanout does not have.
     IOTimerEventSource *vsyncTimer;
     uint64_t vsyncInterval, vsyncNext;
@@ -157,26 +161,26 @@ void announcePoweredByFirmware(IOService *self) {
     original<int (*)(IOService *, StateRequest *, bool)>(kPowerAction)(self, &request, false);
 }
 
-// The original queue keeps the pending head until its backend takes it; sheng's activateOnlyPendingSwap moves it
+// The original queue keeps the ready head until its backend takes it; sheng's activateOnlyPendingSwap moves it
 // to the current-swap slot for the unchanged completion body.
 bool activateOnlyPendingSwap(IOService *self, const void *request) {
     auto object = reinterpret_cast<unsigned char *>(self);
-    const void *current = field<const void *>(self, kCurrentSwap), *head = field<const void *>(self, kPendingHead);
-    const void *tail = field<const void *>(self, kPendingTail);
+    const void *current = field<const void *>(self, kCurrentSwap), *head = field<const void *>(self, kReadyHead);
+    const void *tail = field<const void *>(self, kReadyTail);
     if (!request || current || head != request) return false;
     const void *next = field<const void *>(request, kRequestNext), *previous = field<const void *>(request, kRequestPrevious);
-    if (previous != object + kPendingHead) return false;
+    if (previous != object + kReadyHead) return false;
     if (next) {
-        setField<const void *>(const_cast<void *>(next), kRequestPrevious, object + kPendingHead);
+        setField<const void *>(const_cast<void *>(next), kRequestPrevious, object + kReadyHead);
     } else if (tail != reinterpret_cast<const unsigned char *>(request) + kRequestNext) {
         return false;
     }
     setField(self, kCurrentSwap, request);
     if (next) {
-        setField(self, kPendingHead, next);
+        setField(self, kReadyHead, next);
     } else {
-        setField<const void *>(self, kPendingHead, nullptr);
-        setField<const void *>(self, kPendingTail, object + kPendingHead);
+        setField<const void *>(self, kReadyHead, nullptr);
+        setField<const void *>(self, kReadyTail, object + kReadyHead);
     }
     return true;
 }
@@ -204,10 +208,17 @@ bool prepareScanout() {
     return false;
 }
 
+// The first few swaps the backend holds without presenting name the gate that held them.
+void stall(Display *display, const void *request, const char *gate) {
+    if (display->stalls >= 8) return;
+    display->stalls++;
+    IOLog("zeta-display: swap %u held (%s)\n", request ? field<uint32_t>(request, kRequestSwapID) : 0, gate);
+}
+
 // Retire the swap after the copy and its store barrier: memory scanout completion, not a vblank or a fence.
 void finishTransfer(IOService *self, Display *display, const void *request) {
     if (bootArg("offline-legacy-retire") != 1 && bootArg("offline-legacy-cpu-present") != 1) return;
-    if (!activateOnlyPendingSwap(self, request)) return;
+    if (!activateOnlyPendingSwap(self, request)) return stall(display, request, "not the ready head");
     removeValidated(display, request);
     original<void (*)(IOService *)>(kSwapComplete)(self);
     display->transferred = false;
@@ -215,10 +226,14 @@ void finishTransfer(IOService *self, Display *display, const void *request) {
 }
 
 void kickOnce(IOService *self, Display *display) {
+    const void *request = field<const void *>(self, kReadyHead);
     if (bootArg("offline-legacy-transfer") != 1 || display->transferred || !display->logicalPM || !display->mapping ||
-        !display->primary) return;
-    const void *request = field<const void *>(self, kPendingHead);
-    if (!request || !isValidated(display, request)) return;
+        !display->primary) {
+        if (request) stall(display, request, display->transferred ? "transfer in flight" : "display not ready");
+        return;
+    }
+    if (!request) return;
+    if (!isValidated(display, request)) return stall(display, request, "not validated");
     OSObject *surface = field<OSObject *>(request, kRequestSurfaces);
     auto destination = reinterpret_cast<unsigned char *>(display->mapping->getVirtualAddress());
     const uint32_t width = display->width, height = display->height;
@@ -236,15 +251,16 @@ void kickOnce(IOService *self, Display *display) {
     }
     IOMemoryDescriptor *memory = gBind.memory(surface);
     const uint64_t stride = gBind.rowBytes(surface), allocation = gBind.allocSize(surface);
-    if (!memory || !surfaceBounds(width, height, stride, allocation, memory->getLength())) return;
+    if (!memory || !surfaceBounds(width, height, stride, allocation, memory->getLength()))
+        return stall(display, request, "surface bounds");
     IOMemoryMap *source = memory->map(kIOMapAnywhere | kIOMapReadOnly);
     if (!source || !source->getVirtualAddress() || source->getLength() < allocation) {
         OSSafeReleaseNULL(source);
-        return;
+        return stall(display, request, "surface map");
     }
     if (!prepareScanout()) {
         OSSafeReleaseNULL(source);
-        return;
+        return stall(display, request, "scanout busy");
     }
     auto from = reinterpret_cast<const unsigned char *>(source->getVirtualAddress());
     for (uint32_t row = 0; row < height; ++row) {
@@ -546,6 +562,8 @@ IOReturn dCollectCompletionReports(IOService *self, uint32_t, void *, uint32_t *
     if (count) *count = 0;
     return kIOReturnUnsupported;
 }
+// The GOP scanout keeps its last frame when the render server goes away: no dummy swap to program.
+bool dWantsDummySwap(IOService *) {return false;}
 template <unsigned N> __attribute__((noreturn, noinline)) void dGuard(IOService *self) {
     panic("zeta-display: IOMobileFramebufferLegacy slot %u has no GOP implementation (object %p, caller %p)", N,
         self, __builtin_return_address(0));
@@ -594,7 +612,7 @@ bool bind() {
     }
     // Every pure slot holds the same __cxa_pure_virtual.
     const uintptr_t pure = b.vtable[kSupportedFrameInfo];
-    if (b.vtable[kCollectCompletionReports] != pure) return false;
+    if (b.vtable[kCollectCompletionReports] != pure || b.vtable[kWantsDummySwap] != pure) return false;
     for (unsigned slot : kGuarded) {
         if (b.vtable[slot] != pure) {
             IOLog("zeta-display: slot %u is not pure\n", slot);
@@ -617,7 +635,8 @@ bool bind() {
     set(kVerifySwap, &dVerifySwap);
     set(kSupportedFrameInfo, &dSupportedFrameInfo);
     set(kCollectCompletionReports, &dCollectCompletionReports);
-    GuardList<317, 352, 353, 419, 420, 453, 460>::install();
+    set(kWantsDummySwap, &dWantsDummySwap);
+    GuardList<317, 352, 353, 419, 420, 453>::install();
     gBind = b;
     return true;
 }

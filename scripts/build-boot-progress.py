@@ -5,7 +5,7 @@ UniXNU-sheng scripts/build-boot-progress.py, for the 12377 build: the page and t
 the flags of osfmk startup.o, from the compile record the first kernel pass leaves. With the kernel Data mount
 (XNU_OWNER_DATA_MOUNT) the launch policy is built too, with the flags of bsd kern_exec.o. The diagnostic log export
 is not built: zeta writes no log to the phone. BootProgressAbsent.S stands in for the sheng drivers zeta does not
-build yet.
+build yet. The process probe and the UI tracer are sheng's sources as they are.
 """
 import hashlib
 import json
@@ -60,7 +60,10 @@ def check_object(path):
     raise SystemExit(f'{path.name}: expected an iOS 26 deployment')
 
 
-units = [('BootProgress', startup), ('BootFaultProbe', startup), ('BootProgressAbsent', startup)]
+# The process probe and the UI stack tracer (sheng, unchanged) sample launchd, backboardd, SpringBoard and the
+# boot-ui-focus processes in the page's capture worker.
+units = [('BootProgress', startup), ('BootFaultProbe', startup), ('BootProcessProbe', startup), ('BootUiTraceProbe', startup),
+         ('BootProgressAbsent', startup)]
 if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
     units.append(('BootWatchdogPolicy',
                   json.loads((OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))))
@@ -91,7 +94,7 @@ archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), *map(str, objects)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted(KIT.glob('BootProgress*')) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
+                for path in sorted(KIT.glob('BootProgress*')) + sorted(KIT.glob('BootUiTrace*.h')) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

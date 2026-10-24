@@ -1,31 +1,11 @@
 /*
  * The sheng drivers BootProgress.c reads but zeta does not build yet (virtio block, legacy display, Adreno, touch,
- * HID, cpufreq, process and UI trace, log). BootProgress.c declares them weak_import and skips a row when the
+ * HID, cpufreq, log). BootProgress.c declares them weak_import and skips a row when the
  * address is null; the kernel is a static link, so each data symbol is an absolute symbol at 0 (as UniXNU links
  * absolute bindings, scripts/data/native-aes-original-bindings.S). Remove a name when its zeta driver lands: the
  * link reports a duplicate symbol. The functions are called with a direct bl, which cannot reach address 0, so they
  * are weak definitions that do nothing and return 0 rows; a driver's own definition replaces them.
  */
-.globl _boot_process_attempts
-.set _boot_process_attempts, 0
-.globl _boot_process_busy
-.set _boot_process_busy, 0
-.globl _boot_process_passes
-.set _boot_process_passes, 0
-.globl _boot_process_rows
-.set _boot_process_rows, 0
-.globl _boot_process_seen
-.set _boot_process_seen, 0
-.globl _boot_ui_trace_index
-.set _boot_ui_trace_index, 0
-.globl _boot_ui_trace_label
-.set _boot_ui_trace_label, 0
-.globl _boot_ui_trace_phase
-.set _boot_ui_trace_phase, 0
-.globl _boot_ui_trace_ready
-.set _boot_ui_trace_ready, 0
-.globl _boot_ui_trace_rows
-.set _boot_ui_trace_rows, 0
 .globl _native_adreno_audit_attr
 .set _native_adreno_audit_attr, 0
 .globl _native_adreno_audit_ticks
@@ -177,21 +157,9 @@
 .p2align 2
 .globl _boot_log_tick
 .weak_definition _boot_log_tick
-.globl _boot_process_capture
-.weak_definition _boot_process_capture
-.globl _boot_process_snapshot
-.weak_definition _boot_process_snapshot
-.globl _boot_ui_trace_role_rows
-.weak_definition _boot_ui_trace_role_rows
-.globl _boot_ui_trace_snapshot
-.weak_definition _boot_ui_trace_snapshot
 .globl _sheng_cpufreq_poll
 .weak_definition _sheng_cpufreq_poll
 _boot_log_tick:
-_boot_process_capture:
-_boot_process_snapshot:
-_boot_ui_trace_role_rows:
-_boot_ui_trace_snapshot:
 _sheng_cpufreq_poll:
 	mov	w0, #0
 	ret

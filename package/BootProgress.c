@@ -1172,6 +1172,23 @@ static void monitor(void *arg, wait_result_t result) {
     if(boot_log_tick)boot_log_tick(now);
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
+    // zeta-trace-console=<seconds>: the process rows and the traced roles' stacks (main thread, then the other thread groups) on the
+    // console as well, for the USB log; the panel shows only what fits under the page.
+    {
+      static unsigned console_every=~0U,console_at;
+      if(console_every==~0U){console_every=0;PE_parse_boot_argn("zeta-trace-console",&console_every,sizeof(console_every));}
+      if(console_every && now-console_at>=console_every && &boot_process_rows && boot_process_passes) {
+        static char trace_rows[32][120];
+        console_at=now;
+        printf("zeta-trace: %us pass %u seen %u\n",now,boot_process_passes,boot_process_seen);
+        for(unsigned i=0;i<10;++i)if(boot_process_rows[i][0])printf("zeta-trace: proc %.119s\n",boot_process_rows[i]);
+        if(&boot_ui_trace_role_rows)
+          for(unsigned role=0;role<4;++role) {
+            unsigned got=boot_ui_trace_role_rows(role,trace_rows,32,2);
+            for(unsigned i=0;i<got;++i)if(trace_rows[i][0])printf("zeta-trace: r%u %.119s\n",role,trace_rows[i]);
+          }
+      }
+    }
     if(&boot_process_attempts && &boot_process_busy) {
       unsigned attempt=__atomic_load_n(&boot_process_attempts,__ATOMIC_RELAXED);
       unsigned capturing=__atomic_load_n(&boot_process_busy,__ATOMIC_ACQUIRE);

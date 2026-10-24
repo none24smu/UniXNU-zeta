@@ -398,21 +398,30 @@ struct Touch {
     static constexpr unsigned kCells = 630, kGridRows = 30, kGridCols = 21, kHeatAt = 29;
     uint8_t heatBase[2][kCells] = {};
     bool heatHaveBase[2] = {};
-    unsigned heatFrames[2] = {}, heatGrids[2] = {}, heatDumps[2] = {}, heatRate[2] = {};
+    unsigned heatFrames[2] = {}, heatGrids[2] = {}, heatDumps[2] = {}, heatRate[2] = {}, metaRate[2] = {}, metaDumps[2] = {};
     uint64_t heatRateStart = 0;
     void heat(unsigned panel, size_t length) {
-        if (heatDumps[panel] < 2) {++heatDumps[panel]; hex(panel ? "heat-left frame" : "heat-right frame", in, length);}
-        if (length < kHeatAt + kCells || (in[25] | in[26] << 8) != kCells) return;
-        const uint8_t *cells = in + kHeatAt;
-        ++heatFrames[panel];
-        ++heatRate[panel];
+        // Each scan cycle also sends a metadata frame under the same report id (no 630-cell chunk), which Parser::
+        // ProcessReceiveMessage reads; count both kinds.
+        const bool grid = length >= kHeatAt + kCells && in[19] == 1 && in[20] == 8 && (in[25] | in[26] << 8) == kCells;
         const uint64_t now = mach_absolute_time();
         if (!heatRateStart) heatRateStart = now;
         if (now - heatRateStart >= 10ull * 19200000) {
-            IOLog("zeta-touch: heat frames per 10 s: right %u left %u\n", heatRate[0], heatRate[1]);
-            heatRate[0] = heatRate[1] = 0;
+            IOLog("zeta-touch: per 10 s: grids right %u left %u, metadata right %u left %u\n", heatRate[0], heatRate[1], metaRate[0],
+                  metaRate[1]);
+            heatRate[0] = heatRate[1] = metaRate[0] = metaRate[1] = 0;
             heatRateStart = now;
         }
+        if (!grid) {
+            ++metaRate[panel];
+            const unsigned size = in[13] | in[14] << 8;
+            if (metaDumps[panel] < 4) {++metaDumps[panel]; hex(panel ? "meta-left" : "meta-right", in, size + 13 < length ? size + 13 : length);}
+            return;
+        }
+        if (heatDumps[panel] < 2) {++heatDumps[panel]; hex(panel ? "heat-left frame" : "heat-right frame", in, kHeatAt + kCells);}
+        const uint8_t *cells = in + kHeatAt;
+        ++heatFrames[panel];
+        ++heatRate[panel];
         if (!heatHaveBase[panel]) {memcpy(heatBase[panel], cells, kCells); heatHaveBase[panel] = true; return;}
         int lo = 0, hi = 0;
         unsigned loAt = 0, hiAt = 0;

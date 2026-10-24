@@ -140,6 +140,8 @@ template <typename T> T original(unsigned slot) {return reinterpret_cast<T>(gOri
 // the firmware's display reservation (uefi-zeta MemoryMapLib "Display Reserved" 0xE1000000, 0x2300000; its last page
 // carries the DSI1 command packets, package/DsiPanel.cpp). The left panel scans columns 0..1343, the right panel
 // (VIG1, crop x 1410) columns 1410..2753; the hinge columns are never shown. zeta-span-hinge=<n> overrides the 66.
+// Boot with sheng-banner=0: the boot-progress live diagnostics banner keeps the GOP geometry (row 5376) and would paint
+// sheared bands of stripes and noise across the wide frame.
 constexpr uint64_t kDisplayReserved = 0xe1000000, kDisplayReservedLength = 0x2300000;
 struct Span {bool on; uint32_t panel, hinge, rowBytes;};
 Span gSpan;
@@ -622,15 +624,14 @@ void kickOnce(IOService *self, Display *display) {
     const uint64_t stride = gBind.rowBytes(surface), allocation = gBind.allocSize(surface);
     if (!memory || !surfaceBounds(width, height, stride, allocation, memory->getLength()))
         return stall(display, request, "surface bounds");
-    // The render server may write the surface through an uncached or write-combined mapping; this cached kernel alias
-    // would then read lines left in the cache by an earlier frame (stale bands and noise that come and go). Clean and
-    // invalidate the surface's lines first. zeta-no-surface-flush=1 skips it.
+    // zeta-surface-flush=1: clean and invalidate the surface's lines before the copy and log swaps whose cached reads
+    // were stale (none were found on the spanned Setup screen; its bands were the boot-progress banner, see spanVideo).
     IOMemoryMap *source = memory->map(kIOMapAnywhere | kIOMapReadOnly);
     if (!source || !source->getVirtualAddress() || source->getLength() < allocation) {
         OSSafeReleaseNULL(source);
         return stall(display, request, "surface map");
     }
-    if (bootArg("zeta-no-surface-flush") != 1) {
+    if (bootArg("zeta-surface-flush") == 1) {
         // Every 16th row summed through the cache before and after the flush: a difference is a stale line.
         auto rows = [&] {
             uint64_t sum = 0;

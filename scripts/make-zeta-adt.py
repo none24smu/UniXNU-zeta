@@ -72,9 +72,11 @@ PRODUCT = [
     ('partition-style', b'iOS\0'),
     ('app-macho-architecture', b'arm64e\0'),
 ]
-# Apple's names are volup|voldown|hold|ringeren; zeta has no ring/action switch. iPhone18,2 has no
-# home-button-type.
+# Apple's names are volup|voldown|hold|ringeren; zeta has no ring/action switch.
 BUTTON_NAMES = b'volup\0voldown\0hold\0'
+# The stock V54AP tree's /buttons home-button-type: 2 is no Home button (Face ID, swipe-up home gesture). MobileGestalt
+# reads it; absent, iOS treats the phone as a Home-button model ("Press Home to open").
+HOME_BUTTON_TYPE = 2
 
 
 def node(name, properties=(), children=()):
@@ -279,7 +281,8 @@ def main():
         node('defaults', [('sleep-disabled', struct.pack('<I', 1)),
                           ('kern.maxvnodes', struct.pack('<I', args.dram_size // 65536 + 1024))]),
         node('options', []),
-        node('buttons', [('compatible', b'buttons\0'), ('device_type', b'buttons\0'), ('button-names', BUTTON_NAMES)]),
+        node('buttons', [('compatible', b'buttons\0'), ('device_type', b'buttons\0'), ('button-names', BUTTON_NAMES),
+                         ('home-button-type', struct.pack('<I', HOME_BUTTON_TYPE))]),
         # The original AppleImage4 panics without a product node.
         node('product', [*PRODUCT, ('model', BOARD_MODEL)]),
         node('arm-io', [('device_type', b'arm-io\0'),

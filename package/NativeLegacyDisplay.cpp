@@ -291,11 +291,36 @@ void dpuDump(const char *when) {
             smmu64(cb + 0x60));
     }
 }
+// What the scanout memory holds: a 1/256 sample with lit and red-dominant counts, their bounds and a checksum.
+void scanoutSample(const char *when, const Display &display) {
+    if (!display.mapping) return;
+    auto base = reinterpret_cast<const volatile unsigned char *>(display.mapping->getVirtualAddress());
+    unsigned lit = 0, red = 0, samples = 0;
+    uint32_t left = UINT32_MAX, top = UINT32_MAX, right = 0, bottom = 0, sum = 0;
+    for (uint32_t row = 0; row < display.height; row += 16) {
+        auto line = reinterpret_cast<const volatile uint32_t *>(base + (uint64_t)row * display.rowBytes);
+        for (uint32_t x = 0; x < display.width; x += 16, ++samples) {
+            const uint32_t pixel = line[x];
+            sum = (sum << 5 | sum >> 27) ^ pixel;
+            if (!(pixel & 0x00ffffffU)) continue;
+            lit++;
+            const uint32_t b = pixel & 0xff, g = (pixel >> 8) & 0xff, r = (pixel >> 16) & 0xff;
+            if (r > 2 * g && r > 2 * b) red++;
+            if (x < left) left = x;
+            if (x > right) right = x;
+            if (row < top) top = row;
+            if (row > bottom) bottom = row;
+        }
+    }
+    IOLog("zeta-display: %s scanout %u/%u lit, %u red, bounds %u,%u-%u,%u, sum %#x\n", when, lit, samples, red,
+        lit ? left : 0, lit ? top : 0, right, bottom, sum);
+}
 // Every 15 s for the first five minutes: the scanout source and its translation while the render server runs.
 void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     char when[16];
     snprintf(when, sizeof(when), "watch %u", gDpu.watched);
     dpuDump(when);
+    scanoutSample(when, gDisplays[0]);
     if (++gDpu.watched < 20) timer->setTimeoutMS(15000);
 }
 // One frame from memory to each command-mode panel (sde trigger_start), unless autorefresh sends them.
@@ -420,21 +445,9 @@ void kickOnce(IOService *self, Display *display) {
         IOLog("zeta-display: presented swap %u (%ux%u, stride %llu), %u frames, %u starts\n",
             field<uint32_t>(request, kRequestSwapID), width, height, stride, display->presented + 1, gDpu.starts);
         if (display->presented < 2) dpuDump("present");
-        // What the render server drew: every 16th pixel of every 16th row of the scanout copy.
-        unsigned lit = 0, samples = 0;
-        uint32_t any = 0, first = 0;
-        for (uint32_t row = 0; row < height; row += 16) {
-            auto line = reinterpret_cast<const volatile uint32_t *>(destination + (uint64_t)row * display->rowBytes);
-            for (uint32_t x = 0; x < width; x += 16, ++samples) {
-                const uint32_t pixel = line[x] & 0x00ffffffU;
-                if (!pixel) continue;
-                if (!lit++) first = line[x];
-                any |= pixel;
-            }
-        }
-        IOLog("zeta-display: swap %u surface format %#x planes %u alloc %llu: %u/%u samples lit, first %#x, or %#x\n",
-            field<uint32_t>(request, kRequestSwapID), gBind.format(surface), gBind.planes(surface), allocation, lit,
-            samples, first, any);
+        scanoutSample("present", *display);
+        IOLog("zeta-display: swap %u surface format %#x planes %u alloc %llu\n", field<uint32_t>(request, kRequestSwapID),
+            gBind.format(surface), gBind.planes(surface), allocation);
     }
     display->presented++;
     finishTransfer(self, display, request);

@@ -20,6 +20,7 @@
 #include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/pwr_mgt/IOPMpowerState.h>
 #include <libkern/c++/OSData.h>
+#include <libkern/c++/OSSymbol.h>
 #include <libkern/OSKextLib.h>
 #include <kern/debug.h>
 #include <pexpert/pexpert.h>
@@ -384,6 +385,16 @@ IOReturn dNewUserClient(IOService *self, task_t task, void *security, UInt32 typ
     proc_name(proc_selfpid(), name, sizeof(name));
     IOLog("zeta-display: user client type %u for %s[%d] -> %#x %s\n", (unsigned)type, name, proc_selfpid(), status,
         status == kIOReturnSuccess && client && *client ? (*client)->getMetaClass()->getClassName() : "-");
+    // The compositor's next step is the IOSurface root (iOS IOCoreSurfaceRoot, aliased to the KDK IOSurfaceRoot).
+    OSDictionary *matching = IOService::serviceMatching("IOSurfaceRoot");
+    IOService *root = matching ? IOService::copyMatchingService(matching) : nullptr;
+    const OSSymbol *rootClass = OSSymbol::withCStringNoCopy("IOSurfaceRoot");
+    const OSMetaClass *meta = rootClass ? OSMetaClass::copyMetaClassWithName(rootClass) : nullptr;
+    OSSafeReleaseNULL(rootClass);
+    IOLog("zeta-display: IOSurfaceRoot service %d instances %u\n", root != nullptr, meta ? meta->getInstanceCount() : 0);
+    if (meta) meta->releaseMetaClass();
+    OSSafeReleaseNULL(root);
+    OSSafeReleaseNULL(matching);
     return status;
 }
 IOReturn dSetPowerState(IOService *self, unsigned long ordinal, IOService *device) {

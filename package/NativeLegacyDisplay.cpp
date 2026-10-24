@@ -571,11 +571,30 @@ void kickOnce(IOService *self, Display *display) {
     // The render server may write the surface through an uncached or write-combined mapping; this cached kernel alias
     // would then read lines left in the cache by an earlier frame (stale bands and noise that come and go). Clean and
     // invalidate the surface's lines first. zeta-no-surface-flush=1 skips it.
-    if (bootArg("zeta-no-surface-flush") != 1) memory->performOperation(kIOMemoryIncoherentIOFlush, 0, allocation);
     IOMemoryMap *source = memory->map(kIOMapAnywhere | kIOMapReadOnly);
     if (!source || !source->getVirtualAddress() || source->getLength() < allocation) {
         OSSafeReleaseNULL(source);
         return stall(display, request, "surface map");
+    }
+    if (bootArg("zeta-no-surface-flush") != 1) {
+        // Every 16th row summed through the cache before and after the flush: a difference is a stale line.
+        auto rows = [&] {
+            uint64_t sum = 0;
+            for (uint32_t row = 0; row < height; row += 16) {
+                auto line = reinterpret_cast<const volatile uint64_t *>(source->getVirtualAddress() + row * stride);
+                for (uint32_t x = 0; x < width / 2; ++x) sum = sum * 31 + line[x];
+            }
+            return sum;
+        };
+        const uint64_t before = rows();
+        memory->performOperation(kIOMemoryIncoherentIOFlush, 0, allocation);
+        const uint64_t after = rows();
+        static unsigned staleFrames, staleLogs;
+        if (before != after && staleLogs < 20) {
+            staleLogs++;
+            IOLog("zeta-display: swap %u read stale cache lines (%u stale of %u frames)\n",
+                field<uint32_t>(request, kRequestSwapID), ++staleFrames, display->presented + 1);
+        } else if (before != after) ++staleFrames;
     }
     if (!prepareScanout()) {
         OSSafeReleaseNULL(source);

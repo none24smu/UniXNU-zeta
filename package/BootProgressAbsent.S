@@ -124,18 +124,10 @@
 .set _native_legacy_transfer_calls, 0
 .globl _native_legacy_transfer_status
 .set _native_legacy_transfer_status, 0
-.globl _native_touch_count
-.set _native_touch_count, 0
 .globl _native_touch_rows
 .set _native_touch_rows, 0
-.globl _native_touch_seq
-.set _native_touch_seq, 0
 .globl _native_touch_stage_req
 .set _native_touch_stage_req, 0
-.globl _native_touch_xs
-.set _native_touch_xs, 0
-.globl _native_touch_ys
-.set _native_touch_ys, 0
 .globl _native_virtio_read_failures
 .set _native_virtio_read_failures, 0
 .globl _native_virtio_read_requests

@@ -11,9 +11,15 @@ DRIVER = r'''
 #include "HeatTouch.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 // Each argument is one frame: fingers "row,col,depth;row,col,depth" (cell units; depth in bytes below 180), "-" for none.
 int main(int argc, char **argv) {
+    // "stretch <mm> <radius>": RunStretching along the columns (0..120.20 mm).
+    if (argc == 4 && !strcmp(argv[1], "stretch")) {
+        printf("%.3f\n", heat::stretch(atof(argv[2]), heat::kActiveColumn, atof(argv[3]), heat::kStretchColT, heat::kStretchColO));
+        return 0;
+    }
     heat::Tracker tracker;
     for (int a = 1; a < argc; ++a) {
         uint8_t cells[heat::kCells];
@@ -93,6 +99,23 @@ class HeatTouchTest(unittest.TestCase):
         contacts = self.contacts(lines[1])
         self.assertEqual(len(contacts), 2)
         self.assertNotEqual(contacts[0][0], contacts[1][0])
+
+    def stretch(self, mm, radius):
+        result = subprocess.run([str(self.binary), 'stretch', str(mm), str(radius)], check=True, capture_output=True, text=True)
+        return float(result.stdout)
+
+    def test_stretching_spreads_the_border_band(self):
+        # rad 5: b = 4.89, o' = 2.6919. o' maps to the edge, b stays, a point between moves outward, beyond b nothing moves.
+        self.assertAlmostEqual(self.stretch(120.20 - 2.6919, 5), 120.20, delta=0.01)
+        self.assertAlmostEqual(self.stretch(120.20 - 4.89, 5), 120.20 - 4.89, delta=0.01)
+        self.assertGreater(self.stretch(120.20 - 3.5, 5), 120.20 - 3.5)
+        self.assertAlmostEqual(self.stretch(2.6919, 5), 0, delta=0.01)
+        self.assertEqual(self.stretch(60, 5), 60)
+
+    def test_mid_panel_finger_is_not_stretched(self):
+        lines = self.run_frames('10,15,60', '10,15,60')
+        (contact,) = self.contacts(lines[1])
+        self.assertAlmostEqual(contact[1], 15 * 117.67 / 29 + (120.20 - 117.67) / 2, delta=0.3)
 
     def test_weak_noise_is_ignored(self):
         self.assertEqual(self.run_frames('10,15,12', '10,15,12')[1][5], '0')

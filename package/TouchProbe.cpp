@@ -10,6 +10,7 @@
 // them for zeta-touch-listen2=<s> (default 120, 0 = for good): each panel's 21 x 30 grid goes through the stock heat
 // library's finger path (HeatTouch.h), and the contacts, mapped into the spanned screen (zeta-touch-flip=<bits>), are
 // published for the digitizer in HidInputProbe.cpp (zeta-touch-hid=1).
+// `zeta-swipe=<s>`: sheng's scripted input, s seconds after the probe starts (see swipeThread).
 // `zeta-touch-hz=<Hz>` (default 8 MHz, the DT allows 32 MHz), `zeta-touch-dma=1` lets an engine whose FIFO interface is
 // disabled use the SE DMA engine through an apps SMMU bypass stream (sheng's path).
 //
@@ -73,6 +74,35 @@ void publish(unsigned count, const int *ids, const int *xs, const int *ys) {
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_seq = native_touch_seq + 1;
     if (void (*sink)(void *) = __atomic_load_n(&gTouchSink, __ATOMIC_ACQUIRE)) sink(gTouchSinkContext);
+}
+// sheng TouchProbe.cpp's gScriptedDown: while a scripted stroke holds a contact, the panel's own frames publish nothing (sheng int-283:
+// the panel's empty frames lifted the scripted contact after every frame, so no swipe reached the UI).
+volatile bool gScripted;
+// sheng's stroke: one contact from (x, y0) to (x, y1) over `frames` frames 8 ms apart, then its lift; coordinates 0..32767.
+void stroke(int id, int x, int y0, int y1, unsigned frames) {
+    gScripted = true;
+    for (unsigned f = 0; f <= frames; ++f) {
+        const int y = y0 + (y1 - y0) * (int)f / (int)frames;
+        publish(1, &id, &x, &y);
+        IOSleep(8);
+    }
+    publish(0, &id, &x, &y1);
+    gScripted = false;
+}
+// zeta-swipe=<s>: s seconds after the probe starts, swipes up from the bottom edge (y 0.999 to 0.55) as sheng's swipe run
+// ends its scenes: one at the middle of the span (the Hello screen's home indicator), one at the middle of the right panel,
+// and both again a minute later. It shows whether a swipe that starts on the edge reaches the UI without anyone at the phone.
+void swipeThread(void *parameter, wait_result_t) {
+    IOSleep((uint32_t)(uintptr_t)parameter * 1000);
+    for (unsigned round = 0; round < 2; ++round) {
+        IOLog("zeta-touch: scripted swipe %u, centre\n", round);
+        stroke(30, 16384, 32734, 18022, 30);
+        IOSleep(5000);
+        IOLog("zeta-touch: scripted swipe %u, right panel\n", round);
+        stroke(31, 24900, 32734, 18022, 30);
+        IOSleep(55000);
+    }
+    IOLog("zeta-touch: scripted swipes done\n");
 }
 constexpr uint64_t kGcc = 0x00100000, kGccLength = 0x60000;
 constexpr uint32_t kVote = 0x52008, kGpll0Vote = 0x52018, kGpll0Mode = 0x0;
@@ -452,7 +482,7 @@ struct Touch {
                 }
                 ++count;
             }
-        publish(count, ids, xs, ys);
+        if (!gScripted) publish(count, ids, xs, ys);
     }
     // Grids come only while the panel sees a touch: a panel with fingers that sends none for 80 ms has been lifted.
     void liftQuiet() {
@@ -570,4 +600,7 @@ void zeta_touch_probe(void) {
     if (!bootArg("zeta-touch")) return;
     thread_t thread;
     if (kernel_thread_start(run, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);
+    if (const unsigned after = bootArg("zeta-swipe")) {
+        if (kernel_thread_start(swipeThread, reinterpret_cast<void *>(uintptr_t(after)), &thread) == KERN_SUCCESS) thread_deallocate(thread);
+    }
 }

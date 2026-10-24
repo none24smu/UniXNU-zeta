@@ -10,10 +10,11 @@
 //
 // Ported so far: the signal table, the CCL (8-connected, threshold byte from TouchDetectionCfg's lowest-noise CCL
 // threshold), the blob gates and frame aborts, the padded centre of mass (RecalculateComWithPadding), the antenna-to-mm
-// conversion (DetectedArray), and nearest-neighbour tracking with the 35 mm limit, reported from the second matched frame.
+// conversion (DetectedArray), the blob radius (SetBlobRadius) and edge stretching (ReportInformation::RunStretching, on
+// for Zeta), and nearest-neighbour tracking with the 35 mm limit, reported from the second matched frame.
 // Not yet: the noise-adaptive CCL threshold (it needs the per-cycle noise from the metadata frame), the peak split of
 // multi-finger blobs, the 4-class LLR classifier (a blob is a finger here when the stock promotion rule's size and peak
-// tests pass and it is smaller than the big-blob palm size), edge stretching, border drop, and the Kalman/jitter filters.
+// tests pass and it is smaller than the big-blob palm size), border drop, the track radius IIR, and the Kalman/jitter filters.
 #pragma once
 #include <stdint.h>
 
@@ -42,6 +43,14 @@ constexpr float kPitchColumn = 117.67f / 29, kPitchRow = 81.15f / 20;
 constexpr float kActiveColumn = 120.20f, kActiveRow = 85.18f;
 constexpr float kOffsetColumn = (117.67f - 120.20f) / 2, kOffsetRow = (81.15f - 85.18f) / 2;
 constexpr float kMatchLimit = 35.0f;         // TouchDetection's Hungarian cost cap, mm
+// SetBlobRadius: radius = pitch * 0.5 * widest line (sum of s over the line / its largest s) * TDC+0xeb0 [0.85], over the
+// bbox rows with the column pitch, or over its columns with the row pitch when the COM is within TTC+0x4 [0.21] cells of the
+// first or last column; 4.5 mm in a corner.
+constexpr float kRadiusScale = 0.85f, kBorderCells = 0.21f, kCornerRadius = 4.5f;
+// RunStretching (StretchingConfig rows of PS_CFG_DATA_Zeta, both regions): per edge a threshold t and an offset o; a position
+// within b = rad + t of an edge, from o' = rad * 0.4247 - 0.0316 + o out, is spread over [0, b].
+constexpr float kStretchA = 0.4247f, kStretchB = -0.0316f;
+constexpr float kStretchColT = -0.11f, kStretchColO = 0.6f, kStretchRowT = 0.11f, kStretchRowO = 0.98f;
 
 struct Contact {
     float x, y;      // mm on the panel: x along the 30 columns (long side, 0..120.20), y along the 21 rows (short side, 0..85.18)
@@ -49,6 +58,36 @@ struct Contact {
 };
 
 inline int byteThreshold(float threshold) {return (int)(((1.0f - threshold) - 0.6f) / kStep + 0.5f);}
+
+// RunStretching for one axis: v in mm on [0, length], rad the blob radius in mm.
+inline float stretch(float v, float length, float rad, float t, float o) {
+    const float b = rad + t, off = rad * kStretchA + kStretchB + o;
+    if (b <= off) return v;
+    if (v < b) return (b * v - b * off) / (b - off);
+    const float d = length - v;
+    if (d < b) return length - (d * b - b * off) / (b - off);
+    return v;
+}
+
+// SetBlobRadius over the bbox (no label test): lines are rows, or columns for a COM on the first or last column.
+inline float blobRadius(const uint8_t *cells, int minR, int maxR, int minC, int maxC, float r, float c) {
+    const bool colEdge = c <= kBorderCells || c >= kCols - 1 - kBorderCells;
+    const bool rowEdge = r <= kBorderCells || r >= kRows - 1 - kBorderCells;
+    if (colEdge && rowEdge) return kCornerRadius;
+    float widest = 0;
+    const int lines = colEdge ? maxC - minC + 1 : maxR - minR + 1, length = colEdge ? maxR - minR + 1 : maxC - minC + 1;
+    for (int l = 0; l < lines; ++l) {
+        float sum = 0, top = 0;
+        for (int k = 0; k < length; ++k) {
+            const int rr = colEdge ? minR + k : minR + l, cc = colEdge ? minC + l : minC + k;
+            const float s = signal(cells[rr * kCols + cc]);
+            if (s > 0) sum += s;
+            if (s > top) top = s;
+        }
+        if (top > 0 && sum / top > widest) widest = sum / top;
+    }
+    return (colEdge ? kPitchRow : kPitchColumn) * 0.5f * widest * kRadiusScale;
+}
 
 // One frame: up to kMaxContacts fingers (positions in mm, no ids). Returns the count, or 0 when the frame is dropped.
 inline int detect(const uint8_t *cells, Contact *out) {
@@ -127,6 +166,9 @@ inline int detect(const uint8_t *cells, Contact *out) {
             if (w > 0) {r = wr / w; c = wc / w;}
         }
         float x = c * kPitchColumn - kOffsetColumn, y = r * kPitchRow - kOffsetRow;
+        const float rad = blobRadius(cells, b.minR, b.maxR, b.minC, b.maxC, r, c);
+        x = stretch(x, kActiveColumn, rad, kStretchColT, kStretchColO);
+        y = stretch(y, kActiveRow, rad, kStretchRowT, kStretchRowO);
         x = x < 0 ? 0 : x > kActiveColumn ? kActiveColumn : x;
         y = y < 0 ? 0 : y > kActiveRow ? kActiveRow : y;
         out[count++] = {x, y, -1};

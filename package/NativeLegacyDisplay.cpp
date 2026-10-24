@@ -229,11 +229,13 @@ constexpr size_t kPipeSize = 0x0, kPipeAddress = 0x14, kPipeStride = 0x24, kPipe
 // The MDP fetches through the apps SMMU (SMMU-500 at 0x15000000, uefi-zeta MemoryMapLib "SMMU"); the UEFI keeps the
 // display streams 0x820, 0x821 and 0xC21 attached to the context bank ABL set up (LahainaPkg PlatformSec).
 constexpr uint64_t kSmmuPhysical = 0x15000000, kSmmuLength = 0xd0000;
-// Link health. INTF interrupt status (raw, latched whatever the enable) at INTF + 0x1c4, clear + 0x1c8: bit 31
-// underrun, 27 vsync; tear interrupts at 0x35800 + intf * 0x1000 (+4 status, +8 clear). DSI0 6G controller at
-// 0x0ae94000, registers shifted by 4: status0, FIFO, ack error, lane status, DLN0 PHY error, timeout, int ctrl.
+// Link health (vendor sde_hw_interrupts.c, sde_hwio.h, lahaina-sde-common.dtsi). The underruns are in the MDP top
+// interrupt status (top 0x1000 + 0x14, clear + 0x18; latched whatever the enable): INTF_n underrun bit 24 + 2n,
+// vsync 25 + 2n. INTF block interrupts (SFI, programmable line) at INTF + 0x1c4/0x1c8; tear interrupts at
+// 0x35800 + intf * 0x1000 (+4 status, +8 clear). DSI0 6G controller at 0x0ae94000, registers shifted by 4: status0,
+// FIFO, ack error, lane status, DLN0 PHY error, timeout, int ctrl.
+constexpr size_t kTopIntrStatus = 0x1014, kTopIntrClear = 0x1018;
 constexpr size_t kIntfIntrStatus = 0x1c4, kIntfIntrClear = 0x1c8, kTearIntr = 0x35800;
-constexpr uint32_t kIntfUnderrun = 1U << 31;
 constexpr uint64_t kDsi0Physical = 0x0ae94000, kDsiLength = 0x400;
 constexpr size_t kDsiRegisters[] = {0x0, 0x4, 0x8, 0x10, 0x68, 0xa8, 0xb8, 0xc0, 0x114, 0x120};
 constexpr uint16_t kMdpStreams[] = {0x820, 0x821, 0xc21};
@@ -345,16 +347,19 @@ void scanoutSample(const char *when, const Display &display) {
 // Every 500 ms: INTF_1 underruns and tear events, and the DSI0 status words whenever they change (first 120 logs).
 void dpuHealth(bool force) {
     const uint64_t ms = mach_absolute_time() / 19200;
+    const uint32_t top = dpuRead(kTopIntrStatus), intfBits = 0xffU << 24;
+    if (top & intfBits) dpuWrite(kTopIntrClear, top & intfBits);
     for (unsigned intf = 1; intf <= 2; ++intf) {
         const size_t block = kIntfBase + intf * kBlockStride, tear = kTearIntr + intf * kBlockStride;
         const uint32_t status = dpuRead(block + kIntfIntrStatus), tearStatus = dpuRead(tear + 4);
+        const bool underrun = top & (1U << (24 + 2 * intf));
         if (status) dpuWrite(block + kIntfIntrClear, status);
         if (tearStatus) dpuWrite(tear + 8, tearStatus);
-        if (status & kIntfUnderrun) gDpu.underruns++;
-        if ((force || (status & kIntfUnderrun)) && gDpu.healthLogs < 120) {
+        if (underrun) gDpu.underruns++;
+        if ((force || underrun) && gDpu.healthLogs < 120) {
             gDpu.healthLogs++;
-            IOLog("zeta-dpu: %llu ms intf %u intr %#x tear %#x frame %u underruns %u\n", ms, intf, status, tearStatus,
-                dpuRead(block + kIntfFrameCount), gDpu.underruns);
+            IOLog("zeta-dpu: %llu ms intf %u top %#x intr %#x tear %#x frame %u underruns %u\n", ms, intf, top, status,
+                tearStatus, dpuRead(block + kIntfFrameCount), gDpu.underruns);
         }
     }
     if (!gDpu.dsi) return;

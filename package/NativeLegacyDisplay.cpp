@@ -568,6 +568,10 @@ void kickOnce(IOService *self, Display *display) {
     const uint64_t stride = gBind.rowBytes(surface), allocation = gBind.allocSize(surface);
     if (!memory || !surfaceBounds(width, height, stride, allocation, memory->getLength()))
         return stall(display, request, "surface bounds");
+    // The render server may write the surface through an uncached or write-combined mapping; this cached kernel alias
+    // would then read lines left in the cache by an earlier frame (stale bands and noise that come and go). Clean and
+    // invalidate the surface's lines first. zeta-no-surface-flush=1 skips it.
+    if (bootArg("zeta-no-surface-flush") != 1) memory->performOperation(kIOMemoryIncoherentIOFlush, 0, allocation);
     IOMemoryMap *source = memory->map(kIOMapAnywhere | kIOMapReadOnly);
     if (!source || !source->getVirtualAddress() || source->getLength() < allocation) {
         OSSafeReleaseNULL(source);

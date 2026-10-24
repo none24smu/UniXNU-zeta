@@ -37,6 +37,7 @@ extern "C" boolean_t ml_at_interrupt_context(void);
 extern "C" int proc_selfpid(void);
 extern "C" void proc_name(int pid, char *buf, int size);
 extern "C" void native_legacy_display_late_probe(void);
+extern "C" void native_keystore_probe(void);
 extern "C" uint64_t mach_continuous_time(void);
 
 namespace {
@@ -967,6 +968,9 @@ IOService *allocateDisplay(Display *slot) {
 // bsd_autoconf, after IOBSD is published (UniXNU offline-legacy-start): the IOSurface root matches the genuine
 // resource, then the GOP nub and the original framebuffer with its overrides start under /arm-io.
 void native_legacy_display_late_probe(void) {
+    // The state-only AppleKeyStore (sheng KeyStoreProbe.cpp, UniXNU NativeKeyStoreEvents; offline-key-events=1 sheng-aks=1)
+    // before launchd: keybagd, SpringBoard and the session daemons open it at their start.
+    native_keystore_probe();
     if (bootArg("offline-mobile-graphics-load") != 1) return;
     kern_return_t surfaceLoad = OSKextLoadKextWithIdentifier(kSurfaceKext);
     kern_return_t familyLoad = OSKextLoadKextWithIdentifier(kFamily);

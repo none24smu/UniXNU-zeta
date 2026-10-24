@@ -273,7 +273,11 @@ def main():
         node('cpus', children=cpus),
         *([node('psci', [('compatible', b'arm,psci-1.0\0'), ('method', args.psci_method.encode() + b'\0')])] if len(cpus) > 1 else []),
         # Suspend/resume is not implemented: keep the CPU from parking forever.
-        node('defaults', [('sleep-disabled', struct.pack('<I', 1))]),
+        # kern.maxvnodes, as sheng sets it: the kernel is built with CONFIG_VNODES=1024 (xsmall), so desiredvnodes clips to
+        # 1024 and lsd's first-boot app scan filled the table ("vnode: table is full"; vnode jetsam killed the daemons in a
+        # loop). XNU reads the value from /defaults before it clips; this is its own formula, memory/64K + 1024.
+        node('defaults', [('sleep-disabled', struct.pack('<I', 1)),
+                          ('kern.maxvnodes', struct.pack('<I', args.dram_size // 65536 + 1024))]),
         node('options', []),
         node('buttons', [('compatible', b'buttons\0'), ('device_type', b'buttons\0'), ('button-names', BUTTON_NAMES)]),
         # The original AppleImage4 panics without a product node.

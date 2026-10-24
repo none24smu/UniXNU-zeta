@@ -19,12 +19,9 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
-#include <IOKit/IOBufferMemoryDescriptor.h>
 #include <pexpert/pexpert.h>
 #include <string.h>
 
-extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
-extern "C" task_t kernel_task;
 
 namespace {
 struct Region {
@@ -160,7 +157,8 @@ constexpr uint32_t lane(uint32_t reg, unsigned n) {return 0x200 + 0x80 * n + reg
 struct Bringup {
     Mmio dsi0, dsi1, cc, reset, te;
     volatile unsigned char *mdp;
-    IOBufferMemoryDescriptor *buffer = nullptr;
+    Mmio command;                 // uncached window on the command packets
+    uint32_t commandOffset = 0;
     uint64_t bufferPhysical = 0;
     unsigned sent = 0;
 
@@ -212,7 +210,8 @@ struct Bringup {
         const uint16_t length = (uint16_t)(cmd[5] << 8 | cmd[6]);
         const uint8_t *payload = cmd + 7;
         const bool isLong = type == 0x39 || type == 0x29 || type == 0x0a;
-        uint8_t *out = static_cast<uint8_t *>(buffer->getBytesNoCopy());
+        uint8_t out[4 + 256] = {};
+        if (isLong && length > 256) return false;
         uint32_t size;
         out[2] = (uint8_t)(type | (vc & 3) << 6);
         if (isLong) {
@@ -227,7 +226,10 @@ struct Bringup {
             size = 4;
         }
         out[3] = (uint8_t)((isLong ? 1U << 6 : 0) | 1U << 7);
-        flush_dcache64(bufferPhysical, size, 1);
+        // The window is device memory: aligned word stores only.
+        for (uint32_t i = 0; i < size; i += 4)
+            command.wr(commandOffset + i, (uint32_t)out[i] | (uint32_t)out[i + 1] << 8 | (uint32_t)out[i + 2] << 16 |
+                                          (uint32_t)out[i + 3] << 24);
         // DMA: embedded mode (bit 28), LP or HS (bit 26), not broadcast, not master; watermarks off.
         uint32_t dma = dsi1.rd(kDsiCmdDmaCtrl);
         dma |= 1U << 28;
@@ -482,21 +484,24 @@ void bringUp(volatile unsigned char *mdp) {
               b.dsi0.rd(kPhy + kPhyPllCntrl));
         return;
     }
-    // The command DMA reads memory below 4 GiB; the display SMMU context is in bypass (sctlr M clear).
-    b.buffer = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
-        kIODirectionInOut | kIOMemoryPhysicallyContiguous, 4096, 0x00000000fffff000ULL);
-    if (!b.buffer) {
-        IOLog("zeta-dsi: no command buffer\n");
+    // The command DMA takes a 32-bit address (the display SMMU context is in bypass, sctlr M clear), and an
+    // IOBufferMemoryDescriptor physical mask is not honoured here (dsi-v2 got 0x105744000, the truncated fetch reset
+    // the phone). The packets go in the last 1 KiB of the firmware framebuffer VIG0 scans (0xe1000000, 1892 rows of
+    // 0x1500 bytes): reserved, below 4 GiB and readable by the MDSS. It is the bottom-right corner of the left panel.
+    const uint64_t scanout = b.mdpRead(0x5014), stride = b.mdpRead(0x5024) & 0xffff, rows = b.mdpRead(0x5000) >> 16;
+    b.bufferPhysical = scanout + stride * rows - 0x400;
+    if (!scanout || !stride || !rows || b.bufferPhysical + 0x400 > 0x100000000ULL ||
+        !b.command.open(b.bufferPhysical & ~0xfffULL, 0x1000)) {
+        IOLog("zeta-dsi: no command window (scanout %#llx stride %#llx rows %llu)\n", scanout, stride, rows);
         return;
     }
-    b.bufferPhysical = b.buffer->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
-    IOLog("zeta-dsi: bringing up the second panel, command buffer %#llx\n", b.bufferPhysical);
+    b.commandOffset = (uint32_t)(b.bufferPhysical & 0xfff);
+    IOLog("zeta-dsi: bringing up the second panel, commands at %#llx\n", b.bufferPhysical);
     if (b.phy() && b.clocks() && b.controller()) {
         b.panel();
         b.path();
         b.postOn();
     }
-    // Leave the buffer mapped for later commands (brightness, display off); the controller keeps the address.
     survey(nullptr);
     for (auto &rows : kDpuSecondRows) dumpRows("dpu", 0x0ae00000, mdp, rows[0], rows[1]);
     IOLog("zeta-dsi: bring-up done\n");

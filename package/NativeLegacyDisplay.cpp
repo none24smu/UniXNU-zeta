@@ -215,7 +215,9 @@ bool prepareScanout() {
 // keeps its own frame: the DPU sends one from memory only on CTL_START, or on every tear-check pass while the INTF
 // autorefresh runs, so scanout stores alone never reach the glass. Offsets: vendor msm-5.4 sde_hw_ctl.c and
 // sde_hw_intf.c, bases from lahaina-sde-common.dtsi (relative to the MDP at 0x0ae00000).
-// zeta-dpu=1 logs the state the firmware left; zeta-dpu=2 also drives it (autorefresh, else CTL_START per present).
+// zeta-dpu=1 logs the state the firmware left; zeta-dpu=2 also drives it (autorefresh, else CTL_START per present);
+// zeta-dpu=3 stops autorefresh and sends a frame per present and every 500 ms instead, so a frame an underrun broke
+// is replaced without fetching 60 frames a second. zeta-qos=1 programs the vendor fetch QoS on the scanout pipe.
 constexpr uint64_t kMdpPhysical = 0x0ae00000, kMdpLength = 0x90000;
 constexpr size_t kCtlBase = 0x16000, kIntfBase = 0x35000, kBlockStride = 0x1000;
 constexpr unsigned kCtls = 6, kDsiInterfaces = 0x6;               // CTL_INTF_ACTIVE bits for INTF_1 and INTF_2
@@ -246,6 +248,7 @@ struct Dpu {
     volatile unsigned char *base, *smmu, *dsi;
     IOTimerEventSource *watch;
     unsigned watched, ticks, healthLogs, underruns;
+    uint64_t lastStart;
     uint32_t dsiLast[sizeof(kDsiRegisters) / sizeof(kDsiRegisters[0])];
     unsigned mode, ctlMask, intfMask, starts;
     bool autorefresh;
@@ -344,6 +347,18 @@ void scanoutSample(const char *when, const Display &display) {
     IOLog("zeta-display: %s scanout %u/%u lit, %u red, alpha 0 %u ff %u, bounds %u,%u-%u,%u, sum %#x\n", when, lit,
         samples, red, transparent, opaque, lit ? left : 0, lit ? top : 0, right, bottom, sum);
 }
+// One frame from memory to each command-mode panel (sde trigger_start), at least 20 ms (over one 60 Hz transfer)
+// after the previous one.
+void dpuKick() {
+    if (gDpu.autorefresh || !gDpu.ctlMask) return;
+    const uint64_t now = mach_absolute_time(), spacing = 20 * 19200;
+    if (gDpu.lastStart && now - gDpu.lastStart < spacing) IOSleep((uint32_t)((spacing - (now - gDpu.lastStart)) / 19200) + 1);
+    for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
+        if (gDpu.ctlMask & (1U << ctl)) dpuWrite(kCtlBase + ctl * kBlockStride + kCtlStart, 1);
+    }
+    gDpu.lastStart = mach_absolute_time();
+    gDpu.starts++;
+}
 // Every 500 ms: INTF_1 underruns and tear events, and the DSI0 status words whenever they change (first 120 logs).
 void dpuHealth(bool force) {
     const uint64_t ms = mach_absolute_time() / 19200;
@@ -387,15 +402,12 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
         dpuDump(when);
         scanoutSample(when, gDisplays[0]);
     }
-    if (gDpu.ticks < 2400) timer->setTimeoutMS(500);
+    if (gDpu.mode == 3) dpuKick();
+    if (gDpu.ticks < 2400 || gDpu.mode == 3) timer->setTimeoutMS(500);
 }
-// One frame from memory to each command-mode panel (sde trigger_start), unless autorefresh sends them.
+// Per present, unless autorefresh sends the frames.
 void dpuStart() {
-    if (gDpu.mode != 2 || gDpu.autorefresh || !gDpu.ctlMask) return;
-    for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
-        if (gDpu.ctlMask & (1U << ctl)) dpuWrite(kCtlBase + ctl * kBlockStride + kCtlStart, 1);
-    }
-    gDpu.starts++;
+    if (gDpu.mode >= 2) dpuKick();
 }
 void dpuHandoff() {
     gDpu.mode = bootArg("zeta-dpu");
@@ -425,9 +437,22 @@ void dpuHandoff() {
             gDpu.intfMask |= active;
         }
     }
-    if (gDpu.mode != 2 || !gDpu.ctlMask) {
+    if (gDpu.mode < 2 || !gDpu.ctlMask) {
         IOLog("zeta-dpu: mode %u ctls %#x intfs %#x, not driving\n", gDpu.mode, gDpu.ctlMask, gDpu.intfMask);
         return;
+    }
+    // Lahaina catalog QoS for a real-time linear pipe at 60 Hz (lahaina-sde-common.dtsi danger/safe/qos-lut-linear
+    // index 0), danger/safe signalling on (sde_hw_sspp_setup_qos_ctrl; vblank QoS is for video mode only).
+    if (bootArg("zeta-qos") == 1) {
+        for (size_t pipe : kPipes) {
+            if (!dpuRead(pipe + kPipeAddress)) continue;
+            dpuWrite(pipe + 0x60, 0x0000ffff);
+            dpuWrite(pipe + 0x64, 0x0000fff0);
+            dpuWrite(pipe + 0x74, 0x44556677);
+            dpuWrite(pipe + 0x78, 0x00112233);
+            dpuWrite(pipe + 0x6c, (dpuRead(pipe + 0x6c) & ~(1U << 16)) | 1U);
+            IOLog("zeta-dpu: pipe %#lx qos programmed\n", pipe);
+        }
     }
     // sde setup_autorefresh: BIT(31) | frame count (1 = every tear-check pass), only where tear check runs.
     bool refreshing = true;
@@ -438,12 +463,17 @@ void dpuHandoff() {
             refreshing = false;
             continue;
         }
+        if (gDpu.mode == 3) {
+            dpuWrite(block + kIntfAutorefresh, 0);
+            refreshing = false;
+            continue;
+        }
         if (!(dpuRead(block + kIntfAutorefresh) & kAutorefreshEnable)) dpuWrite(block + kIntfAutorefresh, kAutorefreshEnable | 1);
     }
-    for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
-        if (gDpu.ctlMask & (1U << ctl)) dpuWrite(kCtlBase + ctl * kBlockStride + kCtlStart, 1);
-    }
+    // Autorefresh off: let the frame in flight finish before the first kick.
+    if (gDpu.mode == 3) IOSleep(40);
     gDpu.autorefresh = refreshing;
+    dpuKick();
     IOSleep(50);
     dpuDump("driven");
     IOLog("zeta-dpu: ctls %#x intfs %#x autorefresh %d\n", gDpu.ctlMask, gDpu.intfMask, gDpu.autorefresh);

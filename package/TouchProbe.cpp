@@ -409,11 +409,11 @@ struct Touch {
             IOLog("zeta-touch: output report 0x38 = %u: %d\n", panels, r);
         }
     }
-    // Heat frames (reports 0x0a right, 0x3c left): the library's HeatSection, {u32 size, u16, u8 one-byte cells, u8 type 8} then
-    // chunks {u32 offset, u32 count, cells}; Zeta's panels are 30 x 21 sensors, one chunk of 630 (SurfaceHeatProcessorLogic::
-    // ParseFullFrame). Diagnostics only: the first frames whole, then the grid of each frame whose cells move away from the
-    // panel's first frame, and the frame rate.
-    static constexpr unsigned kCells = heat::kCells, kGridRows = heat::kRows, kGridCols = heat::kCols, kHeatAt = 29;
+    // Heat frames (reports 0x0a right, 0x3c left): after the body header and 9 bytes of report header, the library's HeatSection
+    // at +12, {u32 size, u16, u8 one-byte cells, u8 type 8} then chunks {u32 offset, u32 count, cells}: Zeta's panels are
+    // 21 x 30 sensors, one chunk of 630 whose cells start at +28 (SurfaceHeatProcessorLogic::ParseFullFrame). Also logged:
+    // the first frames whole, the grid of frames whose cells move away from the panel's first frame, and the frame rate.
+    static constexpr unsigned kCells = heat::kCells, kGridRows = heat::kRows, kGridCols = heat::kCols, kHeatAt = 28;
     uint8_t heatBase[2][kCells] = {};
     bool heatHaveBase[2] = {};
     unsigned heatFrames[2] = {}, heatGrids[2] = {}, heatDumps[2] = {}, heatRate[2] = {}, metaRate[2] = {}, metaDumps[2] = {};
@@ -463,7 +463,7 @@ struct Touch {
     void heat(unsigned panel, size_t length) {
         // Each scan cycle also sends a metadata frame under the same report id (no 630-cell chunk), which Parser::
         // ProcessReceiveMessage reads; count both kinds.
-        const bool grid = length >= kHeatAt + kCells && in[19] == 1 && in[20] == 8 && (in[25] | in[26] << 8) == kCells;
+        const bool grid = length >= kHeatAt + kCells && in[18] == 1 && in[19] == 8 && (in[24] | in[25] << 8) == kCells;
         const uint64_t now = mach_absolute_time();
         if (!heatRateStart) heatRateStart = now;
         if (now - heatRateStart >= 10ull * 19200000) {
@@ -474,8 +474,8 @@ struct Touch {
         }
         if (!grid) {
             ++metaRate[panel];
-            const unsigned size = in[13] | in[14] << 8;
-            if (metaDumps[panel] < 4) {++metaDumps[panel]; hex(panel ? "meta-left" : "meta-right", in, size + 13 < length ? size + 13 : length);}
+            const unsigned size = in[12] | in[13] << 8;
+            if (metaDumps[panel] < 4) {++metaDumps[panel]; hex(panel ? "meta-left" : "meta-right", in, size + 12 < length ? size + 12 : length);}
             return;
         }
         if (heatDumps[panel] < 2) {++heatDumps[panel]; hex(panel ? "heat-left frame" : "heat-right frame", in, kHeatAt + kCells);}

@@ -29,6 +29,8 @@ extern "C" int boot_progress_prepare_scanout(void) __attribute__((weak_import));
 extern "C" void boot_progress_cancel_scanout(void) __attribute__((weak_import));
 extern "C" boolean_t ml_get_interrupts_enabled(void);
 extern "C" boolean_t ml_at_interrupt_context(void);
+extern "C" int proc_selfpid(void);
+extern "C" void proc_name(int pid, char *buf, int size);
 extern "C" void native_legacy_display_late_probe(void);
 
 namespace {
@@ -38,7 +40,7 @@ const char kSurfaceKext[] = "com.apple.iokit.IOSurface";
 // IOMobileFramebufferLegacy vtable, KDK 25F84: slot N is the word at vptr + 8 * N; 473 slots, then a zero word.
 constexpr unsigned kSlots = 473;
 enum : unsigned {
-    kFree = 22, kRegisterService = 188, kStart = 190, kStop = 191, kSetPowerState = 259,
+    kFree = 22, kRegisterService = 188, kStart = 190, kStop = 191, kNewUserClient = 245, kSetPowerState = 259,
     kIsMainDisplay = 289, kGetDotPitch = 293, kStartHardware = 401, kSwapBegin = 403, kSwapComplete = 408,
     kVerifySwap = 409, kPowerAction = 469,
     // Pure in IOMobileFramebufferService; sheng's iOS 17 slots 213 and 337 in the same order.
@@ -51,6 +53,7 @@ const SlotName kOverridden[] = {
     {kFree, "__ZN25IOMobileFramebufferLegacy4freeEv"},
     {kStart, "__ZN25IOMobileFramebufferLegacy5startEP9IOService"},
     {kStop, "__ZN25IOMobileFramebufferLegacy4stopEP9IOService"},
+    {kNewUserClient, "__ZN25IOMobileFramebufferLegacy13newUserClientEP4taskPvjPP12IOUserClient"},
     {kSetPowerState, "__ZN25IOMobileFramebufferLegacy13setPowerStateEmP9IOService"},
     {kIsMainDisplay, "__ZNK25IOMobileFramebufferLegacy15is_main_displayEv"},
     {kGetDotPitch, "__ZN25IOMobileFramebufferLegacy13get_dot_pitchEPj"},
@@ -306,6 +309,16 @@ bool dStart(IOService *self, IOService *provider) {
     }
     return true;
 }
+// sheng's native_legacy_client_enter/observed: which process opens the framebuffer, and the result.
+IOReturn dNewUserClient(IOService *self, task_t task, void *security, UInt32 type, IOUserClient **client) {
+    IOReturn status = original<IOReturn (*)(IOService *, task_t, void *, UInt32, IOUserClient **)>(kNewUserClient)(
+        self, task, security, type, client);
+    char name[32] = "?";
+    proc_name(proc_selfpid(), name, sizeof(name));
+    IOLog("zeta-display: user client type %u for %s[%d] -> %#x %s\n", (unsigned)type, name, proc_selfpid(), status,
+        status == kIOReturnSuccess && client && *client ? (*client)->getMetaClass()->getClassName() : "-");
+    return status;
+}
 IOReturn dSetPowerState(IOService *self, unsigned long ordinal, IOService *device) {
     Display *display = displayFor(self);
     if (display && display->logicalPM && (ordinal > 1 || !display->mapping)) return kIOReturnUnsupported;
@@ -424,6 +437,11 @@ IOReturn dVerifySwap(IOService *self, const void *request) {
     }
     if (accepted) {
         addValidated(display, request);
+        if (display->logged < 8) {
+            display->logged++;
+            IOLog("zeta-display: swap %u accepted (%s)\n", field<uint32_t>(request, kRequestSwapID),
+                surfaces[0] ? "surface" : "blank");
+        }
     } else {
         removeValidated(display, request);
         if (display->logged < 8) {
@@ -506,6 +524,7 @@ bool bind() {
     set(kFree, &dFree);
     set(kStart, &dStart);
     set(kStop, &dStop);
+    set(kNewUserClient, &dNewUserClient);
     set(kSetPowerState, &dSetPowerState);
     set(kRegisterService, &dRegisterService);
     set(kIsMainDisplay, &dIsMainDisplay);
@@ -540,7 +559,8 @@ void native_legacy_display_late_probe(void) {
     if (bootArg("offline-mobile-graphics-load") != 1) return;
     kern_return_t surfaceLoad = OSKextLoadKextWithIdentifier(kSurfaceKext);
     kern_return_t familyLoad = OSKextLoadKextWithIdentifier(kFamily);
-    OSDictionary *matching = IOService::nameMatching("IOCoreSurfaceRoot");
+    // The macOS family's root class (sheng's iOS 17 one is named IOCoreSurfaceRoot).
+    OSDictionary *matching = IOService::serviceMatching("IOSurfaceRoot");
     IOService *root = matching ? IOService::waitForMatchingService(matching, 5000000000ULL) : nullptr;
     IOLog("zeta-display: IOSurface %#x family %#x surface root %d\n", surfaceLoad, familyLoad, root != nullptr);
     OSSafeReleaseNULL(root);

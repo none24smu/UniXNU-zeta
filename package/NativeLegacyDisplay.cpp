@@ -39,6 +39,7 @@ extern "C" void proc_name(int pid, char *buf, int size);
 extern "C" void native_legacy_display_late_probe(void);
 extern "C" void native_keystore_probe(void);
 extern "C" void sheng_cpufreq_probe(void);
+extern "C" void zeta_soc_health(void);
 extern "C" uint64_t mach_continuous_time(void);
 
 namespace {
@@ -398,6 +399,7 @@ void dpuHealth(bool force) {
 void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     const bool full = !(gDpu.ticks++ % 30);
     dpuHealth(full);
+    if (full) zeta_soc_health();
     if (full && gDpu.watched < 20) {
         char when[16];
         snprintf(when, sizeof(when), "watch %u", gDpu.watched++);

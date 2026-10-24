@@ -186,7 +186,10 @@ def capture(args):
                         attrs[2] |= termios.CLOCAL | termios.CREAD
                         attrs[2] &= ~termios.HUPCL
                         termios.tcsetattr(fd, termios.TCSANOW, attrs)
-                    except OSError as exc:
+                    except (OSError, termios.error) as exc:
+                        # termios reports a port that vanished mid-setup as termios.error (EIO), not OSError.
+                        if isinstance(exc, termios.error):
+                            exc = OSError(exc.args[0], exc.args[1])
                         if fd is not None:
                             os.close(fd)
                             fd = None
@@ -213,8 +216,14 @@ def capture(args):
                 if request.exists():
                     command = request.read_bytes()
                     request.unlink()
-                    os.write(fd, command)
-                    event('sent', command=command.decode('ascii', 'replace'))
+                    # The port is non-blocking: retry until the whole command is out.
+                    written, deadline = 0, time.monotonic() + 2
+                    while written < len(command) and time.monotonic() < deadline:
+                        try:
+                            written += os.write(fd, command[written:])
+                        except BlockingIOError:
+                            time.sleep(.01)
+                    event('sent', command=command.decode('ascii', 'replace'), bytes=written)
                 try:
                     readable, _, _ = select.select([fd], [], [], 0.1)
                     if not readable:

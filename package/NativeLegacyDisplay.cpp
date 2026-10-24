@@ -80,6 +80,7 @@ constexpr size_t kRequestSurfaces = 0xac0;                       // swap_submit,
 constexpr unsigned kLayers = 3;
 constexpr size_t kRequestSwapID = 0x334, kRequestUpdated = 0x338;
 constexpr size_t kVsyncClients = 0x1808;                        // notification list, type 5 (swap_notify_dispatch_gated)
+constexpr size_t kNotifyLists = 0x17b8;                         // add_notification_gated: one list per type 0..7, 16 bytes
 
 struct Binding {
     void *(*allocate)(size_t);
@@ -104,7 +105,7 @@ struct Display {
     uint32_t width, height, rowBytes;
     bool primary, logicalPM, transferred, kicking, rekick;
     const void *validated[8];
-    unsigned logged, presented, stalls;
+    unsigned logged, presented, stalls, notifyMask;
     // sheng-vsync=<Hz>: a work-loop timer stands in for the vblank the GOP scanout does not have.
     IOTimerEventSource *vsyncTimer;
     uint64_t vsyncInterval, vsyncNext;
@@ -208,6 +209,103 @@ bool prepareScanout() {
     return false;
 }
 
+// Snapdragon command-mode hand-off (SM8350 DPU 7.0; Surface Duo 2 "elgin" sync-cmd DSI panels). A command-mode panel
+// keeps its own frame: the DPU sends one from memory only on CTL_START, or on every tear-check pass while the INTF
+// autorefresh runs, so scanout stores alone never reach the glass. Offsets: vendor msm-5.4 sde_hw_ctl.c and
+// sde_hw_intf.c, bases from lahaina-sde-common.dtsi (relative to the MDP at 0x0ae00000).
+// zeta-dpu=1 logs the state the firmware left; zeta-dpu=2 also drives it (autorefresh, else CTL_START per present).
+constexpr uint64_t kMdpPhysical = 0x0ae00000, kMdpLength = 0x90000;
+constexpr size_t kCtlBase = 0x16000, kIntfBase = 0x35000, kBlockStride = 0x1000;
+constexpr unsigned kCtls = 6, kDsiInterfaces = 0x6;               // CTL_INTF_ACTIVE bits for INTF_1 and INTF_2
+constexpr size_t kCtlFlush = 0x18, kCtlStart = 0x1c, kCtlStatus = 0x64, kCtlIntfActive = 0xf4;
+constexpr size_t kIntfTiming = 0x0, kIntfFrameCount = 0xac, kIntfLineCount = 0xb0, kIntfStatus = 0x26c,
+    kIntfTearCheck = 0x284, kIntfTearLineCount = 0x2b0, kIntfAutorefresh = 0x2b4;
+constexpr uint32_t kAutorefreshEnable = 1U << 31;
+
+struct Dpu {
+    IOMemoryDescriptor *memory;
+    IOMemoryMap *map;
+    volatile unsigned char *base;
+    unsigned mode, ctlMask, intfMask, starts;
+    bool autorefresh;
+};
+Dpu gDpu;
+
+uint32_t dpuRead(size_t offset) {return *reinterpret_cast<volatile uint32_t *>(gDpu.base + offset);}
+void dpuWrite(size_t offset, uint32_t value) {
+    *reinterpret_cast<volatile uint32_t *>(gDpu.base + offset) = value;
+    __asm__ volatile ("dsb sy" ::: "memory");
+}
+void dpuDump(const char *when) {
+    if (!gDpu.base) return;
+    for (unsigned intf = 1; intf <= 2; ++intf) {
+        const size_t block = kIntfBase + intf * kBlockStride;
+        IOLog("zeta-dpu: %s intf %u timing %#x status %#x frame %u line %u tear %#x tear-line %u autorefresh %#x\n",
+            when, intf, dpuRead(block + kIntfTiming), dpuRead(block + kIntfStatus), dpuRead(block + kIntfFrameCount),
+            dpuRead(block + kIntfLineCount), dpuRead(block + kIntfTearCheck), dpuRead(block + kIntfTearLineCount),
+            dpuRead(block + kIntfAutorefresh));
+    }
+    for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
+        const size_t block = kCtlBase + ctl * kBlockStride;
+        const uint32_t active = dpuRead(block + kCtlIntfActive);
+        if (active) {
+            IOLog("zeta-dpu: %s ctl %u intf-active %#x flush %#x start %#x status %#x\n", when, ctl, active,
+                dpuRead(block + kCtlFlush), dpuRead(block + kCtlStart), dpuRead(block + kCtlStatus));
+        }
+    }
+}
+// One frame from memory to each command-mode panel (sde trigger_start), unless autorefresh sends them.
+void dpuStart() {
+    if (gDpu.mode != 2 || gDpu.autorefresh || !gDpu.ctlMask) return;
+    for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
+        if (gDpu.ctlMask & (1U << ctl)) dpuWrite(kCtlBase + ctl * kBlockStride + kCtlStart, 1);
+    }
+    gDpu.starts++;
+}
+void dpuHandoff() {
+    gDpu.mode = bootArg("zeta-dpu");
+    if (gDpu.base || !gDpu.mode) return;
+    gDpu.memory = IOMemoryDescriptor::withPhysicalAddress(kMdpPhysical, kMdpLength, kIODirectionInOut);
+    gDpu.map = gDpu.memory ? gDpu.memory->map(kIOMapInhibitCache) : nullptr;
+    if (!gDpu.map || !gDpu.map->getVirtualAddress()) {
+        IOLog("zeta-dpu: MDP map failed\n");
+        OSSafeReleaseNULL(gDpu.map);
+        OSSafeReleaseNULL(gDpu.memory);
+        return;
+    }
+    gDpu.base = reinterpret_cast<volatile unsigned char *>(gDpu.map->getVirtualAddress());
+    dpuDump("hand-off");
+    for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
+        const uint32_t active = dpuRead(kCtlBase + ctl * kBlockStride + kCtlIntfActive) & kDsiInterfaces;
+        if (active) {
+            gDpu.ctlMask |= 1U << ctl;
+            gDpu.intfMask |= active;
+        }
+    }
+    if (gDpu.mode != 2 || !gDpu.ctlMask) {
+        IOLog("zeta-dpu: mode %u ctls %#x intfs %#x, not driving\n", gDpu.mode, gDpu.ctlMask, gDpu.intfMask);
+        return;
+    }
+    // sde setup_autorefresh: BIT(31) | frame count (1 = every tear-check pass), only where tear check runs.
+    bool refreshing = true;
+    for (unsigned intf = 1; intf <= 2; ++intf) {
+        if (!(gDpu.intfMask & (1U << intf))) continue;
+        const size_t block = kIntfBase + intf * kBlockStride;
+        if (!(dpuRead(block + kIntfTearCheck) & 1)) {
+            refreshing = false;
+            continue;
+        }
+        if (!(dpuRead(block + kIntfAutorefresh) & kAutorefreshEnable)) dpuWrite(block + kIntfAutorefresh, kAutorefreshEnable | 1);
+    }
+    for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
+        if (gDpu.ctlMask & (1U << ctl)) dpuWrite(kCtlBase + ctl * kBlockStride + kCtlStart, 1);
+    }
+    gDpu.autorefresh = refreshing;
+    IOSleep(50);
+    dpuDump("driven");
+    IOLog("zeta-dpu: ctls %#x intfs %#x autorefresh %d\n", gDpu.ctlMask, gDpu.intfMask, gDpu.autorefresh);
+}
+
 // The first few swaps the backend holds without presenting name the gate that held them.
 void stall(Display *display, const void *request, const char *gate) {
     if (display->stalls >= 8) return;
@@ -245,6 +343,7 @@ void kickOnce(IOService *self, Display *display) {
             for (uint32_t x = 0; x < width; ++x) line[x] = 0xff000000U;
         }
         __asm__ volatile ("dsb sy" ::: "memory");
+        dpuStart();
         display->transferred = true;
         finishTransfer(self, display, request);
         return;
@@ -268,10 +367,12 @@ void kickOnce(IOService *self, Display *display) {
     }
     __asm__ volatile ("dsb sy" ::: "memory");
     OSSafeReleaseNULL(source);
+    dpuStart();
     display->transferred = true;
     if (display->presented < 4 || display->presented % 600 == 0) {
-        IOLog("zeta-display: presented swap %u (%ux%u, stride %llu), %u frames\n", field<uint32_t>(request, kRequestSwapID),
-            width, height, stride, display->presented + 1);
+        IOLog("zeta-display: presented swap %u (%ux%u, stride %llu), %u frames, %u starts\n",
+            field<uint32_t>(request, kRequestSwapID), width, height, stride, display->presented + 1, gDpu.starts);
+        if (display->presented < 2) dpuDump("present");
     }
     display->presented++;
     finishTransfer(self, display, request);
@@ -491,15 +592,30 @@ bool dStartHardware(IOService *self) {
         display->rowBytes = (uint32_t)video.v_rowBytes;
         display->primary = video.v_display == 1;
         valid = unitScalePolicy(video);
+        if (valid && display->primary) dpuHandoff();
     }
     OSSafeReleaseNULL(mapping);
     IOLog("zeta-display: start_hardware %ux%u row %lu primary %d -> %d\n", (unsigned)video.v_width,
         (unsigned)video.v_height, video.v_rowBytes, display->primary, valid);
     return valid;
 }
+// Which notification types the render server has registered, logged as the set changes.
+void noteNotifications(IOService *self, Display *display) {
+    unsigned mask = 0;
+    for (unsigned type = 0; type < 8; ++type) {
+        if (field<const void *>(self, kNotifyLists + 16 * type)) mask |= 1U << type;
+    }
+    if (mask == display->notifyMask) return;
+    display->notifyMask = mask;
+    IOLog("zeta-display: notification types %#x\n", mask);
+}
+
 uint64_t dSwapBegin(IOService *self) {
     // A vsync client's registration ends here too (sheng: selector 72 -> kickSwapQueue), which arms the tick.
-    if (Display *display = displayFor(self)) armVsync(self, display);
+    if (Display *display = displayFor(self)) {
+        noteNotifications(self, display);
+        armVsync(self, display);
+    }
     kick(self);
     return 0;
 }
@@ -509,6 +625,7 @@ uint64_t dSwapBegin(IOService *self) {
 bool dVerifySwap(IOService *self, const void *request) {
     Display *display = displayFor(self);
     if (!display || !request || bootArg("offline-legacy-validate") != 1) return false;
+    noteNotifications(self, display);
     OSObject *surfaces[kLayers];
     memcpy(surfaces, reinterpret_cast<const unsigned char *>(request) + kRequestSurfaces, sizeof(surfaces));
     bool accepted = false;

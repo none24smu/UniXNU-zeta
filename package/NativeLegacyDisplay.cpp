@@ -278,6 +278,10 @@ void dpuDump(const char *when) {
             IOLog("zeta-dpu: %s pipe %#lx address %#x size %#x stride %#x format %#x unpack %#x op %#x fetch %#x\n",
                 when, pipe, address, dpuRead(pipe + kPipeSize), dpuRead(pipe + kPipeStride), dpuRead(pipe + kPipeFormat),
                 dpuRead(pipe + 0x34), dpuRead(pipe + 0x38), dpuRead(pipe + 0x48));
+            // Fetch QoS (sde_hw_sspp.c): danger 0x60, safe 0x64, creq 0x68 / 0x74 0x78 (64-bit), qos ctrl 0x6c.
+            IOLog("zeta-dpu: %s pipe %#lx danger %#x safe %#x creq %#x %#x %#x qos %#x\n", when, pipe,
+                dpuRead(pipe + 0x60), dpuRead(pipe + 0x64), dpuRead(pipe + 0x68), dpuRead(pipe + 0x74),
+                dpuRead(pipe + 0x78), dpuRead(pipe + 0x6c));
         }
     }
     // Layer mixers LM_0..LM_5 (catalog 0x44000 + n * 0x1000, plus the MDP's 0x1000): op mode, output size, border

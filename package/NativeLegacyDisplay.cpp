@@ -15,6 +15,8 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IOTimerEventSource.h>
+#include <IOKit/IOWorkLoop.h>
 #include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/pwr_mgt/IOPMpowerState.h>
 #include <libkern/c++/OSData.h>
@@ -32,6 +34,7 @@ extern "C" boolean_t ml_at_interrupt_context(void);
 extern "C" int proc_selfpid(void);
 extern "C" void proc_name(int pid, char *buf, int size);
 extern "C" void native_legacy_display_late_probe(void);
+extern "C" uint64_t mach_continuous_time(void);
 
 namespace {
 const char kFamily[] = "com.apple.iokit.IOMobileGraphicsFamily";
@@ -71,6 +74,7 @@ constexpr size_t kRequestNext = 0xc78, kRequestPrevious = 0xc80;
 constexpr size_t kRequestSurfaces = 0xac0;                       // swap_submit, three layers
 constexpr unsigned kLayers = 3;
 constexpr size_t kRequestSwapID = 0x334, kRequestUpdated = 0x338;
+constexpr size_t kVsyncClients = 0x1808;                        // notification list, type 5 (swap_notify_dispatch_gated)
 
 struct Binding {
     void *(*allocate)(size_t);
@@ -81,6 +85,8 @@ struct Binding {
     uint64_t (*rowBytes)(const OSObject *), (*allocSize)(const OSObject *);
     uint32_t (*format)(const OSObject *), (*planes)(const OSObject *);
     IOMemoryDescriptor *(*memory)(const OSObject *);
+    // The original vsync sender: posts (timestamp, continuous time, interval) to every vsync client.
+    void (*vsyncNotify)(IOService *, uint64_t, uint64_t, uint64_t);
 };
 Binding gBind;
 // The vtable copy: two header words, the slots, the terminating zero.
@@ -94,6 +100,11 @@ struct Display {
     bool primary, logicalPM, transferred, kicking, rekick;
     const void *validated[8];
     unsigned logged;
+    // sheng-vsync=<Hz>: a work-loop timer stands in for the vblank the GOP scanout does not have.
+    IOTimerEventSource *vsyncTimer;
+    uint64_t vsyncInterval, vsyncNext;
+    unsigned vsyncHz, vsyncSent;
+    bool vsyncArmed;
 };
 Display gDisplays[2];
 
@@ -262,9 +273,63 @@ void kick(IOService *self) {
     display->kicking = false;
 }
 
+// Display refresh tick, ported from UniXNU NativeLegacyDisplay (boot-arg sheng-vsync=<Hz>). Only the platform subclass
+// calls the family's vsync sender from the panel's vblank, and that subclass is not part of this port: without the tick
+// the render server never sees a vsync. It runs on the family's work loop, the loop of the command gate that adds and
+// removes the vsync clients, while at least one client is registered.
+bool vsyncWanted(IOService *self) {return field<const void *>(self, kVsyncClients) != nullptr;}
+void armVsync(IOService *self, Display *display) {
+    if (!display->vsyncTimer || display->vsyncArmed || !vsyncWanted(self)) return;
+    display->vsyncArmed = true;
+    display->vsyncNext = mach_absolute_time() + display->vsyncInterval;
+    display->vsyncTimer->wakeAtTime(display->vsyncNext);
+}
+void vsyncFired(OSObject *owner, IOTimerEventSource *) {
+    IOService *self = static_cast<IOService *>(owner);
+    Display *display = displayFor(self);
+    if (!display) return;
+    display->vsyncArmed = false;
+    if (!display->vsyncTimer || !vsyncWanted(self)) return;
+    const uint64_t now = mach_absolute_time();
+    gBind.vsyncNotify(self, now, mach_continuous_time(), display->vsyncInterval);
+    if (display->vsyncSent++ == 0) IOLog("zeta-display: first vsync at %u Hz\n", display->vsyncHz);
+    display->vsyncNext += display->vsyncInterval;
+    if (display->vsyncNext <= now) display->vsyncNext = now + display->vsyncInterval;
+    display->vsyncArmed = true;
+    display->vsyncTimer->wakeAtTime(display->vsyncNext);
+}
+void startVsync(IOService *self, Display *display) {
+    const unsigned hz = bootArg("sheng-vsync");
+    if (!hz || hz > 240 || !display->primary || !display->mapping || display->vsyncTimer) return;
+    IOWorkLoop *loop = self->getWorkLoop();
+    IOTimerEventSource *timer = loop ? IOTimerEventSource::timerEventSource(self, &vsyncFired) : nullptr;
+    if (!timer || loop->addEventSource(timer) != kIOReturnSuccess) {
+        OSSafeReleaseNULL(timer);
+        IOLog("zeta-display: vsync timer unavailable\n");
+        return;
+    }
+    nanoseconds_to_absolutetime(1000000000ULL / hz, &display->vsyncInterval);
+    display->vsyncHz = hz;
+    display->vsyncTimer = timer;
+    loop->runAction([](OSObject *owner, void *, void *, void *, void *) -> IOReturn {
+        IOService *service = static_cast<IOService *>(owner);
+        if (Display *entry = displayFor(service)) armVsync(service, entry);
+        return kIOReturnSuccess;
+    }, self);
+    IOLog("zeta-display: vsync tick %u Hz\n", hz);
+}
+void stopVsync(IOService *self, Display *display) {
+    if (!display->vsyncTimer) return;
+    display->vsyncTimer->cancelTimeout();
+    if (IOWorkLoop *loop = self->getWorkLoop()) loop->removeEventSource(display->vsyncTimer);
+    OSSafeReleaseNULL(display->vsyncTimer);
+    display->vsyncArmed = false;
+}
+
 // Overrides, in the slots of the vtable copy. The first argument is the object, as in a member function.
 void dFree(IOService *self) {
     if (Display *display = displayFor(self)) {
+        stopVsync(self, display);
         if (display->logicalPM) self->PMstop();
         OSSafeReleaseNULL(display->mapping);
         *display = {};
@@ -274,6 +339,7 @@ void dFree(IOService *self) {
 void dStop(IOService *self, IOService *provider) {
     Display *display = displayFor(self);
     if (display) {
+        stopVsync(self, display);
         display->transferred = false;
         for (auto &entry : display->validated) entry = nullptr;
         if (display->logicalPM) {self->PMstop(); display->logicalPM = false;}
@@ -307,6 +373,7 @@ bool dStart(IOService *self, IOService *provider) {
         original<void (*)(IOService *, IOService *)>(kStop)(self, provider);
         return false;
     }
+    startVsync(self, display);
     return true;
 }
 // sheng's native_legacy_client_enter/observed: which process opens the framebuffer, and the result.
@@ -404,6 +471,8 @@ bool dStartHardware(IOService *self) {
     return valid;
 }
 uint64_t dSwapBegin(IOService *self) {
+    // A vsync client's registration ends here too (sheng: selector 72 -> kickSwapQueue), which arms the tick.
+    if (Display *display = displayFor(self)) armVsync(self, display);
     kick(self);
     return 0;
 }
@@ -493,8 +562,10 @@ bool bind() {
         native_kext_symbol(kSurfaceKext, "__ZNK9IOSurface13getPlaneCountEv"));
     b.memory = reinterpret_cast<IOMemoryDescriptor *(*)(const OSObject *)>(
         native_kext_symbol(kSurfaceKext, "__ZNK9IOSurface19getMemoryDescriptorEv"));
+    b.vsyncNotify = reinterpret_cast<void (*)(IOService *, uint64_t, uint64_t, uint64_t)>(
+        native_kext_symbol(kFamily, "__ZN25IOMobileFramebufferLegacy26swap_notify_dispatch_gatedEyyy"));
     if (!b.allocate || !b.construct || !b.meta || !table || !b.width || !b.height || !b.rowBytes || !b.allocSize ||
-        !b.format || !b.planes || !b.memory) {
+        !b.format || !b.planes || !b.memory || !b.vsyncNotify) {
         IOLog("zeta-display: unresolved symbols (keepsyms=1 keeps the kext symbol tables)\n");
         return false;
     }

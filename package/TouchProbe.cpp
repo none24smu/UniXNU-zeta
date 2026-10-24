@@ -329,6 +329,39 @@ struct Touch {
         hex("report descriptor", in + 3, content < length - 3 ? content : length - 3);
         return true;
     }
+    // Feature requests go to the output register like the stock spi-hid driver's set/get_request(): a body of
+    // {content type, content length (3 + payload), report id} and the payload.
+    int setFeature(uint8_t id, const uint8_t *payload, size_t length) {
+        uint8_t body[4 + 256] = {};
+        const size_t content = length + 3;
+        body[0] = 3;
+        body[1] = (uint8_t)content;
+        body[2] = (uint8_t)(content >> 8);
+        body[3] = id;
+        memcpy(body + 4, payload, length);
+        return output(outputRegister, body, 4 + content);
+    }
+    int getFeature(uint8_t id, size_t *length) {
+        // Content length 3 makes a 7-byte body, which the stock driver pads to 8.
+        const uint8_t body[7] = {4, 3, 0, id};
+        int r = output(outputRegister, body, sizeof(body));
+        return r ? r : await(5, 1000, length);
+    }
+    // The stock touch HAL switches the firmware to MT mode by setting feature 0x05 to 1 through hidraw with a
+    // 188-byte buffer ("switching FW to MT mode"); zeta-touch-mt=<v> sends the same request with value v.
+    void mode(unsigned value) {
+        size_t length = 0;
+        int r = getFeature(0x05, &length);
+        IOLog("zeta-touch: feature 0x05 before %d\n", r);
+        if (r >= 0) hex("feature 0x05", in, length < 16 ? length : 16);
+        uint8_t payload[187] = {(uint8_t)value};
+        r = setFeature(0x05, payload, sizeof(payload));
+        IOLog("zeta-touch: set feature 0x05 = %u: %d\n", value, r);
+        IOSleep(50);
+        r = getFeature(0x05, &length);
+        IOLog("zeta-touch: feature 0x05 after %d\n", r);
+        if (r >= 0) hex("feature 0x05", in, length < 16 ? length : 16);
+    }
     void listen(unsigned seconds) {
         unsigned counts[256] = {}, shown[256] = {}, pointers = 0;
         const uint64_t end = mach_absolute_time() + (uint64_t)seconds * 19200000;
@@ -371,6 +404,11 @@ void run(void *, wait_result_t) {
     zeta_touch_stats[0] = 4;
     touch.listen(bootArg("zeta-touch-listen", 30));
     IOLog("zeta-touch: listen done\n");
+    if (const unsigned value = bootArg("zeta-touch-mt")) {
+        touch.mode(value);
+        touch.listen(bootArg("zeta-touch-listen2", 120));
+        IOLog("zeta-touch: listen after mode switch done\n");
+    }
 }
 }  // namespace
 

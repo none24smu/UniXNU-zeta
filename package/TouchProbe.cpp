@@ -400,11 +400,14 @@ struct Touch {
         r = getFeature(0x05, &length);
         IOLog("zeta-touch: feature 0x05 after %d\n", r);
         if (r >= 0) hex("feature 0x05", in, length < 16 ? length : 16);
-        // The heat library tells the firmware which panels are on through output report 0x38 (bit 0 left, bit 1 right),
-        // from the display state the stock HAL passes it; zeta-touch-panels=<bits> (default both).
-        const uint8_t panels = (uint8_t)bootArg("zeta-touch-panels", 3);
-        r = outputReport(0x38, &panels, 1);
-        IOLog("zeta-touch: panel state 0x38 = %u: %d\n", panels, r);
+        // Vendor output report 0x38 (usages 0x39.., one bit each) is not something the stock HAL or heat library sends on
+        // this path; zeta-touch-panels=<bits> sends it only for experiments.
+        unsigned panelBits = 0;
+        if (PE_parse_boot_argn("zeta-touch-panels", &panelBits, sizeof(panelBits))) {
+            const uint8_t panels = (uint8_t)panelBits;
+            r = outputReport(0x38, &panels, 1);
+            IOLog("zeta-touch: output report 0x38 = %u: %d\n", panels, r);
+        }
     }
     // Heat frames (reports 0x0a right, 0x3c left): the library's HeatSection, {u32 size, u16, u8 one-byte cells, u8 type 8} then
     // chunks {u32 offset, u32 count, cells}; Zeta's panels are 30 x 21 sensors, one chunk of 630 (SurfaceHeatProcessorLogic::

@@ -223,11 +223,15 @@ void zeta_hid_input_probe(void) {
     }
     zeta_hid_stats[0] = 2;
     if (!addKeyboardPersonality()) {zeta_hid_stats[0] = -3; IOLog("zeta-hid: keyboard personality not added\n"); return;}
+    // sheng's provider is the IOHIDResource nub, whose personality waits for IOBSD (published after this probe on zeta); the
+    // resource root it would attach to serves as well.
     OSDictionary *match = IOService::serviceMatching("IOHIDResource");
-    IOService *resource = match ? IOService::waitForMatchingService(match, 5000000000ULL) : nullptr;
+    IOService *resource = match ? IOService::waitForMatchingService(match, 1000000000ULL) : nullptr;
     OSSafeReleaseNULL(match);
+    if (!resource && (resource = IOService::getResourceService())) resource->retain();
     gLoop = resource ? IOWorkLoop::workLoop() : nullptr;
-    if (!gLoop) {zeta_hid_stats[0] = -4; IOLog("zeta-hid: no IOHIDResource (%d)\n", resource != nullptr); OSSafeReleaseNULL(resource); return;}
+    if (!gLoop) {zeta_hid_stats[0] = -4; IOLog("zeta-hid: no provider (%d)\n", resource != nullptr); OSSafeReleaseNULL(resource); return;}
+    IOLog("zeta-hid: provider %s\n", resource->getName());
     void *memory = allocate(meta->getClassSize());
     IOService *device = nullptr;
     if (memory) {

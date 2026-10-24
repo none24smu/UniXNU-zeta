@@ -46,6 +46,17 @@ AMFI_START = dict(
     wrapper_code='5f2403d5880000f008c12991100140f9700000b4d19f9cd2110a1fd700008052c0035fd6',
     entry_code='7f2303d5fd7bbfa9fd03009116fdff9700008052fd7bc1a8ff0f5fd6')
 
+# _vnode_check_signature's "Using iOS Platform policy" branch (Mach-O platform 2)
+# calls postValidation with platform identifier hardcoded 0, so every identity
+# on its deny lists (securityd, suggestd, timed, locationd, CommCenter, ...) is
+# refused whatever the code directory carries. Pass the identifier the owner
+# signature writes (rewrite-zeta-userland.py PLATFORM_IDENTIFIER), the value the
+# macOS branch reads from the code directory.
+AMFI_IOS_PLATFORM = dict(
+    at=0x3504c, old='04008052', new='44038052',  # mov w4, #0 -> mov w4, #26
+    context=0x35038, context_code='e7feffd0e7d83f91e00314aae10315aae30317aa040080520500805246008052'
+                                  '4e0e0094')
+
 
 def importer_hashes(extra):
     inputs = extra['inputs']
@@ -105,6 +116,23 @@ def retarget_amfi_start(image, layout, rewrite):
                 entry=hex(L.translate(layout, AMFI, pin['entry'])))
 
 
+def amfi_ios_platform_identifier(image, rewrite):
+    """Give the iOS-platform postValidation call the owner platform identifier."""
+    pin = AMFI_IOS_PLATFORM
+    L.require(image.identity['sha256'] == AMFI_START['sha256'], 'AMFI platform edit is pinned to another slice')
+    code = bytes.fromhex(pin['context_code'])
+    context = image.file_at(pin['context'], len(code))
+    L.require(image.data[context:context + len(code)] == code, 'AMFI iOS-platform postValidation call differs')
+    at = image.file_at(pin['at'], 4)
+    L.require(image.data[at:at + 4].hex() == pin['old'], 'AMFI platform identifier argument differs')
+    L.require(not any(e['fileoff'] < at + 4 and at < e['fileoff'] + e['width'] for e in rewrite['proposed_edits']),
+              'AMFI platform identifier argument overlaps a rewrite edit')
+    rewrite['proposed_edits'].append(dict(fileoff=at, width=4, old=pin['old'], new=pin['new'],
+                                          reason='amfi:ios-platform-identifier'))
+    rewrite['counts']['amfi:ios-platform-identifier'] = 1
+    return dict(fileoff=at, old=pin['old'], new=pin['new'])
+
+
 def converted_module(image, identifier, layout, rewrite):
     L.require(rewrite['rewrite_coverage_complete'], 'incomplete rewrite plan')
     data = bytearray(image.data)
@@ -157,13 +185,14 @@ def emit(native, modules, index, closure, vtables, extra, xnu_source, storage_so
     gate(native, modules, closure, vtables, extra)
     layout = L.plan(native, modules)
     metadata, encoded, provenance = M.build(native, modules, layout, index, xnu_source, storage_source, crypto_source)
-    converted, rewrites, consumed, start_binding = {}, {}, {}, None
+    converted, rewrites, consumed, start_binding, platform_edit = {}, {}, {}, None, None
     for name, image in modules.items():
         split = S.audit(image.data, image.identity['path'])
         pauth = P.audit_data(image.data, image.identity['path'])
         rewrite = R.module_plan(image, name, layout, split, pauth, closure['module_reports'][name])
         if name == AMFI:
             start_binding = retarget_amfi_start(image, layout, rewrite)
+            platform_edit = amfi_ios_platform_identifier(image, rewrite)
         converted[name], consumed[name] = converted_module(image, name, layout, rewrite)
         rewrites[name] = rewrite
     output = bytearray(native.data)
@@ -202,6 +231,7 @@ def emit(native, modules, index, closure, vtables, extra, xnu_source, storage_so
                   layout=layout, metadata_provenance=provenance, metadata_entries=len(metadata['_PrelinkInfoDictionary']),
                   consumed_link_metadata=consumed,
                   amfi_start_binding=start_binding,
+                  amfi_ios_platform_identifier=platform_edit,
                   rewrites={name: {key: value for key, value in plan.items() if key != 'proposed_edits'}
                             for name, plan in rewrites.items()},
                   limitations=['Experimental conversion; runtime driver and private BSD ABI remain unverified.',

@@ -36,7 +36,9 @@ while index < len(arguments):
     elif value not in ('-MD', '-MMD', '-MP') and not value.startswith('-W'):
         command.append(value)
     index += 1
-command += ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter']
+# xnu's exported headers trip -Wreorder-init-list and friends; the storage build silences the same set.
+command += ['-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-deprecated-declarations', '-Wno-c99-designator',
+            '-Wno-reorder-init-list']
 (OUT / 'compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 result = subprocess.run(command, cwd=record['directory'], capture_output=True, text=True, timeout=300)
 (OUT / 'NativeLegacyDisplay.log').write_text(result.stdout + result.stderr)

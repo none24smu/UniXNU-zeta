@@ -100,7 +100,7 @@ struct Display {
     uint32_t width, height, rowBytes;
     bool primary, logicalPM, transferred, kicking, rekick;
     const void *validated[8];
-    unsigned logged;
+    unsigned logged, presented;
     // sheng-vsync=<Hz>: a work-loop timer stands in for the vblank the GOP scanout does not have.
     IOTimerEventSource *vsyncTimer;
     uint64_t vsyncInterval, vsyncNext;
@@ -253,11 +253,11 @@ void kickOnce(IOService *self, Display *display) {
     __asm__ volatile ("dsb sy" ::: "memory");
     OSSafeReleaseNULL(source);
     display->transferred = true;
-    if (display->logged < 4) {
-        display->logged++;
-        IOLog("zeta-display: presented swap %u (%ux%u, stride %llu)\n", field<uint32_t>(request, kRequestSwapID),
-            width, height, stride);
+    if (display->presented < 4 || display->presented % 600 == 0) {
+        IOLog("zeta-display: presented swap %u (%ux%u, stride %llu), %u frames\n", field<uint32_t>(request, kRequestSwapID),
+            width, height, stride, display->presented + 1);
     }
+    display->presented++;
     finishTransfer(self, display, request);
 }
 
@@ -487,11 +487,12 @@ uint64_t dSwapBegin(IOService *self) {
     kick(self);
     return 0;
 }
-// The original verify_swap is an empty hook (swap_queue ignores its result). Accept one full-screen BGRA surface,
-// or no surface at all (a blank screen); kick only presents what was accepted here.
-IOReturn dVerifySwap(IOService *self, const void *request) {
+// swap_queue drops a swap unless verify_swap returns true (tbz w0, #0); the original body returns false and the
+// platform subclass overrides it. Accept one full-screen BGRA surface, or no surface at all (a blank screen), as
+// sheng's validateSwap does; kick only presents what was accepted here.
+bool dVerifySwap(IOService *self, const void *request) {
     Display *display = displayFor(self);
-    if (!display || !request || bootArg("offline-legacy-validate") != 1) return kIOReturnSuccess;
+    if (!display || !request || bootArg("offline-legacy-validate") != 1) return false;
     OSObject *surfaces[kLayers];
     memcpy(surfaces, reinterpret_cast<const unsigned char *>(request) + kRequestSurfaces, sizeof(surfaces));
     bool accepted = false;
@@ -530,7 +531,7 @@ IOReturn dVerifySwap(IOService *self, const void *request) {
                 field<uint32_t>(request, kRequestSwapID), reason, field<uint32_t>(request, kRequestUpdated));
         }
     }
-    return kIOReturnSuccess;
+    return accepted;
 }
 // Selector 74 enumerates optional frame-info trace keys; the GOP backend has none.
 IOReturn dSupportedFrameInfo(IOService *self, uint32_t, uint32_t *count, char *key, uint32_t *mask) {

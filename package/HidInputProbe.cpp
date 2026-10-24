@@ -11,6 +11,9 @@
 // offline-hid-auto-home=<seconds after the probe> offline-hid-auto-home-count (default 1, at most 8) offline-hid-auto-home-interval
 // (default 20 s, at least 5) press unattended, as on sheng, and the host sends one with "\0ZETA:HOME\n" on the XNU USB log
 // (UniXNU scripts/native-dwc3-console.c).
+// zeta-touch-hid=1 adds NativeHidInput's touch digitizer (report 3, ten fingers) to the same device, as sheng's default combined
+// layout does, fed by the digitizer probe (TouchProbe.cpp) through the native_touch_* seqlock and its sink; the event services
+// get sheng's Built-In / DisplayIntegrated / PrimaryUsage properties once they attach, which backboardd's touch processor needs.
 #include <IOKit/IOService.h>
 #include <IOKit/IOCatalogue.h>
 #include <IOKit/IOLib.h>
@@ -32,6 +35,12 @@ extern "C" volatile uint32_t unixnu_dwc3_home_requests;
 // [0] stage (1 loaded, 2 bound, 3 started, negative: the step that failed), [1] presses, [2] last down result, [3] last up result,
 // [4] event driver attached
 extern "C" {volatile int32_t zeta_hid_stats[5];}
+// The finger set TouchProbe.cpp publishes: coordinates 0..32767 across the whole spanned screen.
+extern "C" {
+extern volatile uint32_t native_touch_seq, native_touch_count, native_touch_hid_reports;
+extern volatile int native_touch_xs[12], native_touch_ys[12], native_touch_ids[12];
+void native_touch_set_sink(void (*sink)(void *), void *context);
+}
 
 namespace {
 const char kFamily[] = "com.apple.iokit.IOHIDFamily";
@@ -60,13 +69,31 @@ const uint8_t kDescriptor[] = {
     0x75,0x01,0x95,0x01,0x81,0x02,
     0x75,0x07,0x95,0x01,0x81,0x03,0xc0
 };
+// NativeHidInput's report 3: ten-finger Touch Screen collection (Tip Switch, Untouch, Contact Identifier, X, Y per finger, then
+// Contact Count).
+#define FINGER_DESC \
+    0x09,0x22,0xa1,0x02, 0x09,0x42,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x01,0x81,0x02, 0x09,0x47,0x81,0x02, 0x75,0x06,0x95,0x01,0x81,0x03, \
+    0x09,0x51,0x75,0x08,0x95,0x01,0x15,0x00,0x26,0xff,0x00,0x81,0x02, \
+    0x05,0x01,0x09,0x30,0x15,0x00,0x26,0xff,0x7f,0x75,0x10,0x95,0x01,0x81,0x02, 0x09,0x31,0x81,0x02, 0x05,0x0d, 0xc0,
+const uint8_t kTouchDescriptor[] = {
+    0x05,0x0d,0x09,0x04,0xa1,0x01,0x85,0x03,
+    FINGER_DESC FINGER_DESC FINGER_DESC FINGER_DESC FINGER_DESC
+    FINGER_DESC FINGER_DESC FINGER_DESC FINGER_DESC FINGER_DESC
+    0x09,0x54,0x75,0x08,0x95,0x01,0x15,0x00,0x26,0xff,0x00,0x81,0x02,0xc0
+};
+constexpr unsigned kFingers = 10;
 
 uintptr_t gTable[2 + kSlots + 1];
 uintptr_t gOriginal[kSlots];
 IOWorkLoop *gLoop;
 IOTimerEventSource *gTimer;
 IOService *gDevice;
-bool gDown;
+bool gDown, gTouch;
+uint32_t gTouchSeq;
+// Fingers sent as down in the previous report; a vanished identifier gets one explicit tip-up report.
+int gPrevIds[kFingers] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+unsigned gPrevX[kFingers], gPrevY[kFingers];
+IORegistryEntry *gPublishedFor;
 unsigned gAutoCount, gAutoInterval, gAutoSent, gHomeSeen;
 uint64_t gAutoNext, gFrequency;
 
@@ -86,31 +113,98 @@ OSString *dNewTransportString(const IOService *) {return OSString::withCString("
 OSString *dNewProductString(const IOService *) {return OSString::withCString("Offline HID input probe");}
 IOReturn dNewReportDescriptor(const IOService *, IOMemoryDescriptor **out) {
     if (!out) return kIOReturnBadArgument;
-    *out = IOBufferMemoryDescriptor::withBytes(kDescriptor, sizeof(kDescriptor), kIODirectionNone);
+    uint8_t combined[sizeof(kDescriptor) + sizeof(kTouchDescriptor)];
+    memcpy(combined, kDescriptor, sizeof(kDescriptor));
+    size_t size = sizeof(kDescriptor);
+    if (gTouch) {memcpy(combined + size, kTouchDescriptor, sizeof(kTouchDescriptor)); size += sizeof(kTouchDescriptor);}
+    *out = IOBufferMemoryDescriptor::withBytes(combined, size, kIODirectionNone);
     return *out ? kIOReturnSuccess : kIOReturnNoMemory;
 }
 
-IOReturn sendMenu(bool down) {
-    const uint8_t report[] = {2, static_cast<uint8_t>(down ? 1 : 0)};
-    IOBufferMemoryDescriptor *buffer = IOBufferMemoryDescriptor::withBytes(report, sizeof(report), kIODirectionNone);
+IOReturn sendReport(const uint8_t *report, size_t length) {
+    IOBufferMemoryDescriptor *buffer = IOBufferMemoryDescriptor::withBytes(report, length, kIODirectionNone);
     using HandleReport = IOReturn (*)(IOService *, IOMemoryDescriptor *, uint32_t, IOOptionBits);
     IOReturn result = buffer ? reinterpret_cast<HandleReport>(gOriginal[kHandleReport])(gDevice, buffer, 0, 0) : kIOReturnNoMemory;
     OSSafeReleaseNULL(buffer);
     return result;
 }
+IOReturn sendMenu(bool down) {
+    const uint8_t report[] = {2, static_cast<uint8_t>(down ? 1 : 0)};
+    return sendReport(report, sizeof(report));
+}
 
-bool eventDriverBelow(IORegistryEntry *parent, unsigned depth) {
-    if (!depth) return false;
+// The IOHIDEventDriver below this device, if one has attached.
+IORegistryEntry *eventDriverBelow(IORegistryEntry *parent, unsigned depth) {
+    if (!depth) return nullptr;
     OSIterator *it = parent->getChildIterator(gIOServicePlane);
-    if (!it) return false;
-    bool found = false;
+    if (!it) return nullptr;
+    IORegistryEntry *found = nullptr;
     while (OSObject *child = found ? nullptr : it->getNextObject()) {
         IORegistryEntry *entry = OSDynamicCast(IORegistryEntry, child);
-        found = entry && (entry->metaCast("IOHIDEventDriver") || eventDriverBelow(entry, depth - 1));
+        if (entry) found = entry->metaCast("IOHIDEventDriver") ? entry : eventDriverBelow(entry, depth - 1);
     }
     it->release();
     return found;
 }
+
+// sheng HidInputProbe.cpp: backboardd classifies the digitizer by the event service it opened and its interface, and drops
+// digitizer events from a service whose PrimaryUsagePage/PrimaryUsage is not Digitizer/Touch Screen; the combined device lists
+// its keyboard first, so the services are given those after they have matched. Once per driver: each setProperty on a service
+// with user clients is a property-change notification.
+void publishDigitizer(IORegistryEntry *driver) {
+    if (!gTouch || gPublishedFor == driver) return;
+    gPublishedFor = driver;
+    IORegistryEntry *const entries[] = {driver, driver->getParentEntry(gIOServicePlane)};
+    for (IORegistryEntry *entry : entries) {
+        if (!entry) continue;
+        entry->setProperty("Built-In", kOSBooleanTrue);
+        entry->setProperty("DisplayIntegrated", kOSBooleanTrue);
+        entry->setProperty("PrimaryUsagePage", 0x0dULL, 32);
+        entry->setProperty("PrimaryUsage", 4ULL, 32);
+    }
+    IOLog("zeta-hid: digitizer properties published\n");
+}
+
+// NativeHidInput::touchSend: one finger set as report 3, then a tip-up for each identifier that is gone.
+void touchSend() {
+    if (!zeta_hid_stats[4]) return;
+    const uint32_t before = native_touch_seq;
+    if ((before & 1) || before == gTouchSeq) return;
+    __asm__ volatile("dmb ish" ::: "memory");
+    unsigned count = native_touch_count;
+    if (count > kFingers) count = kFingers;
+    int ids[kFingers], xs[kFingers], ys[kFingers];
+    for (unsigned i = 0; i < count; ++i) {ids[i] = native_touch_ids[i]; xs[i] = native_touch_xs[i]; ys[i] = native_touch_ys[i];}
+    __asm__ volatile("dmb ish" ::: "memory");
+    if (native_touch_seq != before) return;
+    gTouchSeq = before;
+    auto clamp = [](int v) {return (unsigned)(v < 0 ? 0 : v > 32767 ? 32767 : v);};
+    uint8_t report[1 + kFingers * 6 + 1] = {3};
+    unsigned slot = 0;
+    for (unsigned i = 0; i < count; ++i, ++slot) {
+        const unsigned x = clamp(xs[i]), y = clamp(ys[i]);
+        uint8_t *f = report + 1 + slot * 6;
+        f[0] = 1; f[1] = (uint8_t)ids[i]; f[2] = (uint8_t)x; f[3] = (uint8_t)(x >> 8); f[4] = (uint8_t)y; f[5] = (uint8_t)(y >> 8);
+        gPrevIds[slot] = ids[i]; gPrevX[slot] = x; gPrevY[slot] = y;
+    }
+    for (unsigned j = count; j < kFingers; ++j) {
+        if (gPrevIds[j] < 0) continue;
+        if (slot < kFingers) {
+            uint8_t *f = report + 1 + slot * 6;
+            f[0] = 2; f[1] = (uint8_t)gPrevIds[j];
+            f[2] = (uint8_t)gPrevX[j]; f[3] = (uint8_t)(gPrevX[j] >> 8); f[4] = (uint8_t)gPrevY[j]; f[5] = (uint8_t)(gPrevY[j] >> 8);
+            ++slot;
+        }
+        gPrevIds[j] = -1;
+    }
+    if (!slot) return;
+    report[1 + kFingers * 6] = (uint8_t)slot;
+    sendReport(report, sizeof(report));
+    native_touch_hid_reports = native_touch_hid_reports + 1;
+}
+IOReturn touchAction(OSObject *, void *, void *, void *, void *) {touchSend(); return kIOReturnSuccess;}
+// Called by the touch thread after it publishes a frame.
+void touchNotify(void *) {if (gLoop && gDevice) gLoop->runAction(&touchAction, gDevice);}
 
 bool homeRequested() {
     const uint32_t requests = unixnu_dwc3_home_requests;
@@ -131,11 +225,13 @@ void tick(OSObject *, IOTimerEventSource *source) {
         source->setTimeoutMS(250);
         return;
     }
-    const bool driver = eventDriverBelow(gDevice, 4);
+    IORegistryEntry *eventDriver = eventDriverBelow(gDevice, 4);
+    const bool driver = eventDriver != nullptr;
     if (driver != (zeta_hid_stats[4] != 0)) {
         zeta_hid_stats[4] = driver;
         IOLog("zeta-hid: event driver %s\n", driver ? "attached" : "gone");
     }
+    if (eventDriver) publishDigitizer(eventDriver);
     if (driver && homeRequested()) {
         zeta_hid_stats[2] = sendMenu(true);
         zeta_hid_stats[1] = zeta_hid_stats[1] + 1;
@@ -222,6 +318,7 @@ void zeta_hid_input_probe(void) {
         return;
     }
     zeta_hid_stats[0] = 2;
+    gTouch = bootArg("zeta-touch-hid") == 1;
     if (!addKeyboardPersonality()) {zeta_hid_stats[0] = -3; IOLog("zeta-hid: keyboard personality not added\n"); return;}
     // sheng's provider is the IOHIDResource nub, whose personality waits for IOBSD (published after this probe on zeta); the
     // resource root it would attach to serves as well.
@@ -241,7 +338,8 @@ void zeta_hid_input_probe(void) {
     }
     gDevice = device;
     // The generic HID event personality's matching property, not a client entitlement.
-    const bool valid = device && device->init() && device->setProperty("HIDDefaultBehavior", true);
+    const bool valid = device && device->init() && device->setProperty("HIDDefaultBehavior", true) &&
+        (!gTouch || (device->setProperty("Built-In", true) && device->setProperty("DisplayIntegrated", true)));
     const bool attached = valid && device->attach(resource);
     const bool started = attached && device->start(resource);
     if (!started) {
@@ -269,6 +367,7 @@ void zeta_hid_input_probe(void) {
     if (first && gFrequency) gAutoNext = counterNow() + static_cast<uint64_t>(first) * gFrequency;
     gHomeSeen = unixnu_dwc3_home_requests;
     zeta_hid_stats[0] = 3;
+    if (gTouch) native_touch_set_sink(&touchNotify, nullptr);
     IOLog("zeta-hid: Home input started (auto %u s, %u presses every %u s)\n", first, gAutoCount, gAutoInterval);
     gTimer->setTimeoutMS(1000);
 }

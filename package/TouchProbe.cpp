@@ -45,6 +45,19 @@ volatile int32_t zeta_touch_stats[5];
 void zeta_touch_probe(void);
 }
 
+// The finger set for the digitizer in HidInputProbe.cpp (sheng TouchProbe.cpp's publish): a seqlock, odd while it is written, and
+// the consumer's sink, called after each frame.
+extern "C" {
+volatile uint32_t native_touch_seq, native_touch_count, native_touch_hid_reports;
+volatile int native_touch_xs[12], native_touch_ys[12], native_touch_ids[12];
+}
+static void (*gTouchSink)(void *);
+static void *gTouchSinkContext;
+extern "C" void native_touch_set_sink(void (*sink)(void *), void *context) {
+    gTouchSinkContext = context;
+    __atomic_store_n(&gTouchSink, sink, __ATOMIC_RELEASE);
+}
+
 namespace {
 constexpr uint64_t kGcc = 0x00100000, kGccLength = 0x60000;
 constexpr uint32_t kVote = 0x52008, kGpll0Vote = 0x52018, kGpll0Mode = 0x0;

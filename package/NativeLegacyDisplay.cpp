@@ -41,7 +41,7 @@ extern "C" void native_keystore_probe(void);
 extern "C" void sheng_cpufreq_probe(void);
 extern "C" void zeta_soc_health(void);
 extern "C" void zeta_hid_input_probe(void);
-extern "C" void zeta_dsi_survey(volatile const unsigned char *mdp);
+extern "C" void zeta_dsi_survey(volatile unsigned char *mdp);
 extern "C" uint64_t mach_continuous_time(void);
 
 namespace {

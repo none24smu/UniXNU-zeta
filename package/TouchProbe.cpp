@@ -536,26 +536,28 @@ struct Touch {
 
 void run(void *, wait_result_t) {
     const unsigned stage = bootArg("zeta-touch");
-    static Touch touch;
+    // Allocated once: its default member values would need a guard variable as a function-local static.
+    Touch *const touch = new Touch;
+    if (!touch) {fail(1, -12, "allocate"); return;}
     zeta_touch_stats[0] = 1;
-    if (!touch.map()) {fail(1, -12, "map"); return;}
-    touch.snapshot("hand-off");
+    if (!touch->map()) {fail(1, -12, "map"); return;}
+    touch->snapshot("hand-off");
     if (stage < 2) return;
     zeta_touch_stats[0] = 2;
-    if (!touch.enable()) {fail(2, -110, "clocks or engine identity"); return;}
+    if (!touch->enable()) {fail(2, -110, "clocks or engine identity"); return;}
     if (stage < 3) return;
     zeta_touch_stats[0] = 3;
-    touch.in = static_cast<uint8_t *>(IOMalloc(kBuffer));
-    touch.out = static_cast<uint8_t *>(IOMalloc(kBuffer));
-    if (!touch.in || !touch.out || !touch.openBus() || !touch.handshake()) return;
+    touch->in = static_cast<uint8_t *>(IOMalloc(kBuffer));
+    touch->out = static_cast<uint8_t *>(IOMalloc(kBuffer));
+    if (!touch->in || !touch->out || !touch->openBus() || !touch->handshake()) return;
     if (stage < 4) return;
     zeta_touch_stats[0] = 4;
-    touch.listen(bootArg("zeta-touch-listen", 30));
+    touch->listen(bootArg("zeta-touch-listen", 30));
     IOLog("zeta-touch: listen done\n");
     if (const unsigned value = bootArg("zeta-touch-mt")) {
-        touch.mode(value);
+        touch->mode(value);
         // zeta-touch-listen2=0: keep reading (the digitizer stays live for the session).
-        touch.listen(bootArg("zeta-touch-listen2", 120));
+        touch->listen(bootArg("zeta-touch-listen2", 120));
         IOLog("zeta-touch: listen after mode switch done\n");
     }
 }

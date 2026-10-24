@@ -207,6 +207,14 @@ def capture(args):
                     permission_port = None
                     native_kernel = identity.get('product') == 'zeta XNU log'
                     event('connected', **identity)
+                # Host commands while capturing (the port is held exclusively): bytes put in <output>/send go to the
+                # device once, e.g. "\0ZETA:HOME\n" for a Home press.
+                request = output / 'send'
+                if request.exists():
+                    command = request.read_bytes()
+                    request.unlink()
+                    os.write(fd, command)
+                    event('sent', command=command.decode('ascii', 'replace'))
                 try:
                     readable, _, _ = select.select([fd], [], [], 0.1)
                     if not readable:

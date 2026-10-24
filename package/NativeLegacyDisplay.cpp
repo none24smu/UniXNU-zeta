@@ -22,6 +22,7 @@
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSSymbol.h>
 #include <libkern/OSKextLib.h>
+#include <libkern/libkern.h>
 #include <kern/debug.h>
 #include <pexpert/pexpert.h>
 #include <string.h>
@@ -221,11 +222,20 @@ constexpr size_t kCtlFlush = 0x18, kCtlStart = 0x1c, kCtlStatus = 0x64, kCtlIntf
 constexpr size_t kIntfTiming = 0x0, kIntfFrameCount = 0xac, kIntfLineCount = 0xb0, kIntfStatus = 0x26c,
     kIntfTearCheck = 0x284, kIntfTearLineCount = 0x2b0, kIntfAutorefresh = 0x2b4;
 constexpr uint32_t kAutorefreshEnable = 1U << 31;
+// Source pipes (sde_hw_sspp.c): VIG0-3 and DMA0-3 at the catalog offsets plus the MDP's 0x1000.
+constexpr size_t kPipes[] = {0x5000, 0x7000, 0x9000, 0xb000, 0x25000, 0x27000, 0x29000, 0x2b000};
+constexpr size_t kPipeSize = 0x0, kPipeAddress = 0x14, kPipeStride = 0x24, kPipeFormat = 0x30;
+// The MDP fetches through the apps SMMU (SMMU-500 at 0x15000000, uefi-zeta MemoryMapLib "SMMU"); the UEFI keeps the
+// display streams 0x820, 0x821 and 0xC21 attached to the context bank ABL set up (LahainaPkg PlatformSec).
+constexpr uint64_t kSmmuPhysical = 0x15000000, kSmmuLength = 0xd0000;
+constexpr uint16_t kMdpStreams[] = {0x820, 0x821, 0xc21};
 
 struct Dpu {
-    IOMemoryDescriptor *memory;
-    IOMemoryMap *map;
-    volatile unsigned char *base;
+    IOMemoryDescriptor *memory, *smmuMemory;
+    IOMemoryMap *map, *smmuMap;
+    volatile unsigned char *base, *smmu;
+    IOTimerEventSource *watch;
+    unsigned watched;
     unsigned mode, ctlMask, intfMask, starts;
     bool autorefresh;
 };
@@ -253,6 +263,40 @@ void dpuDump(const char *when) {
                 dpuRead(block + kCtlFlush), dpuRead(block + kCtlStart), dpuRead(block + kCtlStatus));
         }
     }
+    for (size_t pipe : kPipes) {
+        const uint32_t address = dpuRead(pipe + kPipeAddress);
+        if (address) {
+            IOLog("zeta-dpu: %s pipe %#lx address %#x size %#x stride %#x format %#x\n", when, pipe, address,
+                dpuRead(pipe + kPipeSize), dpuRead(pipe + kPipeStride), dpuRead(pipe + kPipeFormat));
+        }
+    }
+    if (!gDpu.smmu) return;
+    auto smmu32 = [](size_t offset) {return *reinterpret_cast<volatile uint32_t *>(gDpu.smmu + offset);};
+    auto smmu64 = [](size_t offset) {return *reinterpret_cast<volatile uint64_t *>(gDpu.smmu + offset);};
+    const uint32_t id0 = smmu32(0x20), id1 = smmu32(0x24);
+    const unsigned pageShift = (id1 & (1U << 31)) ? 16 : 12, pages = 1U << (((id1 >> 28) & 7) + 1);
+    for (unsigned group = 0; group < (id0 & 0xff); ++group) {
+        const uint32_t smr = smmu32(0x800 + 4 * group);
+        if (!(smr & (1U << 31))) continue;
+        const uint16_t id = smr & 0xffff, mask = (smr >> 16) & 0x7fff;
+        bool display = false;
+        for (uint16_t stream : kMdpStreams) display |= ((stream & ~mask) == (id & ~mask));
+        if (!display) continue;
+        const uint32_t s2cr = smmu32(0xc00 + 4 * group);
+        const unsigned bank = s2cr & 0xff;
+        const size_t cb = ((size_t)pages + bank) << pageShift;
+        if (cb + 0x68 > kSmmuLength) continue;
+        IOLog("zeta-dpu: %s smmu smr %u id %#x mask %#x s2cr %#x cb %u sctlr %#x ttbr0 %#llx tcr %#x fsr %#x far %#llx\n",
+            when, group, id, mask, s2cr, bank, smmu32(cb + 0x0), smmu64(cb + 0x20), smmu32(cb + 0x30), smmu32(cb + 0x58),
+            smmu64(cb + 0x60));
+    }
+}
+// Every 15 s for the first five minutes: the scanout source and its translation while the render server runs.
+void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
+    char when[16];
+    snprintf(when, sizeof(when), "watch %u", gDpu.watched);
+    dpuDump(when);
+    if (++gDpu.watched < 20) timer->setTimeoutMS(15000);
 }
 // One frame from memory to each command-mode panel (sde trigger_start), unless autorefresh sends them.
 void dpuStart() {
@@ -274,6 +318,9 @@ void dpuHandoff() {
         return;
     }
     gDpu.base = reinterpret_cast<volatile unsigned char *>(gDpu.map->getVirtualAddress());
+    gDpu.smmuMemory = IOMemoryDescriptor::withPhysicalAddress(kSmmuPhysical, kSmmuLength, kIODirectionInOut);
+    gDpu.smmuMap = gDpu.smmuMemory ? gDpu.smmuMemory->map(kIOMapInhibitCache) : nullptr;
+    if (gDpu.smmuMap) gDpu.smmu = reinterpret_cast<volatile unsigned char *>(gDpu.smmuMap->getVirtualAddress());
     dpuDump("hand-off");
     for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
         const uint32_t active = dpuRead(kCtlBase + ctl * kBlockStride + kCtlIntfActive) & kDsiInterfaces;
@@ -507,6 +554,12 @@ bool dStart(IOService *self, IOService *provider) {
         return false;
     }
     startVsync(self, display);
+    if (display->primary && gDpu.base && !gDpu.watch) {
+        IOWorkLoop *loop = self->getWorkLoop();
+        gDpu.watch = loop ? IOTimerEventSource::timerEventSource(self, &dpuWatchFired) : nullptr;
+        if (gDpu.watch && loop->addEventSource(gDpu.watch) == kIOReturnSuccess) gDpu.watch->setTimeoutMS(15000);
+        else OSSafeReleaseNULL(gDpu.watch);
+    }
     return true;
 }
 // sheng's native_legacy_client_enter/observed: which process opens the framebuffer, and the result.

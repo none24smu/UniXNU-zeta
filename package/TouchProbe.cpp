@@ -5,7 +5,7 @@
 //   2  vote the clocks, mux the pins, read the GENI engine identity
 //   3  GENI SPI init and clock, reset the digitizer, then the HID-over-SPI handshake: reset response, device descriptor,
 //      report descriptor (logged in hex)
-//   4  also log the input reports it sends for 30 s (report id, length, first bytes)
+//   4  also log the input reports it sends for zeta-touch-listen=<s> (default 30) seconds: report id, length, first bytes
 // `zeta-touch-hz=<Hz>` (default 8 MHz, the DT allows 32 MHz), `zeta-touch-dma=1` lets an engine whose FIFO interface is
 // disabled use the SE DMA engine through an apps SMMU bypass stream (sheng's path).
 //
@@ -330,7 +330,7 @@ struct Touch {
         return true;
     }
     void listen(unsigned seconds) {
-        unsigned counts[256] = {}, shown[256] = {};
+        unsigned counts[256] = {}, shown[256] = {}, pointers = 0;
         const uint64_t end = mach_absolute_time() + (uint64_t)seconds * 19200000;
         while (mach_absolute_time() < end) {
             if (!waitIrq(100)) continue;
@@ -340,6 +340,9 @@ struct Touch {
             zeta_touch_stats[3]++;
             const unsigned id = in[2];
             counts[id]++;
+            // The two single-pointer touch screens (0x40, 0x42): tip bit, X and Y 0..32767.
+            if ((id == 0x40 || id == 0x42) && pointers++ < 400)
+                IOLog("zeta-touch: pointer %#x tip %u x %u y %u\n", id, in[3] & 1, in[4] | in[5] << 8, in[6] | in[7] << 8);
             if (shown[id]++ < 3) {
                 IOLog("zeta-touch: input type %d id %#x length %u (%lu read)\n", type, id, in[0] | in[1] << 8, (unsigned long)length);
                 hex("input", in, length < 96 ? length : 96);
@@ -366,7 +369,7 @@ void run(void *, wait_result_t) {
     if (!touch.in || !touch.out || !touch.openBus() || !touch.handshake()) return;
     if (stage < 4) return;
     zeta_touch_stats[0] = 4;
-    touch.listen(30);
+    touch.listen(bootArg("zeta-touch-listen", 30));
     IOLog("zeta-touch: listen done\n");
 }
 }  // namespace

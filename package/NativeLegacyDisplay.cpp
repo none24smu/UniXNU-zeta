@@ -417,6 +417,58 @@ void dpuHealth(bool force) {
     }
 }
 // Health every 500 ms; every 15 s for the first five minutes the scanout source and its translation too.
+// zeta-snap=<n>: n pictures of the scanout for the host, the first 150 s after the hand-off and then every 30 s: every
+// second pixel of every second row as RGB332, run-length coded per row (count, value), sent as hex lines
+// "zsnap <id> <offset> <hex>" at 24 KiB per watch tick so the 32 KiB USB log ring never overflows.
+extern "C" volatile uint64_t unixnu_dwc3_dropped __attribute__((weak_import));
+struct Snap {uint8_t *data; size_t length, capacity, sent; unsigned id, taken;};
+Snap gSnap;
+void snapTake(Display &display) {
+    if (!display.mapping || !display.width || !display.height) return;
+    const uint32_t width = display.width / 2, height = display.height / 2;
+    gSnap.capacity = (size_t)width * height * 2;
+    if (!gSnap.data) gSnap.data = static_cast<uint8_t *>(IOMalloc(gSnap.capacity));
+    if (!gSnap.data) return;
+    auto frame = reinterpret_cast<const volatile unsigned char *>(display.mapping->getVirtualAddress());
+    size_t at = 0;
+    for (uint32_t y = 0; y < height; ++y) {
+        auto line = reinterpret_cast<const volatile uint32_t *>(frame + (uint64_t)y * 2 * display.rowBytes);
+        uint8_t value = 0, run = 0;
+        for (uint32_t x = 0; x < width; ++x) {
+            const uint32_t p = line[x * 2];
+            const uint8_t v = (uint8_t)((((p >> 16) & 0xff) >> 5) << 5 | (((p >> 8) & 0xff) >> 5) << 2 | (p & 0xff) >> 6);
+            if (run && (v != value || run == 255)) {gSnap.data[at++] = run; gSnap.data[at++] = value; run = 0;}
+            value = v;
+            run++;
+        }
+        gSnap.data[at++] = run;
+        gSnap.data[at++] = value;
+    }
+    gSnap.length = at;
+    gSnap.sent = 0;
+    gSnap.id = ++gSnap.taken;
+    IOLog("zsnap %u begin %u %u %lu dropped %llu\n", gSnap.id, width, height, (unsigned long)at,
+        &unixnu_dwc3_dropped ? unixnu_dwc3_dropped : 0ULL);
+}
+void snapSend() {
+    static const char kHex[] = "0123456789abcdef";
+    char text[2 * 120 + 1];
+    for (size_t budget = 24 * 1024; gSnap.sent < gSnap.length && budget >= 2 * 120 + 32;) {
+        const size_t count = gSnap.length - gSnap.sent < 120 ? gSnap.length - gSnap.sent : 120;
+        for (size_t i = 0; i < count; ++i) {
+            text[2 * i] = kHex[gSnap.data[gSnap.sent + i] >> 4];
+            text[2 * i + 1] = kHex[gSnap.data[gSnap.sent + i] & 15];
+        }
+        text[2 * count] = 0;
+        IOLog("zsnap %u %lu %s\n", gSnap.id, (unsigned long)gSnap.sent, text);
+        gSnap.sent += count;
+        budget -= 2 * count + 32;
+    }
+    if (gSnap.sent == gSnap.length) {
+        IOLog("zsnap %u end dropped %llu\n", gSnap.id, &unixnu_dwc3_dropped ? unixnu_dwc3_dropped : 0ULL);
+        gSnap.length = gSnap.sent = 0;
+    }
+}
 void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     const bool full = !(gDpu.ticks++ % 30);
     dpuHealth(full);
@@ -427,6 +479,8 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
         dpuDump(when);
         scanoutSample(when, gDisplays[0]);
     }
+    if (gSnap.length) snapSend();
+    else if (gSnap.taken < bootArg("zeta-snap") && gDpu.ticks >= 300 && !((gDpu.ticks - 300) % 60)) snapTake(gDisplays[0]);
     if (gDpu.mode == 3) dpuKick();
     if (gDpu.ticks < 2400 || gDpu.mode == 3) timer->setTimeoutMS(500);
 }

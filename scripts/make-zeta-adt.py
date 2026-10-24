@@ -22,6 +22,7 @@ something zeta has are kept (no camera, Face ID, baseband or action button). Roo
 /product model stay zeta's own (stock MP overlay), as sheng keeps its board strings.
 """
 import argparse
+import hashlib
 import os
 import struct
 import subprocess
@@ -83,6 +84,13 @@ def node(name, properties=(), children=()):
         result += struct.pack('<32sI', key.encode(), len(data))
         result += data + bytes(-len(data) % 4)
     return result + b''.join(children)
+
+
+def local_mac(seed, radio):
+    """A stable locally administered unicast MAC (bit 1 set, bit 0 clear) for one radio of this board."""
+    digest = bytearray(hashlib.sha256(b'zeta ' + radio.encode() + struct.pack('<Q', seed)).digest()[:6])
+    digest[0] = (digest[0] & 0xfc) | 0x02
+    return bytes(digest)
 
 
 def empty_nvram_proxy():
@@ -221,6 +229,11 @@ def main():
         node('chosen', [('random-seed', os.urandom(BOOTLOADER_ENTROPY_BYTES)),
                         # Without these XNU never publishes IOPlatformUUID and gethostuuid() blocks forever.
                         *([('unique-chip-id', struct.pack('<Q', args.unique_chip_id)), ('chip-id', struct.pack('<I', args.chip_id))]
+                          if args.unique_chip_id is not None else []),
+                        # MobileGestalt's Wi-Fi address reads /chosen/mac-address-wifi0 and, without it and without an sdio, wlan or
+                        # marconi-wifi node, waits 5 s for an IONetworkController per question; lsd asks per app at first boot. zeta
+                        # has no Wi-Fi driver, so both addresses are locally administered unicast ones derived from the platform seed.
+                        *([(f'mac-address-{radio}', local_mac(args.unique_chip_id, radio)) for radio in ('wifi0', 'bluetooth0')]
                           if args.unique_chip_id is not None else []),
                         ('osenvironment', b'main\0'),
                         # Bootloader contract read by ml_unsafe_kernel_text_init.

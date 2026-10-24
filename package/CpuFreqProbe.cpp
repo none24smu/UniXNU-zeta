@@ -138,11 +138,12 @@ extern "C" void sheng_cpufreq_poll(void) {
     IOLockUnlock(gLock);
 }
 
-// zeta-soc=1: a read-only SoC health line for the USB log (zeta_soc_health, called from the display driver's 15 s watch, which
+// zeta-soc=<mask>: a read-only SoC health line for the USB log (zeta_soc_health, called from the display driver's 15 s watch, which
 // keeps running when the other monitors stall): the hottest TSENS sensor of each controller, the APSS watchdog and each cluster's
 // current frequency. Vendor lahaina.dtsi: tsens0/1 TM windows 0x0c263000 and 0x0c265000 (tsens24xx: sensor status 0xa0 + 4 * n,
 // last temperature bits 11:0 signed in 0.1 C, valid bit 21); qcom,msm-watchdog at 0x17c10000 (msm_watchdog_v2.c: STS 0xc, EN 0x8,
-// BARK_TIME 0x10, BITE_TIME 0x14, in 32 kHz sleep clock ticks).
+// BARK_TIME 0x10, BITE_TIME 0x14, in 32 kHz sleep clock ticks). Mask bits: 1 tsens0, 2 tsens1, 4 watchdog, 8 cluster frequency;
+// one of them raised an SError at the first read with zeta-soc=1 (all four), so each window is opt-in.
 namespace {
 constexpr uint64_t kTsensTm[2] = {0x0c263000, 0x0c265000};
 constexpr unsigned kTsensSensors[2] = {16, 15};
@@ -156,7 +157,7 @@ extern "C" void zeta_soc_health(void) {
     char line[256];
     unsigned n = (unsigned)snprintf(line, sizeof(line), "zeta-soc: %llu s", mach_absolute_time() / (kXoKHz * 1000ULL));
     for (unsigned t = 0; t < 2 && n < sizeof(line); ++t) {
-        if (!gTsens[t].va) {n += (unsigned)snprintf(line + n, sizeof(line) - n, " tsens%u:nomap", t); continue;}
+        if (!gTsens[t].va) continue;
         int hottest = -10000; unsigned at = 0, valid = 0;
         for (unsigned sensor = 0; sensor < kTsensSensors[t]; ++sensor) {
             const uint32_t status = rd32(gTsens[t].va, 0xa0 + 4 * sensor);
@@ -185,10 +186,11 @@ extern "C" void sheng_cpufreq_probe(void) {
     PE_parse_boot_argn("sheng-cpufreq-cap", &capMHz, sizeof(capMHz));
     PE_parse_boot_argn("zeta-soc", &soc, sizeof(soc));
     if (soc && !gSoc) {
-        for (unsigned t = 0; t < 2; ++t) mapWindow(gTsens[t], kTsensTm[t]);
-        mapWindow(gWdt, kWatchdog);
-        for (unsigned d = 0; d < 3; ++d) mapWindow(gSocDomain[d], kDomainBase[d]);
+        for (unsigned t = 0; t < 2; ++t) if (soc & (1U << t)) mapWindow(gTsens[t], kTsensTm[t]);
+        if (soc & 4) mapWindow(gWdt, kWatchdog);
+        if (soc & 8) for (unsigned d = 0; d < 3; ++d) mapWindow(gSocDomain[d], kDomainBase[d]);
         gSoc = true;
+        IOLog("zeta-soc: mask %#x mapped\n", soc);
         zeta_soc_health();
     }
     if (!mode || gLock) return;

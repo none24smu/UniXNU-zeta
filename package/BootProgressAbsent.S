@@ -1,6 +1,6 @@
 /*
  * The sheng drivers BootProgress.c reads but zeta does not build yet (virtio block, legacy display, Adreno, touch,
- * HID, cpufreq, log). BootProgress.c declares them weak_import and skips a row when the
+ * HID, log). BootProgress.c declares them weak_import and skips a row when the
  * address is null; the kernel is a static link, so each data symbol is an absolute symbol at 0 (as UniXNU links
  * absolute bindings, scripts/data/native-aes-original-bindings.S). Remove a name when its zeta driver lands: the
  * link reports a duplicate symbol. The functions are called with a direct bl, which cannot reach address 0, so they
@@ -20,10 +20,6 @@
 .set _native_adreno_wc_audit, 0
 .globl _native_adreno_wc_distrusted
 .set _native_adreno_wc_distrusted, 0
-.globl _native_cpufreq_row
-.set _native_cpufreq_row, 0
-.globl _native_cpufreq_stage
-.set _native_cpufreq_stage, 0
 .globl _native_gop_gpu_abandoned
 .set _native_gop_gpu_abandoned, 0
 .globl _native_gop_gpu_completions
@@ -157,9 +153,6 @@
 .p2align 2
 .globl _boot_log_tick
 .weak_definition _boot_log_tick
-.globl _sheng_cpufreq_poll
-.weak_definition _sheng_cpufreq_poll
 _boot_log_tick:
-_sheng_cpufreq_poll:
 	mov	w0, #0
 	ret

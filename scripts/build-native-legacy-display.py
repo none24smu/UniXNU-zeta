@@ -6,7 +6,8 @@ kernelcache. zeta binds the prelinked macOS 26 IOMobileGraphicsFamily by name at
 compiles the driver with the flags of iokit IOPlatformExpert.cpp, from the compile record the first kernel pass
 leaves, and archives it for build-xnu-12377.sh (XNU_NATIVE_LEGACY_DISPLAY). The state-only keystore comes along as in
 sheng: kits/zeta/KeyStoreProbe.cpp (sheng's) and UniXNU drivers/NativeKeyStoreEvents, whose class registers only when the
-probe starts it (its initializer leaves __mod_init_func).
+probe starts it (its initializer leaves __mod_init_func). So does the CPU frequency vote, kits/zeta/CpuFreqProbe.cpp (sheng's on
+the SM8350 windows).
 """
 import hashlib
 import json
@@ -60,6 +61,9 @@ keystore = OUT / 'KeyStoreProbe.o'
 events = OUT / 'NativeKeyStoreEvents.o'
 events_late = OUT / 'NativeKeyStoreEvents.late.o'
 compile_unit(KEYSTORE_PROBE, keystore, 'KeyStoreProbe')
+CPUFREQ_PROBE = ROOT / 'kits/zeta/CpuFreqProbe.cpp'
+cpufreq = OUT / 'CpuFreqProbe.o'
+compile_unit(CPUFREQ_PROBE, cpufreq, 'CpuFreqProbe')
 compile_unit(KEY_EVENTS, events, 'NativeKeyStoreEvents')
 subprocess.run([shutil.which('llvm-objcopy') or 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
                 '--globalize-symbol=__GLOBAL__sub_I_NativeKeyStoreEvents.cpp', str(events), str(events_late)],
@@ -77,11 +81,12 @@ if deployment != (2, 26 << 16):
     raise SystemExit(f'NativeLegacyDisplay.o: expected an iOS 26 deployment, not {deployment}')
 archive = OUT / 'libNativeLegacyDisplay.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(events_late)], check=True,
-               timeout=30)
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(events_late)],
+               check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'source_sha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
-    'keystore_sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (KEYSTORE_PROBE, KEY_EVENTS)},
+    'probe_sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                      for path in (KEYSTORE_PROBE, KEY_EVENTS, CPUFREQ_PROBE)},
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

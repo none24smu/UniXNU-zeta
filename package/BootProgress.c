@@ -1181,6 +1181,7 @@ static void monitor(void *arg, wait_result_t result) {
         static char trace_rows[32][120];
         console_at=now;
         printf("zeta-trace: %us pass %u seen %u\n",now,boot_process_passes,boot_process_seen);
+        if(&armcpu_smp_requested)printf("zeta-trace: smp req=%u run=%u cond=%u avail=%d\n",armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,machine_info.logical_cpu);
         for(unsigned i=0;i<10;++i)if(boot_process_rows[i][0])printf("zeta-trace: proc %.119s\n",boot_process_rows[i]);
         if(&boot_ui_trace_role_rows)
           for(unsigned role=0;role<4;++role) {

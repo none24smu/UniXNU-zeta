@@ -41,6 +41,7 @@ extern "C" void native_keystore_probe(void);
 extern "C" void sheng_cpufreq_probe(void);
 extern "C" void zeta_soc_health(void);
 extern "C" void zeta_hid_input_probe(void);
+extern "C" void zeta_dsi_survey(volatile const unsigned char *mdp);
 extern "C" uint64_t mach_continuous_time(void);
 
 namespace {
@@ -434,6 +435,7 @@ void dpuHandoff() {
     gDpu.dsiMap = gDpu.dsiMemory ? gDpu.dsiMemory->map(kIOMapInhibitCache) : nullptr;
     if (gDpu.dsiMap) gDpu.dsi = reinterpret_cast<volatile unsigned char *>(gDpu.dsiMap->getVirtualAddress());
     dpuDump("hand-off");
+    zeta_dsi_survey(gDpu.base);
     dpuHealth(true);
     for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
         const uint32_t active = dpuRead(kCtlBase + ctl * kBlockStride + kCtlIntfActive) & kDsiInterfaces;

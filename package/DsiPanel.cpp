@@ -486,13 +486,13 @@ void bringUp(volatile unsigned char *mdp) {
     }
     // The command DMA takes a 32-bit address (the display SMMU context is in bypass, sctlr M clear), and an
     // IOBufferMemoryDescriptor physical mask is not honoured here (dsi-v2 got 0x105744000, the truncated fetch reset
-    // the phone). The packets go in the last 1 KiB of the firmware framebuffer VIG0 scans (0xe1000000, 1892 rows of
-    // 0x1500 bytes): reserved, below 4 GiB and readable by the MDSS. It is the bottom-right corner of the left panel.
-    const uint64_t scanout = b.mdpRead(0x5014), stride = b.mdpRead(0x5024) & 0xffff, rows = b.mdpRead(0x5000) >> 16;
-    b.bufferPhysical = scanout + stride * rows - 0x400;
-    if (!scanout || !stride || !rows || b.bufferPhysical + 0x400 > 0x100000000ULL ||
-        !b.command.open(b.bufferPhysical & ~0xfffULL, 0x1000)) {
-        IOLog("zeta-dsi: no command window (scanout %#llx stride %#llx rows %llu)\n", scanout, stride, rows);
+    // the phone). The packets go in the last 1 KiB of the firmware's display reservation (uefi-zeta MemoryMapLib
+    // "Display Reserved" 0xE1000000, 0x2300000, which VIG0 scans from its start): reserved, below 4 GiB, readable by
+    // the MDSS, and past the end of even the spanned framebuffer (NativeLegacyDisplay.cpp zeta-span).
+    const uint64_t scanout = b.mdpRead(0x5014), reserved = 0xe1000000, reservedLength = 0x2300000;
+    b.bufferPhysical = reserved + reservedLength - 0x400;
+    if (scanout != reserved || !b.command.open(b.bufferPhysical & ~0xfffULL, 0x1000)) {
+        IOLog("zeta-dsi: no command window (scanout %#llx)\n", scanout);
         return;
     }
     b.commandOffset = (uint32_t)(b.bufferPhysical & 0xfff);

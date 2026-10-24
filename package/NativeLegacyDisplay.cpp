@@ -133,6 +133,25 @@ unsigned bootArg(const char *name) {
     return value;
 }
 template <typename T> T original(unsigned slot) {return reinterpret_cast<T>(gOriginal[slot]);}
+
+// zeta-span=1: one display across both panels, the way the stock Surface Duo 2 firmware presents them (vendor
+// libsdmcore DisplayBuiltInPair: the two built-in DSI displays form one tiled primary, tile 0 left and tile 1 right,
+// layers cut around the hinge of vendor.display.bezel_size = 66 pixels). The framebuffer is 2 * 1344 + 66 wide in
+// the firmware's display reservation (uefi-zeta MemoryMapLib "Display Reserved" 0xE1000000, 0x2300000; its last page
+// carries the DSI1 command packets, package/DsiPanel.cpp). The left panel scans columns 0..1343, the right panel
+// (VIG1, crop x 1410) columns 1410..2753; the hinge columns are never shown. zeta-span-hinge=<n> overrides the 66.
+constexpr uint64_t kDisplayReserved = 0xe1000000, kDisplayReservedLength = 0x2300000;
+struct Span {bool on; uint32_t panel, hinge, rowBytes;};
+Span gSpan;
+void spanVideo(PE_Video &video) {
+    if (bootArg("zeta-span") != 1 || video.v_baseAddr != kDisplayReserved || !video.v_width || video.v_width > 2048) return;
+    const uint32_t hinge = bootArg("zeta-span-hinge") ? bootArg("zeta-span-hinge") : 66;
+    const uint64_t width = 2ULL * video.v_width + hinge, rowBytes = (width * 4 + 255) & ~255ULL;
+    if (hinge > 512 || rowBytes * video.v_height > kDisplayReservedLength - 0x1000) return;
+    gSpan = {true, (uint32_t)video.v_width, hinge, (uint32_t)rowBytes};
+    video.v_width = width;
+    video.v_rowBytes = rowBytes;
+}
 template <typename T> T field(const void *object, size_t offset) {
     T value;
     memcpy(&value, reinterpret_cast<const unsigned char *>(object) + offset, sizeof(value));
@@ -436,6 +455,23 @@ void dpuHandoff() {
     if (gDpu.dsiMap) gDpu.dsi = reinterpret_cast<volatile unsigned char *>(gDpu.dsiMap->getVirtualAddress());
     dpuDump("hand-off");
     zeta_dsi_survey(gDpu.base);
+    // Spanned: both source pipes on the wide frame (SSPP_SRC_YSTRIDE0 0x24, SSPP_SRC_XY 0x08), VIG1 cropped to the
+    // right panel's columns, each latched by its CTL's pipe flush bit (VIG0 bit 0 on CTL_0, VIG1 bit 1 on CTL_1).
+    if (gSpan.on) {
+        const uint32_t vig0 = 0x5000, vig1 = 0x7000;
+        dpuWrite(vig0 + kPipeStride, gSpan.rowBytes);
+        dpuWrite(vig0 + 0x08, 0);
+        dpuWrite(kCtlBase + kCtlFlush, 1U << 0);
+        const bool second = dpuRead(kCtlBase + kBlockStride + kCtlIntfActive) & 4;
+        if (second) {
+            dpuWrite(vig1 + kPipeStride, gSpan.rowBytes);
+            dpuWrite(vig1 + 0x08, gSpan.panel + gSpan.hinge);
+            dpuWrite(kCtlBase + kBlockStride + kCtlFlush, 1U << 1);
+        }
+        IOLog("zeta-dpu: spanned %u + %u + %u, row %u, second panel %d: vig0 xy %#x stride %#x vig1 xy %#x stride %#x\n",
+            gSpan.panel, gSpan.hinge, gSpan.panel, gSpan.rowBytes, second, dpuRead(vig0 + 0x08),
+            dpuRead(vig0 + kPipeStride), dpuRead(vig1 + 0x08), dpuRead(vig1 + kPipeStride));
+    }
     dpuHealth(true);
     for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
         const uint32_t active = dpuRead(kCtlBase + ctl * kBlockStride + kCtlIntfActive) & kDsiInterfaces;
@@ -772,7 +808,8 @@ bool dStartHardware(IOService *self) {
     if (!display || bootArg("offline-legacy-gop") != 1) return false;
     PE_Video video = {};
     IOService *provider = self->getProvider();
-    if (!provider || PE_current_console(&video) || !video.v_baseAddr || !video.v_width || !video.v_height ||
+    if (!provider || PE_current_console(&video) || (spanVideo(video), false) || !video.v_baseAddr || !video.v_width ||
+        !video.v_height ||
         video.v_depth != 32 || video.v_rotate || video.v_width > 16384 || video.v_height > 16384 ||
         video.v_rowBytes < video.v_width * 4 || video.v_rowBytes > UINT64_MAX / video.v_height) return false;
     // The scanout is ordinary memory the firmware reserved: write-combined stores reach it in rows.
@@ -791,6 +828,9 @@ bool dStartHardware(IOService *self) {
         display->rowBytes = (uint32_t)video.v_rowBytes;
         display->primary = video.v_display == 1;
         valid = unitScalePolicy(video);
+        // The firmware image does not survive the wider stride: start from black until the first frame.
+        if (valid && gSpan.on) memset(reinterpret_cast<void *>(display->mapping->getVirtualAddress()), 0,
+                                      (size_t)video.v_rowBytes * video.v_height);
         if (valid && display->primary) dpuHandoff();
     }
     OSSafeReleaseNULL(mapping);
@@ -992,7 +1032,8 @@ void native_legacy_display_late_probe(void) {
     OSSafeReleaseNULL(matching);
     if (surfaceLoad || familyLoad || !bind()) return;
     PE_Video video = {};
-    if (PE_current_console(&video) || !video.v_baseAddr || !video.v_width || !video.v_height || video.v_depth != 32 ||
+    if (PE_current_console(&video) || (spanVideo(video), false) || !video.v_baseAddr || !video.v_width || !video.v_height ||
+        video.v_depth != 32 ||
         video.v_rotate || video.v_rowBytes < video.v_width * 4 || video.v_height > 16384) return;
     Display *slot = displayFor(nullptr);
     if (!slot) return;

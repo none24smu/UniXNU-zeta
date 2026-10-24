@@ -362,6 +362,17 @@ struct Touch {
     }
     // The stock touch HAL switches the firmware to MT mode by setting feature 0x05 to 1 through hidraw with a
     // 188-byte buffer ("switching FW to MT mode"); zeta-touch-mt=<v> sends the same request with value v.
+    // An output report as the stock spi-hid driver sends one (spi_hid_ll_output_report): content type 5, the report id, the payload.
+    int outputReport(uint8_t id, const uint8_t *payload, size_t length) {
+        uint8_t body[4 + 64] = {};
+        const size_t content = length + 3;
+        body[0] = 5;
+        body[1] = (uint8_t)content;
+        body[2] = (uint8_t)(content >> 8);
+        body[3] = id;
+        memcpy(body + 4, payload, length);
+        return output(outputRegister, body, 4 + content);
+    }
     void mode(unsigned value) {
         size_t length = 0;
         int r = getFeature(0x05, &length);
@@ -374,6 +385,57 @@ struct Touch {
         r = getFeature(0x05, &length);
         IOLog("zeta-touch: feature 0x05 after %d\n", r);
         if (r >= 0) hex("feature 0x05", in, length < 16 ? length : 16);
+        // The heat library tells the firmware which panels are on through output report 0x38 (bit 0 left, bit 1 right),
+        // from the display state the stock HAL passes it; zeta-touch-panels=<bits> (default both).
+        const uint8_t panels = (uint8_t)bootArg("zeta-touch-panels", 3);
+        r = outputReport(0x38, &panels, 1);
+        IOLog("zeta-touch: panel state 0x38 = %u: %d\n", panels, r);
+    }
+    // Heat frames (reports 0x0a right, 0x3c left): the library's HeatSection, {u32 size, u16, u8 one-byte cells, u8 type 8} then
+    // chunks {u32 offset, u32 count, cells}; Zeta's panels are 30 x 21 sensors, one chunk of 630 (SurfaceHeatProcessorLogic::
+    // ParseFullFrame). Diagnostics only: the first frames whole, then the grid of each frame whose cells move away from the
+    // panel's first frame, and the frame rate.
+    static constexpr unsigned kCells = 630, kGridRows = 30, kGridCols = 21, kHeatAt = 29;
+    uint8_t heatBase[2][kCells] = {};
+    bool heatHaveBase[2] = {};
+    unsigned heatFrames[2] = {}, heatGrids[2] = {}, heatDumps[2] = {}, heatRate[2] = {};
+    uint64_t heatRateStart = 0;
+    void heat(unsigned panel, size_t length) {
+        if (heatDumps[panel] < 2) {++heatDumps[panel]; hex(panel ? "heat-left frame" : "heat-right frame", in, length);}
+        if (length < kHeatAt + kCells || (in[25] | in[26] << 8) != kCells) return;
+        const uint8_t *cells = in + kHeatAt;
+        ++heatFrames[panel];
+        ++heatRate[panel];
+        const uint64_t now = mach_absolute_time();
+        if (!heatRateStart) heatRateStart = now;
+        if (now - heatRateStart >= 10ull * 19200000) {
+            IOLog("zeta-touch: heat frames per 10 s: right %u left %u\n", heatRate[0], heatRate[1]);
+            heatRate[0] = heatRate[1] = 0;
+            heatRateStart = now;
+        }
+        if (!heatHaveBase[panel]) {memcpy(heatBase[panel], cells, kCells); heatHaveBase[panel] = true; return;}
+        int lo = 0, hi = 0;
+        unsigned loAt = 0, hiAt = 0;
+        for (unsigned i = 0; i < kCells; ++i) {
+            const int d = (int)cells[i] - heatBase[panel][i];
+            if (d < lo) {lo = d; loAt = i;}
+            if (d > hi) {hi = d; hiAt = i;}
+        }
+        if (hi - lo < 24 || heatGrids[panel] >= 12) return;
+        ++heatGrids[panel];
+        IOLog("zeta-touch: heat %s frame %u min %d at %u max %d at %u\n", panel ? "left" : "right", heatFrames[panel], lo, loAt, hi,
+              hiAt);
+        static const char kHex[] = "0123456789abcdef";
+        char row[2 * kGridCols + 1];
+        for (unsigned r = 0; r < kGridRows; ++r) {
+            for (unsigned c = 0; c < kGridCols; ++c) {
+                const uint8_t v = cells[r * kGridCols + c];
+                row[2 * c] = kHex[v >> 4];
+                row[2 * c + 1] = kHex[v & 15];
+            }
+            row[2 * kGridCols] = 0;
+            IOLog("zeta-touch: grid %c%02u %s\n", panel ? 'L' : 'R', r, row);
+        }
     }
     void listen(unsigned seconds) {
         unsigned counts[256] = {}, shown[256] = {}, pointers = 0;
@@ -387,6 +449,7 @@ struct Touch {
             const unsigned id = in[2];
             counts[id]++;
             // The two single-pointer touch screens (0x40, 0x42): tip bit, X and Y 0..32767.
+            if (id == 0x0a || id == 0x3c) heat(id == 0x3c, length);
             if ((id == 0x40 || id == 0x42) && pointers++ < 400)
                 IOLog("zeta-touch: pointer %#x tip %u x %u y %u\n", id, in[3] & 1, in[4] | in[5] << 8, in[6] | in[7] << 8);
             if (shown[id]++ < 3) {

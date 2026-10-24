@@ -266,9 +266,21 @@ void dpuDump(const char *when) {
     for (size_t pipe : kPipes) {
         const uint32_t address = dpuRead(pipe + kPipeAddress);
         if (address) {
-            IOLog("zeta-dpu: %s pipe %#lx address %#x size %#x stride %#x format %#x\n", when, pipe, address,
-                dpuRead(pipe + kPipeSize), dpuRead(pipe + kPipeStride), dpuRead(pipe + kPipeFormat));
+            IOLog("zeta-dpu: %s pipe %#lx address %#x size %#x stride %#x format %#x unpack %#x op %#x fetch %#x\n",
+                when, pipe, address, dpuRead(pipe + kPipeSize), dpuRead(pipe + kPipeStride), dpuRead(pipe + kPipeFormat),
+                dpuRead(pipe + 0x34), dpuRead(pipe + 0x38), dpuRead(pipe + 0x48));
         }
+    }
+    // Layer mixers LM_0..LM_5 (catalog 0x44000 + n * 0x1000, plus the MDP's 0x1000): op mode, output size, border
+    // colour and stage 0/1 blend op with foreground and background alpha (sde_hw_lm.c).
+    for (unsigned mixer = 0; mixer < 6; ++mixer) {
+        const size_t block = 0x45000 + mixer * kBlockStride;
+        const uint32_t size = dpuRead(block + 0x04);
+        if (!size) continue;
+        IOLog("zeta-dpu: %s lm %u op %#x size %#x border %#x %#x blend0 %#x %#x %#x blend1 %#x %#x %#x\n", when,
+            mixer, dpuRead(block), size, dpuRead(block + 0x08), dpuRead(block + 0x10), dpuRead(block + 0x20),
+            dpuRead(block + 0x24), dpuRead(block + 0x28), dpuRead(block + 0x38), dpuRead(block + 0x3c),
+            dpuRead(block + 0x40));
     }
     if (!gDpu.smmu) return;
     auto smmu32 = [](size_t offset) {return *reinterpret_cast<volatile uint32_t *>(gDpu.smmu + offset);};
@@ -295,13 +307,15 @@ void dpuDump(const char *when) {
 void scanoutSample(const char *when, const Display &display) {
     if (!display.mapping) return;
     auto base = reinterpret_cast<const volatile unsigned char *>(display.mapping->getVirtualAddress());
-    unsigned lit = 0, red = 0, samples = 0;
+    unsigned lit = 0, red = 0, transparent = 0, opaque = 0, samples = 0;
     uint32_t left = UINT32_MAX, top = UINT32_MAX, right = 0, bottom = 0, sum = 0;
     for (uint32_t row = 0; row < display.height; row += 16) {
         auto line = reinterpret_cast<const volatile uint32_t *>(base + (uint64_t)row * display.rowBytes);
         for (uint32_t x = 0; x < display.width; x += 16, ++samples) {
             const uint32_t pixel = line[x];
             sum = (sum << 5 | sum >> 27) ^ pixel;
+            if (!(pixel >> 24)) transparent++;
+            else if (pixel >> 24 == 0xff) opaque++;
             if (!(pixel & 0x00ffffffU)) continue;
             lit++;
             const uint32_t b = pixel & 0xff, g = (pixel >> 8) & 0xff, r = (pixel >> 16) & 0xff;
@@ -312,8 +326,8 @@ void scanoutSample(const char *when, const Display &display) {
             if (row > bottom) bottom = row;
         }
     }
-    IOLog("zeta-display: %s scanout %u/%u lit, %u red, bounds %u,%u-%u,%u, sum %#x\n", when, lit, samples, red,
-        lit ? left : 0, lit ? top : 0, right, bottom, sum);
+    IOLog("zeta-display: %s scanout %u/%u lit, %u red, alpha 0 %u ff %u, bounds %u,%u-%u,%u, sum %#x\n", when, lit,
+        samples, red, transparent, opaque, lit ? left : 0, lit ? top : 0, right, bottom, sum);
 }
 // Every 15 s for the first five minutes: the scanout source and its translation while the render server runs.
 void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
@@ -434,8 +448,17 @@ void kickOnce(IOService *self, Display *display) {
         return stall(display, request, "scanout busy");
     }
     auto from = reinterpret_cast<const unsigned char *>(source->getVirtualAddress());
+    // zeta-opaque=1: the source pipe blends with the alpha byte (SSPP format alpha enable), so a render-server frame
+    // with transparent black would not reach the panel as black; the scanout is the top layer and takes it opaque.
+    const bool opaque = bootArg("zeta-opaque") == 1;
     for (uint32_t row = 0; row < height; ++row) {
-        memcpy(destination + (uint64_t)row * display->rowBytes, from + row * stride, (size_t)width * 4);
+        if (!opaque) {
+            memcpy(destination + (uint64_t)row * display->rowBytes, from + row * stride, (size_t)width * 4);
+            continue;
+        }
+        auto in = reinterpret_cast<const uint64_t *>(from + row * stride);
+        auto out = reinterpret_cast<uint64_t *>(destination + (uint64_t)row * display->rowBytes);
+        for (uint32_t x = 0; x < width / 2; ++x) out[x] = in[x] | 0xff000000ff000000ULL;
     }
     __asm__ volatile ("dsb sy" ::: "memory");
     OSSafeReleaseNULL(source);

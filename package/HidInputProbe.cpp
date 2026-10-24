@@ -76,8 +76,9 @@ const uint8_t kDescriptor[] = {
     0x75,0x01,0x95,0x01,0x81,0x02,
     0x75,0x07,0x95,0x01,0x81,0x03,0xc0
 };
-// NativeHidInput's report 3: ten-finger Touch Screen collection (Tip Switch, Untouch, Contact Identifier, X, Y per finger, then
-// Contact Count).
+// NativeHidInput's report 3: ten-finger Touch Screen collection (Tip Switch, Confidence, Contact Identifier, X, Y per finger, then
+// Contact Count). 0x47 is Confidence: IOHIDEventDriver::createDigitizerTransducerEventForReport (KDK 25F84) makes a finger with
+// Confidence 0 a Hand transducer (type 3, a palm) instead of a Finger (2), so every contact sends it as 1.
 #define FINGER_DESC \
     0x09,0x22,0xa1,0x02, 0x09,0x42,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x01,0x81,0x02, 0x09,0x47,0x81,0x02, 0x75,0x06,0x95,0x01,0x81,0x03, \
     0x09,0x51,0x75,0x08,0x95,0x01,0x15,0x00,0x26,0xff,0x00,0x81,0x02, \
@@ -309,14 +310,14 @@ void touchSend() {
     for (unsigned i = 0; i < count; ++i, ++slot) {
         const unsigned x = clamp(xs[i]), y = clamp(ys[i]);
         uint8_t *f = report + 1 + slot * 6;
-        f[0] = 1; f[1] = (uint8_t)ids[i]; f[2] = (uint8_t)x; f[3] = (uint8_t)(x >> 8); f[4] = (uint8_t)y; f[5] = (uint8_t)(y >> 8);
+        f[0] = 3; f[1] = (uint8_t)ids[i];   // Tip Switch, Confidence f[2] = (uint8_t)x; f[3] = (uint8_t)(x >> 8); f[4] = (uint8_t)y; f[5] = (uint8_t)(y >> 8);
         gPrevIds[slot] = ids[i]; gPrevX[slot] = x; gPrevY[slot] = y;
     }
     for (unsigned j = count; j < kFingers; ++j) {
         if (gPrevIds[j] < 0) continue;
         if (slot < kFingers) {
             uint8_t *f = report + 1 + slot * 6;
-            f[0] = 2; f[1] = (uint8_t)gPrevIds[j];
+            f[0] = 2; f[1] = (uint8_t)gPrevIds[j];   // Confidence, tip up
             f[2] = (uint8_t)gPrevX[j]; f[3] = (uint8_t)(gPrevX[j] >> 8); f[4] = (uint8_t)gPrevY[j]; f[5] = (uint8_t)(gPrevY[j] >> 8);
             ++slot;
         }

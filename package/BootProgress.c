@@ -150,6 +150,7 @@ extern void boot_log_tick(unsigned) __attribute__((weak_import));
 extern void sheng_cpufreq_poll(void) __attribute__((weak_import));
 extern char boot_process_rows[10][120] __attribute__((weak_import));
 extern unsigned boot_ui_trace_role_rows(unsigned,char [][120],unsigned,unsigned) __attribute__((weak_import));
+extern unsigned boot_ui_trace_hot_rows(char [][120],unsigned) __attribute__((weak_import));
 extern char native_touch_rows[4][120] __attribute__((weak_import));
 extern char native_cpufreq_row[120] __attribute__((weak_import));
 extern volatile uint32_t native_hid_input_events[8] __attribute__((weak_import));
@@ -1188,6 +1189,12 @@ static void monitor(void *arg, wait_result_t result) {
             unsigned got=boot_ui_trace_role_rows(role,trace_rows,32,2);
             for(unsigned i=0;i<got;++i)if(trace_rows[i][0])printf("zeta-trace: r%u %.119s\n",role,trace_rows[i]);
           }
+        // The trapped, hottest and busiest threads with their kernel frames and wait events: a thread whose user PC stays put shows
+        // where it waits in the kernel.
+        if(&boot_ui_trace_hot_rows) {
+          unsigned got=boot_ui_trace_hot_rows(trace_rows,32);
+          for(unsigned i=0;i<got;++i)if(trace_rows[i][0])printf("zeta-trace: h %.119s\n",trace_rows[i]);
+        }
       }
     }
     if(&boot_process_attempts && &boot_process_busy) {

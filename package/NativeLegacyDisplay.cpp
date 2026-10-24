@@ -17,6 +17,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOWorkLoop.h>
+#include <mach/mach_time.h>
 #include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/pwr_mgt/IOPMpowerState.h>
 #include <libkern/c++/OSData.h>
@@ -228,14 +229,22 @@ constexpr size_t kPipeSize = 0x0, kPipeAddress = 0x14, kPipeStride = 0x24, kPipe
 // The MDP fetches through the apps SMMU (SMMU-500 at 0x15000000, uefi-zeta MemoryMapLib "SMMU"); the UEFI keeps the
 // display streams 0x820, 0x821 and 0xC21 attached to the context bank ABL set up (LahainaPkg PlatformSec).
 constexpr uint64_t kSmmuPhysical = 0x15000000, kSmmuLength = 0xd0000;
+// Link health. INTF interrupt status (raw, latched whatever the enable) at INTF + 0x1c4, clear + 0x1c8: bit 31
+// underrun, 27 vsync; tear interrupts at 0x35800 + intf * 0x1000 (+4 status, +8 clear). DSI0 6G controller at
+// 0x0ae94000, registers shifted by 4: status0, FIFO, ack error, lane status, DLN0 PHY error, timeout, int ctrl.
+constexpr size_t kIntfIntrStatus = 0x1c4, kIntfIntrClear = 0x1c8, kTearIntr = 0x35800;
+constexpr uint32_t kIntfUnderrun = 1U << 31;
+constexpr uint64_t kDsi0Physical = 0x0ae94000, kDsiLength = 0x400;
+constexpr size_t kDsiRegisters[] = {0x0, 0x4, 0x8, 0x10, 0x68, 0xa8, 0xb8, 0xc0, 0x114, 0x120};
 constexpr uint16_t kMdpStreams[] = {0x820, 0x821, 0xc21};
 
 struct Dpu {
-    IOMemoryDescriptor *memory, *smmuMemory;
-    IOMemoryMap *map, *smmuMap;
-    volatile unsigned char *base, *smmu;
+    IOMemoryDescriptor *memory, *smmuMemory, *dsiMemory;
+    IOMemoryMap *map, *smmuMap, *dsiMap;
+    volatile unsigned char *base, *smmu, *dsi;
     IOTimerEventSource *watch;
-    unsigned watched;
+    unsigned watched, ticks, healthLogs, underruns;
+    uint32_t dsiLast[sizeof(kDsiRegisters) / sizeof(kDsiRegisters[0])];
     unsigned mode, ctlMask, intfMask, starts;
     bool autorefresh;
 };
@@ -329,13 +338,47 @@ void scanoutSample(const char *when, const Display &display) {
     IOLog("zeta-display: %s scanout %u/%u lit, %u red, alpha 0 %u ff %u, bounds %u,%u-%u,%u, sum %#x\n", when, lit,
         samples, red, transparent, opaque, lit ? left : 0, lit ? top : 0, right, bottom, sum);
 }
-// Every 15 s for the first five minutes: the scanout source and its translation while the render server runs.
+// Every 500 ms: INTF_1 underruns and tear events, and the DSI0 status words whenever they change (first 120 logs).
+void dpuHealth(bool force) {
+    const uint64_t ms = mach_absolute_time() / 19200;
+    for (unsigned intf = 1; intf <= 2; ++intf) {
+        const size_t block = kIntfBase + intf * kBlockStride, tear = kTearIntr + intf * kBlockStride;
+        const uint32_t status = dpuRead(block + kIntfIntrStatus), tearStatus = dpuRead(tear + 4);
+        if (status) dpuWrite(block + kIntfIntrClear, status);
+        if (tearStatus) dpuWrite(tear + 8, tearStatus);
+        if (status & kIntfUnderrun) gDpu.underruns++;
+        if ((force || (status & kIntfUnderrun)) && gDpu.healthLogs < 120) {
+            gDpu.healthLogs++;
+            IOLog("zeta-dpu: %llu ms intf %u intr %#x tear %#x frame %u underruns %u\n", ms, intf, status, tearStatus,
+                dpuRead(block + kIntfFrameCount), gDpu.underruns);
+        }
+    }
+    if (!gDpu.dsi) return;
+    bool changed = force;
+    uint32_t now[sizeof(kDsiRegisters) / sizeof(kDsiRegisters[0])];
+    for (size_t i = 0; i < sizeof(kDsiRegisters) / sizeof(kDsiRegisters[0]); ++i) {
+        now[i] = *reinterpret_cast<volatile uint32_t *>(gDpu.dsi + kDsiRegisters[i]);
+        // status0 (busy bits) and the lane status move every frame; only the error words count as a change.
+        if (i >= 4 && i != 5 && now[i] != gDpu.dsiLast[i]) changed = true;
+        gDpu.dsiLast[i] = now[i];
+    }
+    if (changed && gDpu.healthLogs < 120) {
+        gDpu.healthLogs++;
+        IOLog("zeta-dpu: %llu ms dsi0 ver %#x ctrl %#x status %#x fifo %#x ack %#x lanes %#x phy %#x timeout %#x "
+            "int %#x clk %#x\n", ms, now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9]);
+    }
+}
+// Health every 500 ms; every 15 s for the first five minutes the scanout source and its translation too.
 void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
-    char when[16];
-    snprintf(when, sizeof(when), "watch %u", gDpu.watched);
-    dpuDump(when);
-    scanoutSample(when, gDisplays[0]);
-    if (++gDpu.watched < 20) timer->setTimeoutMS(15000);
+    const bool full = !(gDpu.ticks++ % 30);
+    dpuHealth(full);
+    if (full && gDpu.watched < 20) {
+        char when[16];
+        snprintf(when, sizeof(when), "watch %u", gDpu.watched++);
+        dpuDump(when);
+        scanoutSample(when, gDisplays[0]);
+    }
+    if (gDpu.ticks < 2400) timer->setTimeoutMS(500);
 }
 // One frame from memory to each command-mode panel (sde trigger_start), unless autorefresh sends them.
 void dpuStart() {
@@ -360,7 +403,12 @@ void dpuHandoff() {
     gDpu.smmuMemory = IOMemoryDescriptor::withPhysicalAddress(kSmmuPhysical, kSmmuLength, kIODirectionInOut);
     gDpu.smmuMap = gDpu.smmuMemory ? gDpu.smmuMemory->map(kIOMapInhibitCache) : nullptr;
     if (gDpu.smmuMap) gDpu.smmu = reinterpret_cast<volatile unsigned char *>(gDpu.smmuMap->getVirtualAddress());
+    // DSI0 carries INTF_1, so its AHB and byte clocks run while the panel shows the firmware frame.
+    gDpu.dsiMemory = IOMemoryDescriptor::withPhysicalAddress(kDsi0Physical, kDsiLength, kIODirectionInOut);
+    gDpu.dsiMap = gDpu.dsiMemory ? gDpu.dsiMemory->map(kIOMapInhibitCache) : nullptr;
+    if (gDpu.dsiMap) gDpu.dsi = reinterpret_cast<volatile unsigned char *>(gDpu.dsiMap->getVirtualAddress());
     dpuDump("hand-off");
+    dpuHealth(true);
     for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
         const uint32_t active = dpuRead(kCtlBase + ctl * kBlockStride + kCtlIntfActive) & kDsiInterfaces;
         if (active) {
@@ -468,6 +516,7 @@ void kickOnce(IOService *self, Display *display) {
         IOLog("zeta-display: presented swap %u (%ux%u, stride %llu), %u frames, %u starts\n",
             field<uint32_t>(request, kRequestSwapID), width, height, stride, display->presented + 1, gDpu.starts);
         if (display->presented < 2) dpuDump("present");
+        dpuHealth(true);
         scanoutSample("present", *display);
         IOLog("zeta-display: swap %u surface format %#x planes %u alloc %llu\n", field<uint32_t>(request, kRequestSwapID),
             gBind.format(surface), gBind.planes(surface), allocation);
@@ -593,7 +642,7 @@ bool dStart(IOService *self, IOService *provider) {
     if (display->primary && gDpu.base && !gDpu.watch) {
         IOWorkLoop *loop = self->getWorkLoop();
         gDpu.watch = loop ? IOTimerEventSource::timerEventSource(self, &dpuWatchFired) : nullptr;
-        if (gDpu.watch && loop->addEventSource(gDpu.watch) == kIOReturnSuccess) gDpu.watch->setTimeoutMS(15000);
+        if (gDpu.watch && loop->addEventSource(gDpu.watch) == kIOReturnSuccess) gDpu.watch->setTimeoutMS(500);
         else OSSafeReleaseNULL(gDpu.watch);
     }
     return true;

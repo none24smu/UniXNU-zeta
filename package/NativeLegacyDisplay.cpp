@@ -40,6 +40,7 @@ extern "C" void native_legacy_display_late_probe(void);
 extern "C" void native_keystore_probe(void);
 extern "C" void sheng_cpufreq_probe(void);
 extern "C" void zeta_soc_health(void);
+extern "C" void zeta_hid_input_probe(void);
 extern "C" uint64_t mach_continuous_time(void);
 
 namespace {
@@ -976,6 +977,8 @@ void native_legacy_display_late_probe(void) {
     native_keystore_probe();
     // The EPSS cluster and L3 votes (CpuFreqProbe.cpp, sheng-cpufreq=<n>), as sheng's LegacyDisplayProbe starts them.
     sheng_cpufreq_probe();
+    // Home presses through the original HID stack (HidInputProbe.cpp, offline-hid-input=1 offline-hid-home=1).
+    zeta_hid_input_probe();
     if (bootArg("offline-mobile-graphics-load") != 1) return;
     kern_return_t surfaceLoad = OSKextLoadKextWithIdentifier(kSurfaceKext);
     kern_return_t familyLoad = OSKextLoadKextWithIdentifier(kFamily);

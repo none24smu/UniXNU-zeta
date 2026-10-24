@@ -1228,7 +1228,10 @@ void boot_progress_start(void) {
   __atomic_store_n(&pulse_worker_status,1,__ATOMIC_RELEASE);
   if(kernel_thread_start_priority(pulse_monitor,0,BASEPRI_PREEMPT_HIGH,&thread)==KERN_SUCCESS)thread_deallocate(thread);
   else __atomic_store_n(&pulse_worker_status,3,__ATOMIC_RELEASE);
-  if(boot_process_capture && boot_process_snapshot) {
+  // zeta-process-probe=0: no process/thread sampler (it walks every task and reads traced threads' user stacks every 2 s), to
+  // tell its cost and races apart from the rest of the panel on SMP.
+  unsigned process_probe=1;PE_parse_boot_argn("zeta-process-probe",&process_probe,sizeof(process_probe));
+  if(process_probe && boot_process_capture && boot_process_snapshot) {
     __atomic_store_n(&process_worker_status,1,__ATOMIC_RELEASE);
     if(kernel_thread_start_priority(process_monitor,0,BASEPRI_KERNEL,&thread)==KERN_SUCCESS)thread_deallocate(thread);
     else __atomic_store_n(&process_worker_status,3,__ATOMIC_RELEASE);

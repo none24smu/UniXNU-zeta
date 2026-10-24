@@ -57,6 +57,8 @@ EXTRA_LIFECYCLE.update({
     'com.apple.iokit.IOReportFamily': 6, 'com.apple.iokit.IOSlowAdaptiveClockingFamily': 6,
     'com.apple.driver.AppleAudioClockLibs': 2, 'com.apple.kec.Libm': 2,
 })
+# The HID closure (IOHIDFamily root; its IOHIDEventDriver plug-in is personalities only).
+EXTRA_LIFECYCLE['com.apple.iokit.IOHIDFamily'] = 112
 # Independently pinned: this AMFI slice's kmod start wrapper only tail-branches
 # through its empty __realmain, so the emitter points kmod start at the real
 # early policy entry instead. Nothing else may move a start pointer.

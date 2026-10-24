@@ -9,6 +9,7 @@
 #include <machine/machine_routines.h>
 #include <arm/thread.h>
 #include <vm/vm_map.h>
+#include <vm/vm_map_xnu.h>   // xnu-12377 declares vm_map_reference here
 #include <ipc/ipc_space.h>
 #include <ipc/ipc_port.h>
 #include <string.h>

@@ -373,6 +373,21 @@ void kickOnce(IOService *self, Display *display) {
         IOLog("zeta-display: presented swap %u (%ux%u, stride %llu), %u frames, %u starts\n",
             field<uint32_t>(request, kRequestSwapID), width, height, stride, display->presented + 1, gDpu.starts);
         if (display->presented < 2) dpuDump("present");
+        // What the render server drew: every 16th pixel of every 16th row of the scanout copy.
+        unsigned lit = 0, samples = 0;
+        uint32_t any = 0, first = 0;
+        for (uint32_t row = 0; row < height; row += 16) {
+            auto line = reinterpret_cast<const volatile uint32_t *>(destination + (uint64_t)row * display->rowBytes);
+            for (uint32_t x = 0; x < width; x += 16, ++samples) {
+                const uint32_t pixel = line[x] & 0x00ffffffU;
+                if (!pixel) continue;
+                if (!lit++) first = line[x];
+                any |= pixel;
+            }
+        }
+        IOLog("zeta-display: swap %u surface format %#x planes %u alloc %llu: %u/%u samples lit, first %#x, or %#x\n",
+            field<uint32_t>(request, kRequestSwapID), gBind.format(surface), gBind.planes(surface), allocation, lit,
+            samples, first, any);
     }
     display->presented++;
     finishTransfer(self, display, request);

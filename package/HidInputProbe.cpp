@@ -11,11 +11,14 @@
 // offline-hid-auto-home=<seconds after the probe> offline-hid-auto-home-count (default 1, at most 8) offline-hid-auto-home-interval
 // (default 20 s, at least 5) press unattended, as on sheng, and the host sends one with "\0ZETA:HOME\n" on the XNU USB log
 // (UniXNU scripts/native-dwc3-console.c).
-// zeta-touch-hid=1 adds NativeHidInput's touch digitizer (report 3, ten fingers) as a second device of its own, sheng's
-// sheng-touch-split layout (native_hid_touch_allocate): the Home device keeps its keyboard-only descriptor, and the digitizer's
-// descriptor makes it a Digitizer / Touch Screen service by itself. It is fed by the digitizer probe (TouchProbe.cpp) through
-// the native_touch_* seqlock and its sink; its event service and interface get Built-In / DisplayIntegrated once they attach,
-// which backboardd reads from the service it opens.
+// zeta-touch-hid=1 adds NativeHidInput's touch digitizer (report 3, ten fingers), fed by the digitizer probe (TouchProbe.cpp)
+// through the native_touch_* seqlock and its sink. By default it is in the Home device's descriptor, after the keyboard: sheng's
+// combined layout, the one whose event driver and user client attach on hardware; the event services get sheng's Built-In /
+// DisplayIntegrated / PrimaryUsage properties once they attach, which backboardd's touch processor needs (it drops digitizer
+// events from a service that is not Digitizer / Touch Screen). zeta-touch-split=1 gives the digitizer a device of its own
+// instead, sheng's opt-in sheng-touch-split (native_hid_touch_allocate), whose services get Built-In / DisplayIntegrated only.
+// A contact that starts at a screen edge carries kIOHIDDigitizerEventFromEdgeTip (NativeHidInput's edge patch): SpringBoard's
+// screen-edge gestures (swipe up to open or go home, the switcher) need it.
 #include <IOKit/IOService.h>
 #include <IOKit/IOCatalogue.h>
 #include <IOKit/IOLib.h>
@@ -85,13 +88,115 @@ const uint8_t kTouchDescriptor[] = {
 };
 constexpr unsigned kFingers = 10;
 
+// NativeHidInput's edge contacts (UniXNU drivers/NativeHidInput): a contact that starts near a screen edge (kEdgeX/kEdgeY) carries
+// kIOHIDDigitizerEventFromEdgeTip (0x800) in its finger events' event mask for its whole life, as Apple's multitouch stack
+// reports it; UIKit derives UITouch's edge type from that bit alone, and every screen-edge recognizer of SpringBoard fails on
+// edge type 0. The original IOHIDEventDriver never sets it, so its dispatchEvent is wrapped in a copy of the digitizer driver's
+// vtable. KDK 25F84 arm64e slots (DWARF vtable_elem_location): IOHIDEventDriver dispatchEvent 302 of 359; IOHIDEvent getType 42,
+// getIntegerValue 47, setIntegerValue 48, getFixedValue 49; IOHIDEvent::_children at +0x18. Each is checked against its symbol.
+namespace edge {
+enum : unsigned {kSlots = 359, kDispatch = 302, kGetType = 42, kGetInteger = 47, kSetInteger = 48, kGetFixed = 49, kContacts = 256};
+enum : uint32_t {
+    kDigitizer = 11, kX = 0xB0000, kY = 0xB0001, kIndex = 0xB0005, kMask = 0xB0007, kTouch = 0xB0009, kMaskTouch = 2,
+    kFromEdgeTip = 0x800,
+};
+// 96 pixels (about 6 mm) of the spanned 2752 x 1892 screen, in the driver's normalised IOFixed coordinates. NativeHidInput uses
+// 48 px (3 mm); zeta's heat grid has a 4 mm pitch and no edge stretching yet, so a finger on the bottom edge is first reported
+// about 53 px above it (touch-v10: three swipes up starting at y 1830..1839).
+constexpr int32_t kEdgeX = 96 * 65536 / 2752, kEdgeY = 96 * 65536 / 1892;
+uintptr_t gOriginalDispatch;
+uintptr_t gCopy[kSlots];
+bool gFromEdge[kContacts];
+}  // namespace edge
+}  // namespace
+// [0] installed (negative: the slot check that failed), [1] contacts begun, [2] of them at an edge, [3] skipped events
+extern "C" {volatile int32_t native_touch_edge_stats[4];}
+namespace {
+namespace edge {
+template <typename R, typename... A> R call(void *object, unsigned slot, A... args) {
+    return reinterpret_cast<R (*)(void *, A...)>((*reinterpret_cast<uintptr_t **>(object))[slot])(object, args...);
+}
+// One finger event; true when it now carries the bit.
+bool mark(void *child) {
+    if (call<uint32_t, IOOptionBits>(child, kGetType, 0) != kDigitizer) return false;
+    const uint32_t index = (uint32_t)call<int32_t, uint32_t, IOOptionBits>(child, kGetInteger, kIndex, 0);
+    if (index >= kContacts) {native_touch_edge_stats[3] = native_touch_edge_stats[3] + 1; return false;}
+    const uint32_t mask = (uint32_t)call<int32_t, uint32_t, IOOptionBits>(child, kGetInteger, kMask, 0);
+    const bool touch = call<int32_t, uint32_t, IOOptionBits>(child, kGetInteger, kTouch, 0) != 0;
+    if ((mask & kMaskTouch) && touch) {
+        const int32_t x = call<int32_t, uint32_t, IOOptionBits>(child, kGetFixed, kX, 0);
+        const int32_t y = call<int32_t, uint32_t, IOOptionBits>(child, kGetFixed, kY, 0);
+        gFromEdge[index] = x < kEdgeX || x > 65536 - kEdgeX || y < kEdgeY || y > 65536 - kEdgeY;
+        native_touch_edge_stats[1] = native_touch_edge_stats[1] + 1;
+        if (gFromEdge[index]) native_touch_edge_stats[2] = native_touch_edge_stats[2] + 1;
+    }
+    const bool edged = gFromEdge[index];
+    if (edged) call<void, uint32_t, int32_t, IOOptionBits>(child, kSetInteger, kMask, (int32_t)(mask | kFromEdgeTip), 0);
+    if (!touch && (mask & kMaskTouch)) gFromEdge[index] = false;
+    return edged;
+}
+void dispatch(IOService *self, OSObject *event, IOOptionBits options) {
+    if (event && call<uint32_t, IOOptionBits>(event, kGetType, 0) == kDigitizer) {
+        OSArray *children = *reinterpret_cast<OSArray **>(reinterpret_cast<uint8_t *>(event) + 0x18);
+        if (children && OSDynamicCast(OSArray, children) && children->getCount()) {
+            // A collection: its mask is the union of its fingers', so it takes the bit as well.
+            bool any = false;
+            for (unsigned i = 0; i < children->getCount(); ++i) {
+                OSObject *child = children->getObject(i);
+                if (child && child->metaCast("IOHIDEvent")) any |= mark(child);
+                else native_touch_edge_stats[3] = native_touch_edge_stats[3] + 1;
+            }
+            if (any) {
+                const uint32_t mask = (uint32_t)call<int32_t, uint32_t, IOOptionBits>(event, kGetInteger, kMask, 0);
+                call<void, uint32_t, int32_t, IOOptionBits>(event, kSetInteger, kMask, (int32_t)(mask | kFromEdgeTip), 0);
+            }
+        } else if (!children) {
+            mark(event);
+        }
+    }
+    reinterpret_cast<void (*)(IOService *, OSObject *, IOOptionBits)>(gOriginalDispatch)(self, event, options);
+}
+// The digitizer's own event driver gets the wrapped copy; the Home device's driver keeps the original table.
+void install(IORegistryEntry *driver) {
+    if (gOriginalDispatch || native_touch_edge_stats[0] < 0) return;
+    const uintptr_t *table = *reinterpret_cast<uintptr_t **>(driver);
+    const uintptr_t *event = reinterpret_cast<const uintptr_t *>(native_kext_symbol(kFamily, "__ZTV10IOHIDEvent"));
+    const uintptr_t dispatchDriver = native_kext_symbol(kFamily, "__ZN16IOHIDEventDriver13dispatchEventEP10IOHIDEventj");
+    const uintptr_t dispatchService = native_kext_symbol(kFamily, "__ZN17IOHIDEventService13dispatchEventEP10IOHIDEventj");
+    const SlotName eventSlots[] = {
+        {kGetType, "__ZN10IOHIDEvent7getTypeEv"}, {kGetInteger, "__ZN10IOHIDEvent15getIntegerValueEjj"},
+        {kSetInteger, "__ZN10IOHIDEvent15setIntegerValueEjij"}, {kGetFixed, "__ZN10IOHIDEvent13getFixedValueEjj"},
+    };
+    int32_t failed = 0;
+    if (table[kDispatch] != dispatchDriver && table[kDispatch] != dispatchService) failed = -(int32_t)kDispatch;
+    for (const auto &entry : eventSlots)
+        if (!failed && (!event || event[2 + entry.slot] != native_kext_symbol(kFamily, entry.symbol))) failed = -(int32_t)entry.slot;
+    if (failed) {
+        native_touch_edge_stats[0] = failed;
+        IOLog("zeta-hid: edge patch not installed (slot %d)\n", -failed);
+        return;
+    }
+    memcpy(gCopy, table, sizeof(gCopy));
+    gOriginalDispatch = gCopy[kDispatch];
+    gCopy[kDispatch] = reinterpret_cast<uintptr_t>(&dispatch);
+    __asm__ volatile("dmb ish" ::: "memory");
+    *reinterpret_cast<const uintptr_t **>(driver) = gCopy;
+    native_touch_edge_stats[0] = 1;
+    IOLog("zeta-hid: edge patch installed\n");
+}
+}  // namespace edge
+
 uintptr_t gTable[2 + kSlots + 1];
 uintptr_t gOriginal[kSlots];
 IOWorkLoop *gLoop;
 IOTimerEventSource *gTimer;
 IOService *gDevice, *gTouchDevice;
-bool gDown, gTouch, gTouchDriver;
+bool gDown, gTouch, gSplit, gTouchDriver;
 uint32_t gTouchSeq;
+IOReturn gTouchResult;
+uint32_t gTouchLogged;
+uint64_t gTouchLogNext;
+unsigned gTouchClients = ~0u;
 // Fingers sent as down in the previous report; a vanished identifier gets one explicit tip-up report.
 int gPrevIds[kFingers] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 unsigned gPrevX[kFingers], gPrevY[kFingers];
@@ -111,16 +216,24 @@ uint64_t counterNow() {
 }
 
 IOWorkLoop *dGetWorkLoop(const IOService *) {return gLoop;}
-// Both devices share the vtable copy; the digitizer is told apart by its address (NativeHidInput's touchOnly).
+// Both devices share the vtable copy; the split digitizer is told apart by its address (NativeHidInput's touchOnly).
 OSString *dNewTransportString(const IOService *self) {return OSString::withCString(self == gTouchDevice ? "SPI" : "Virtual");}
 OSString *dNewProductString(const IOService *self) {
     return OSString::withCString(self == gTouchDevice ? "Offline touch digitizer" : "Offline HID input probe");
 }
 IOReturn dNewReportDescriptor(const IOService *self, IOMemoryDescriptor **out) {
     if (!out) return kIOReturnBadArgument;
-    const bool touch = self == gTouchDevice;
-    *out = IOBufferMemoryDescriptor::withBytes(touch ? kTouchDescriptor : kDescriptor, touch ? sizeof(kTouchDescriptor) : sizeof(kDescriptor),
-                                               kIODirectionNone);
+    uint8_t combined[sizeof(kDescriptor) + sizeof(kTouchDescriptor)];
+    size_t size = 0;
+    if (self == gTouchDevice) {
+        memcpy(combined, kTouchDescriptor, sizeof(kTouchDescriptor));
+        size = sizeof(kTouchDescriptor);
+    } else {
+        memcpy(combined, kDescriptor, sizeof(kDescriptor));
+        size = sizeof(kDescriptor);
+        if (gTouch && !gSplit) {memcpy(combined + size, kTouchDescriptor, sizeof(kTouchDescriptor)); size += sizeof(kTouchDescriptor);}
+    }
+    *out = IOBufferMemoryDescriptor::withBytes(combined, size, kIODirectionNone);
     return *out ? kIOReturnSuccess : kIOReturnNoMemory;
 }
 
@@ -151,8 +264,10 @@ IORegistryEntry *eventDriverBelow(IORegistryEntry *parent, unsigned depth) {
 }
 
 // sheng HidInputProbe.cpp: backboardd classifies the digitizer by the Built-In / DisplayIntegrated of the event service it
-// opened and of its interface, not of the device two levels down. Once per driver: each setProperty on a service with user
-// clients is a property-change notification.
+// opened and of its interface, not of the device two levels down, and drops digitizer events from a service whose
+// PrimaryUsagePage/PrimaryUsage is not Digitizer / Touch Screen; the combined device lists its keyboard first, so its services
+// are given those after they have matched. Once per driver: each setProperty on a service with user clients is a
+// property-change notification.
 void publishDigitizer(IORegistryEntry *driver) {
     if (gPublishedFor == driver) return;
     gPublishedFor = driver;
@@ -161,13 +276,19 @@ void publishDigitizer(IORegistryEntry *driver) {
         if (!entry) continue;
         entry->setProperty("Built-In", kOSBooleanTrue);
         entry->setProperty("DisplayIntegrated", kOSBooleanTrue);
+        if (!gSplit) {
+            entry->setProperty("PrimaryUsagePage", 0x0dULL, 32);
+            entry->setProperty("PrimaryUsage", 4ULL, 32);
+        }
     }
     IOLog("zeta-hid: digitizer properties published\n");
 }
 
 // NativeHidInput::touchSend: one finger set as report 3, then a tip-up for each identifier that is gone.
+// The device the touch reports go to: the split digitizer, or the Home device in the combined layout.
+IOService *touchTarget() {return gSplit ? gTouchDevice : gTouch ? gDevice : nullptr;}
 void touchSend() {
-    if (!gTouchDevice || !gTouchDriver) return;
+    if (!touchTarget() || !gTouchDriver) return;
     const uint32_t before = native_touch_seq;
     if ((before & 1) || before == gTouchSeq) return;
     __asm__ volatile("dmb ish" ::: "memory");
@@ -199,12 +320,38 @@ void touchSend() {
     }
     if (!slot) return;
     report[1 + kFingers * 6] = (uint8_t)slot;
-    sendReport(gTouchDevice, report, sizeof(report));
+    gTouchResult = sendReport(touchTarget(), report, sizeof(report));
     native_touch_hid_reports = native_touch_hid_reports + 1;
 }
 IOReturn touchAction(OSObject *, void *, void *, void *, void *) {touchSend(); return kIOReturnSuccess;}
 // Called by the touch thread after it publishes a frame.
-void touchNotify(void *) {if (gLoop && gTouchDevice) gLoop->runAction(&touchAction, gTouchDevice);}
+void touchNotify(void *) {if (gLoop && touchTarget()) gLoop->runAction(&touchAction, touchTarget());}
+
+// The user clients open on the touch event service (backboardd's IOHIDEventServiceUserClient), logged when they change.
+void logTouchClients(IORegistryEntry *driver) {
+    OSIterator *it = driver->getChildIterator(gIOServicePlane);
+    if (!it) return;
+    unsigned count = 0;
+    char names[160] = "";
+    size_t used = 0;
+    while (OSObject *child = it->getNextObject()) {
+        IORegistryEntry *entry = OSDynamicCast(IORegistryEntry, child);
+        if (!entry) continue;
+        ++count;
+        const char *name = entry->getMetaClass()->getClassName();
+        const size_t length = strlen(name);
+        if (used + length + 2 < sizeof(names)) {
+            if (used) names[used++] = ' ';
+            memcpy(names + used, name, length);
+            used += length;
+            names[used] = 0;
+        }
+    }
+    it->release();
+    if (count == gTouchClients) return;
+    gTouchClients = count;
+    IOLog("zeta-hid: touch service clients %u: %s\n", count, names);
+}
 
 bool homeRequested() {
     const uint32_t requests = unixnu_dwc3_home_requests;
@@ -231,13 +378,24 @@ void tick(OSObject *, IOTimerEventSource *source) {
         zeta_hid_stats[4] = driver;
         IOLog("zeta-hid: event driver %s\n", driver ? "attached" : "gone");
     }
-    if (gTouchDevice) {
-        IORegistryEntry *touchDriver = eventDriverBelow(gTouchDevice, 4);
+    if (touchTarget()) {
+        IORegistryEntry *touchDriver = gSplit ? eventDriverBelow(gTouchDevice, 4) : eventDriver;
         if ((touchDriver != nullptr) != gTouchDriver) {
             gTouchDriver = touchDriver != nullptr;
             IOLog("zeta-hid: digitizer event driver %s\n", gTouchDriver ? "attached" : "gone");
         }
-        if (touchDriver) publishDigitizer(touchDriver);
+        if (touchDriver) {
+            publishDigitizer(touchDriver);
+            edge::install(touchDriver);
+            logTouchClients(touchDriver);
+        }
+        // At most every 10 s, while reports flow: what the event driver took.
+        if (native_touch_hid_reports != gTouchLogged && counterNow() >= gTouchLogNext) {
+            gTouchLogged = native_touch_hid_reports;
+            gTouchLogNext = counterNow() + 10 * gFrequency;
+            IOLog("zeta-hid: touch reports %u last %#x, edge %d begun %d at edge %d skipped %d\n", gTouchLogged, gTouchResult,
+                  native_touch_edge_stats[0], native_touch_edge_stats[1], native_touch_edge_stats[2], native_touch_edge_stats[3]);
+        }
     }
     if (driver && homeRequested()) {
         zeta_hid_stats[2] = sendMenu(true);
@@ -282,7 +440,7 @@ bool addKeyboardPersonality() {
     // Keyboard, Keypad; with the digitizer also Digitizer / Touch Screen (the plug-in's digitizer personality is the same class).
     static const unsigned kUsages[][2] = {{1, 6}, {1, 7}, {0x0d, 4}};
     for (const auto &usage : kUsages) {
-        if (usage[0] == 0x0d && !gTouch) continue;
+        if (usage[0] == 0x0d && !gSplit) continue;
         OSDictionary *pair = OSDictionary::withCapacity(2);
         OSNumber *page = OSNumber::withNumber(usage[0], 32), *number = OSNumber::withNumber(usage[1], 32);
         ok = ok && pair && page && number && pair->setObject("DeviceUsagePage", page) && pair->setObject("DeviceUsage", number) &&
@@ -328,6 +486,7 @@ void zeta_hid_input_probe(void) {
     }
     zeta_hid_stats[0] = 2;
     gTouch = bootArg("zeta-touch-hid") == 1;
+    gSplit = gTouch && bootArg("zeta-touch-split") == 1;
     if (!addKeyboardPersonality()) {zeta_hid_stats[0] = -3; IOLog("zeta-hid: keyboard personality not added\n"); return;}
     // sheng's provider is the IOHIDResource nub, whose personality waits for IOBSD (published after this probe on zeta); the
     // resource root it would attach to serves as well.
@@ -348,7 +507,8 @@ void zeta_hid_input_probe(void) {
     IOService *device = make();
     gDevice = device;
     // The generic HID event personality's matching property, not a client entitlement.
-    const bool valid = device && device->init() && device->setProperty("HIDDefaultBehavior", true);
+    const bool valid = device && device->init() && device->setProperty("HIDDefaultBehavior", true) &&
+        (!gTouch || gSplit || (device->setProperty("Built-In", true) && device->setProperty("DisplayIntegrated", true)));
     const bool attached = valid && device->attach(resource);
     const bool started = attached && device->start(resource);
     if (!started) {
@@ -360,7 +520,7 @@ void zeta_hid_input_probe(void) {
         OSSafeReleaseNULL(resource);
         return;
     }
-    if (gTouch) {
+    if (gSplit) {
         IOService *touch = make();
         gTouchDevice = touch;
         const bool ok = touch && touch->init() && touch->setProperty("HIDDefaultBehavior", true) && touch->setProperty("Built-In", true) &&
@@ -390,7 +550,7 @@ void zeta_hid_input_probe(void) {
     if (first && gFrequency) gAutoNext = counterNow() + static_cast<uint64_t>(first) * gFrequency;
     gHomeSeen = unixnu_dwc3_home_requests;
     zeta_hid_stats[0] = 3;
-    if (gTouchDevice) native_touch_set_sink(&touchNotify, nullptr);
+    if (touchTarget()) native_touch_set_sink(&touchNotify, nullptr);
     IOLog("zeta-hid: Home input started (auto %u s, %u presses every %u s)\n", first, gAutoCount, gAutoInterval);
     gTimer->setTimeoutMS(1000);
 }

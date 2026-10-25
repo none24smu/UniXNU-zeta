@@ -1,6 +1,6 @@
 --- a/NativeBridgeMetalFrontend.mm
 +++ b/NativeBridgeMetalFrontend.mm
-@@ -1214,7 +1214,10 @@
+@@ -1217,7 +1217,10 @@
  static void noteRefusal(NSString *what,NSString *function,NSError **error) {
   noteProblem([NSString stringWithFormat:@"%@ %@: %@",what,function?:@"?",error && *error?(*error).localizedDescription:@"refused"]);
  }
@@ -11,7 +11,7 @@
   noteProblem([NSString stringWithFormat:@"%@: %@",what,lastError()]);
   if(error)*error=nbError([NSString stringWithFormat:@"%@: %@",what,lastError()]);
   return value;
-@@ -1622,7 +1625,7 @@
+@@ -1625,7 +1628,7 @@
   const NmbPipelineOptions creation={(uint64_t)options,nullptr,0};
   const uint64_t pipelineBegan=nowUs();
   NmbComputePipeline *handle=nmb_compute_pipeline_new_with_options(gDevice,[(NBFunction *)function handle],&creation);gTimePipeline.add(pipelineBegan);
@@ -20,7 +20,7 @@
   MTLComputePipelineDescriptor *made=[MTLComputePipelineDescriptor new];made.computeFunction=function;
   NBComputePipeline *state=[[NBComputePipeline alloc] initWithDevice:gDeviceObject pipelineStateDescriptor:made];
   state.handle=handle;gPipelines++;if(error)*error=nil;return (id<MTLComputePipelineState>)state;
-@@ -1637,7 +1640,7 @@
+@@ -1640,7 +1643,7 @@
   const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
   const uint64_t pipelineBegan=nowUs();
   NmbComputePipeline *handle=nmb_compute_pipeline_new_with_descriptor(gDevice,&p,&creation);gTimePipeline.add(pipelineBegan);
@@ -29,7 +29,7 @@
   NBComputePipeline *state=[[NBComputePipeline alloc] initWithDevice:gDeviceObject pipelineStateDescriptor:d];state.handle=handle;state.label=d.label;gPipelines++;
   if(error)*error=nil;return (id<MTLComputePipelineState>)state;
  }
-@@ -1656,7 +1659,9 @@
+@@ -1659,7 +1662,9 @@
   const uint64_t pipelineBegan=nowUs();const NBCost costBegan=NBCost::now();
   NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
   journalRenderPipeline(d,pipelineBegan,handle?nullptr:nmb_last_error(),gJournalPath.empty()?std::string():NBCost::now().since(costBegan));

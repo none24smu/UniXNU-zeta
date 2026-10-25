@@ -153,8 +153,11 @@
  @public
   EncodedWork encodedWork;   // the command buffer's single encoder thread, not global counter deltas
   uint64_t createdUs;
-@@ -603,7 +657,7 @@
+@@ -601,9 +655,10 @@
+ @property(nonatomic) BOOL schedulingDelivered;
+ @property(nonatomic) MTLCommandBufferErrorOption errorOptions;   // kept for the caller; the runtime reports no encoder execution status
  @property(nonatomic,strong) NSMutableDictionary *userDictionaryStorage;
++- (instancetype)initWithNBQueue:(NBQueue *)queue;
  - (void)refuse:(NSString *)what;
  @end
 -@interface NBEncoder : NBObject
@@ -162,7 +165,7 @@
  @property(nonatomic) NmbEncoder *handle;
  @property(nonatomic,strong) NBCommandBuffer *commandBuffer;
  @end
-@@ -622,6 +676,7 @@
+@@ -622,6 +677,7 @@
   gTimeResourceWait.add(began);
  }
  @implementation NBEncoder
@@ -170,7 +173,7 @@
  - (void)dealloc {if(_handle)nmb_encoder_discard(_handle);}
  - (bool)check:(bool)ok what:(const char *)what {
   if(!ok)[_commandBuffer refuse:[NSString stringWithFormat:@"%s: %@",what,lastError()]];
-@@ -631,6 +686,7 @@
+@@ -631,6 +687,7 @@
   NmbEncoder *handle=_handle;_handle=nullptr;
   if(!handle){[_commandBuffer refuse:@"endEncoding twice"];return;}
   [self check:nmb_encoder_end(handle) what:"endEncoding"];
@@ -178,15 +181,21 @@
  }
  - (void)insertDebugSignpost:(NSString *)s {(void)s;}
  - (void)pushDebugGroup:(NSString *)s {(void)s;}
-@@ -886,6 +942,7 @@
+@@ -886,8 +943,11 @@
  static void completed(void *context);
  static void scheduled(void *context);
  @implementation NBCommandBuffer
+-- (instancetype)init {
+- if((self=[super init])){_scheduledHandlers=[NSMutableArray array];_completedHandlers=[NSMutableArray array];_surfaces=[NSMutableSet set];_resourceOwners=[NSMutableSet set];_handlers=dispatch_group_create();_schedulingHandlers=dispatch_group_create();}
 +NB_ON_METAL_BASE
- - (instancetype)init {
-  if((self=[super init])){_scheduledHandlers=[NSMutableArray array];_completedHandlers=[NSMutableArray array];_surfaces=[NSMutableSet set];_resourceOwners=[NSMutableSet set];_handlers=dispatch_group_create();_schedulingHandlers=dispatch_group_create();}
++// Through _MTLCommandBuffer's own initializer (the queue and retained references are the base's), then this class's state: a command
++// buffer made any other way has no handler groups (sb8-v1: backboardd's first commit entered a NULL dispatch group).
++- (instancetype)initWithNBQueue:(NBQueue *)queue {
++ if((self=[super initWithQueue:queue retainedReferences:YES synchronousDebugMode:NO])){_scheduledHandlers=[NSMutableArray array];_completedHandlers=[NSMutableArray array];_surfaces=[NSMutableSet set];_resourceOwners=[NSMutableSet set];_handlers=dispatch_group_create();_schedulingHandlers=dispatch_group_create();}
   if(self)createdUs=nowUs();
-@@ -931,7 +988,7 @@
+  return self;
+ }
+@@ -931,7 +991,7 @@
   encoder.handle=handle;encoder.commandBuffer=self;return encoder;
  }
  - (id<MTLComputeCommandEncoder>)computeCommandEncoder {
@@ -195,7 +204,7 @@
  }
  - (id<MTLComputeCommandEncoder>)computeCommandEncoderWithDispatchType:(MTLDispatchType)type {
   if(type!=MTLDispatchTypeSerial){[self refuse:@"concurrent compute dispatch"];return nil;}
-@@ -945,7 +1002,7 @@
+@@ -945,7 +1005,7 @@
  - (id<MTLBlitCommandEncoder>)blitCommandEncoderWithDescriptor:(MTLBlitPassDescriptor *)d {(void)d;return [self blitCommandEncoder];}
  - (id<MTLBlitCommandEncoder>)blitCommandEncoder {
   gBlits++;encodedWork.blits++;
@@ -204,7 +213,7 @@
  }
  - (void)useResidencySet:(id)set {(void)set;}
  - (void)useResidencySets:(const id __unsafe_unretained [])sets count:(NSUInteger)n {(void)sets;(void)n;}
-@@ -987,7 +1044,7 @@
+@@ -987,7 +1047,7 @@
    [_resourceOwners addObject:d.visibilityResultBuffer];
    pass.visibility=[(NBBuffer *)d.visibilityResultBuffer handle];
   }
@@ -213,7 +222,7 @@
  }
  - (void)addScheduledHandler:(MTLCommandBufferHandler)block {if(block)@synchronized(self){[_scheduledHandlers addObject:[block copy]];}}
  - (void)addCompletedHandler:(MTLCommandBufferHandler)block {if(block)@synchronized(self){[_completedHandlers addObject:[block copy]];}}
-@@ -1113,11 +1170,14 @@
+@@ -1113,11 +1173,14 @@
  }
  
  @implementation NBQueue
@@ -223,13 +232,13 @@
   NmbCommandBuffer *handle=nmb_command_buffer_new(_handle);
   if(!handle){NBLOG(@"native-metal: commandBuffer refused: %@",lastError());return nil;}
 - NBCommandBuffer *commandBuffer=[NBCommandBuffer new];commandBuffer.handle=handle;commandBuffer.queue=self;return (id<MTLCommandBuffer>)commandBuffer;
-+ NBCommandBuffer *commandBuffer=[[NBCommandBuffer alloc] initWithQueue:self retainedReferences:YES synchronousDebugMode:NO];
++ NBCommandBuffer *commandBuffer=[[NBCommandBuffer alloc] initWithNBQueue:self];
 + if(!commandBuffer){nmb_command_buffer_release(handle);return nil;}
 + commandBuffer.handle=handle;commandBuffer.queue=self;return (id<MTLCommandBuffer>)commandBuffer;
  }
  - (id<MTLCommandBuffer>)commandBufferWithUnretainedReferences {return [self commandBuffer];}
  - (void)setSubmissionQueue:(dispatch_queue_t)queue {(void)queue;}   // submission happens on the caller's thread here
-@@ -1465,7 +1525,8 @@
+@@ -1465,7 +1528,8 @@
  }
  - (id<MTLCommandQueue>)newCommandQueue {
   NmbQueue *handle=nmb_queue_new(gDevice);if(!handle)return nil;
@@ -239,7 +248,7 @@
  }
  - (id<MTLHeap>)newHeapWithDescriptor:(MTLHeapDescriptor *)d {
   if(!d)return nil;
-@@ -1562,7 +1623,9 @@
+@@ -1562,7 +1626,9 @@
   const uint64_t pipelineBegan=nowUs();
   NmbComputePipeline *handle=nmb_compute_pipeline_new_with_options(gDevice,[(NBFunction *)function handle],&creation);gTimePipeline.add(pipelineBegan);
   if(!handle)return failWith<id<MTLComputePipelineState>>(error,@"compute pipeline",nil);
@@ -250,7 +259,7 @@
  }
  - (id<MTLComputePipelineState>)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d options:(MTLPipelineOption)options
                                                         reflection:(MTLAutoreleasedComputePipelineReflection *)reflection error:(NSError **)error {
-@@ -1575,7 +1638,7 @@
+@@ -1575,7 +1641,7 @@
   const uint64_t pipelineBegan=nowUs();
   NmbComputePipeline *handle=nmb_compute_pipeline_new_with_descriptor(gDevice,&p,&creation);gTimePipeline.add(pipelineBegan);
   if(!handle)return failWith<id<MTLComputePipelineState>>(error,@"compute pipeline",nil);
@@ -259,7 +268,7 @@
   if(error)*error=nil;return (id<MTLComputePipelineState>)state;
  }
  - (id<MTLRenderPipelineState>)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)d error:(NSError **)error {
-@@ -1594,7 +1657,7 @@
+@@ -1594,7 +1660,7 @@
   NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
   journalRenderPipeline(d,pipelineBegan,handle?nullptr:nmb_last_error(),gJournalPath.empty()?std::string():NBCost::now().since(costBegan));
   if(!handle)return failWith<id<MTLRenderPipelineState>>(error,@"render pipeline",nil);
@@ -268,7 +277,7 @@
  }
  - (id<MTLBinaryArchive>)newBinaryArchiveWithDescriptor:(MTLBinaryArchiveDescriptor *)d error:(NSError **)error {
   if(d.url && !d.url.isFileURL){if(error)*error=nbError(@"a file URL is required");return nil;}
-@@ -1612,7 +1675,7 @@
+@@ -1612,7 +1678,7 @@
       (uint64_t)d.borderColor,(uint64_t)d.normalizedCoordinates,d.maxAnisotropy,(uint64_t)d.compareFunction,(uint64_t)d.lodAverage,d.lodMinClamp,d.lodMaxClamp};
   NmbSampler *handle=nmb_sampler_new(gDevice,&s);
   if(!handle){NBLOG(@"native-metal: sampler refused: %@",lastError());return nil;}
@@ -277,7 +286,7 @@
  }
  - (id<MTLDepthStencilState>)newDepthStencilStateWithDescriptor:(MTLDepthStencilDescriptor *)d {
   auto face=[](MTLStencilDescriptor *s)->NmbStencil {
-@@ -1621,7 +1684,7 @@
+@@ -1621,7 +1687,7 @@
   NmbDepthStencilDescriptor s={(uint64_t)d.depthCompareFunction,(uint64_t)d.depthWriteEnabled,face(d.frontFaceStencil),face(d.backFaceStencil)};
   NmbDepthStencil *handle=nmb_depth_stencil_new(gDevice,&s);
   if(!handle){NBLOG(@"native-metal: depth/stencil state refused: %@",lastError());return nil;}
@@ -286,7 +295,7 @@
  }
  @end
  
-@@ -1668,6 +1731,18 @@
+@@ -1668,6 +1734,18 @@
   // The target families supportsFamily: answers true, with the rows of Apple's tables the device does not meet in them (nmb_device_family_waivers).
   {char waived[4096]={};nmb_device_family_waivers(gDevice,waived,sizeof waived);
    for(char *line=waived,*next;*line;line=next){next=strchr(line,'\n');if(next)*next++=0;else next=line+strlen(line);journal(std::string("F ")+line);}}

@@ -6,7 +6,12 @@
 //   2  as 1, plus enabling gcc_gpu_cfg_ahb_clk if its enable bit is clear
 //   3  as 2, plus, with GPUCC readable: the stock gdsc-regulator enable of gpu_cc_cx_gdsc if CX is off, then the gpu_cc_ahb_clk and
 //      gpu_cc_hlos1_vote_gpu_smmu_clk enables, so the SMMU global space can be read; GX and the SMMU are never programmed
-// sheng's later modes (GMU context, clocks, cold start, hw_init, zap) follow once these have been seen on the device. The result
+//   4  as 3, then, if the SMMU global space read cleanly with CX on, the vote clock running and no SMR valid: map the whole
+//      kgsl-smmu window (stock DT 0x3da0000 size 0x20000) and build the GMU's own context through NativeAdreno
+//      (NativeAdrenoGmuContextBringup): a6xx_gmu.c payload addresses, which match the stock msm_kgsl a6xx_gmu_vma, native4K
+//      TTBR0 tables, context bank 1 / ASID 1, SMR+S2CR slot 2 for the GMU stream 5 (stock gmu iommus <&kgsl_smmu 5 0x400>).
+//      Bank, ASID and slot are sheng's choice. The GMU itself is not booted, so no transaction uses the context.
+// sheng's later modes (GMU clocks, cold start, hw_init, zap) follow once these have been seen on the device. The result
 // goes to the kernel log as "zeta-gpu:" lines from a thread about ten seconds after the probe starts: once for the clock and power
 // stages alone, then for the full run.
 #include <IOKit/IOService.h>
@@ -16,16 +21,21 @@
 #include <kern/thread.h>
 #include <pexpert/pexpert.h>
 #include "GpuPowerBoard.h"
+#include "NativeAdrenoGmuContext.h"
 
 extern "C" {
 struct gpb_result native_gpu_power_result;
+struct NativeAdrenoGmuContextReport native_gpu_gmu_context;
 volatile uint32_t native_gpu_power_stage;
 }
+extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu, size_t bytes, unsigned bank, unsigned asid,
+                                                  unsigned slot, unsigned sid, void (*progress)(uint32_t),
+                                                  NativeAdrenoGmuContextReport *report) __attribute__((weak));
 
 namespace {
 unsigned mode() {
     static unsigned cached = ~0u;
-    if (cached == ~0u) {unsigned m = 0; PE_parse_boot_argn("sheng-gpu-power", &m, sizeof m); cached = m > 3 ? 3 : m;}
+    if (cached == ~0u) {unsigned m = 0; PE_parse_boot_argn("sheng-gpu-power", &m, sizeof m); cached = m > 4 ? 4 : m;}
     return cached;
 }
 void delayUs(void *, unsigned us) {IODelay(us);}
@@ -59,6 +69,40 @@ void publish(const gpb_result &r) {
     IOLog("zeta-gpu: smmu scr0 %08x id0 %08x id1 %08x id2 %08x gfsr %08x smr valid %u first %u %08x s2cr %08x rbbm %08x\n",
           r.scr0, r.id0, r.id1, r.id2, r.gfsr, r.smr_valid, r.smr_first, r.smr_first_val, r.s2cr_first_val, r.rbbm_status);
 }
+constexpr unsigned kGmuBank = 1, kGmuAsid = 1, kGmuSlot = 2, kGmuSid = 5;
+constexpr uint64_t kSmmuWindow = 0x20000;   // ID1 0x30000007: 4 KiB pages, 16 per half
+OSSharedPtr<IOMemoryMap> gSmmuMap;
+void gmuProgress(uint32_t step) {
+    // Before each step, so a hang or abort leaves the step in the log.
+    IOLog("zeta-gpu: gmu context step %u\n", step);
+    native_gpu_power_stage = 0x40 + step;
+}
+void gmuContext(const gpb_result &r) {
+    const bool ready = r.smmu == GPB_DONE && !r.io_error && gpb_gdsc_on(r.cx_gdscr) && !r.smr_valid;
+    if (!ready || !NativeAdrenoGmuContextBringup) {
+        IOLog("zeta-gpu: gmu context %s\n", !NativeAdrenoGmuContextBringup ? "not linked" : "skipped, prerequisites");
+        return;
+    }
+    IODeviceMemory *memory = IODeviceMemory::withRange(GPB_SMMU_BASE, kSmmuWindow);
+    if (memory) {
+        gSmmuMap = OSSharedPtr<IOMemoryMap>(memory->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
+        memory->release();
+    }
+    if (!gSmmuMap) {IOLog("zeta-gpu: gmu context: no SMMU map\n"); return;}
+    NativeAdrenoGmuContextReport &g = native_gpu_gmu_context;
+    const IOReturn status = NativeAdrenoGmuContextBringup(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
+        kSmmuWindow, kGmuBank, kGmuAsid, kGmuSlot, kGmuSid, gmuProgress, &g);
+    IOLog("zeta-gpu: gmu context step %u status %#x kit %u/%u id1 %08x id2 %08x oas %u program phase %u writes %u readback %u "
+          "enabled %u route phase %u writes %u verified %u spans %u\n", g.step, static_cast<unsigned>(status), g.program_status,
+          g.route_status, g.id1, g.id2, g.output_bits, g.program_phase, g.program_writes, g.program_readback_valid,
+          g.program_enabled, g.route_phase, g.route_writes, g.routes_verified, g.spans);
+    const ArmSmmu4KContextImage &v = g.image;
+    IOLog("zeta-gpu: gmu context ttbr0 %016llx sctlr %08x cbar %08x smr %08x s2cr %08x mismatch %03x readback cbar %08x cba2r %x "
+          "tcr %08x tcr2 %08x mair %x/%x ttbr1 %llx sctlr %x\n", static_cast<unsigned long long>(g.ttbr0), g.sctlr, g.cbar,
+          g.smr, g.s2cr, g.mismatch, v.cbar, v.cba2r, v.tcr, v.tcr2, v.mair0, v.mair1, static_cast<unsigned long long>(v.ttbr1),
+          v.sctlr);
+    native_gpu_power_stage = status ? 0x4f : 0x47;
+}
 void probeThread(void *, wait_result_t) {
     IOSleep(10000);
     unsigned have = 0;
@@ -81,6 +125,7 @@ void probeThread(void *, wait_result_t) {
     gpb_run(&io, mode(), have, &native_gpu_power_result);
     native_gpu_power_stage = 3;
     publish(native_gpu_power_result);
+    if (mode() >= 4) gmuContext(native_gpu_power_result);
 }
 }  // namespace
 

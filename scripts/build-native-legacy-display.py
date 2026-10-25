@@ -48,12 +48,36 @@ command += ['-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-deprecated-declar
 (OUT / 'compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 
 
-def compile_unit(source, output, name):
-    unit = [str(source) if part == str(SOURCE) else str(output) if part == str(destination) else part for part in command]
-    result = subprocess.run(unit, cwd=record['directory'], capture_output=True, text=True, timeout=300)
+def compile_unit(source, output, name, extra=(), base=None, check=True):
+    base = base or command
+    unit = [str(source) if part == str(SOURCE) else str(output) if part == str(destination) else part for part in base]
+    result = subprocess.run(unit + list(extra), cwd=record['directory'], capture_output=True, text=True, timeout=300)
     (OUT / (name + '.log')).write_text(result.stdout + result.stderr)
-    if result.returncode:
+    if result.returncode and check:
         raise SystemExit(result.stdout + result.stderr)
+    return result.returncode == 0
+
+
+# The C units of the UniXNU kits take the flags of bsd kern_exec.c, rewritten the same way.
+c_record = json.loads((OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))
+c_command, index = [], 0
+while index < len(c_record['arguments']):
+    value = c_record['arguments'][index]
+    if value == c_record['file']:
+        c_command.append(str(SOURCE))
+    elif value == '-o':
+        c_command += ['-o', str(destination)]
+        index += 1
+    elif value in ('-MF', '-MJ', '-MT', '-MQ'):
+        index += 1
+    elif value == '-Xclang' and c_record['arguments'][index + 1].startswith('-W'):
+        index += 1
+    elif value not in ('-MD', '-MMD', '-MP') and not value.startswith('-W') and value != '-include':
+        c_command.append(value)
+    elif value == '-include':
+        index += 1
+    index += 1
+c_command += ['-Wall', '-Wextra', '-Wno-unused-parameter']
 
 
 compile_unit(SOURCE, destination, 'NativeLegacyDisplay')
@@ -77,7 +101,51 @@ touch = OUT / 'TouchProbe.o'
 compile_unit(TOUCH_PROBE, touch, 'TouchProbe')
 GPU_POWER_PROBE = ROOT / 'kits/zeta/GpuPowerProbe.cpp'
 gpupower = OUT / 'GpuPowerProbe.o'
-compile_unit(GPU_POWER_PROBE, gpupower, 'GpuPowerProbe')
+ADRENO_INCLUDES = ['-I', str(ROOT / 'drivers/NativeAdreno'), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'),
+                   '-I', str(ROOT / 'kits/AdrenoFirmware')]
+compile_unit(GPU_POWER_PROBE, gpupower, 'GpuPowerProbe', ADRENO_INCLUDES)
+# sheng scripts/build-native-adreno-kits.py's NativeAdreno and kit sources, of which the archive takes only the objects the GPU
+# probe needs, as the linker would from an ordinary archive: the libNativeLegacyDisplay.a objects are force-loaded, and the
+# rest of NativeAdreno (the iOS 17 accelerator and its clients) does not belong in this kernel. A unit that does not compile
+# for xnu-12377 only matters if the closure needs it.
+NM = shutil.which('llvm-nm') or 'llvm-nm'
+ADRENO_DIR = OUT / 'adreno'
+ADRENO_DIR.mkdir(exist_ok=True)
+candidates = [p for p in sorted((ROOT / 'drivers/NativeAdreno').glob('NativeAdreno*.cpp'))
+              if p.name not in ('NativeAdrenoClient.cpp', 'NativeAdrenoService.cpp', 'NativeAdrenoAccelerator.cpp')]
+candidates += sorted((ROOT / 'kits/ArmSmmu4K').glob('ArmSmmu4K*.c'))
+candidates += [ROOT / 'kits/AdrenoPM4/AdrenoPM4.c']
+compiled, failed = {}, []
+for source in candidates:
+    obj = ADRENO_DIR / (source.stem + ('.kit.o' if source.suffix == '.c' else '.o'))
+    if compile_unit(source, obj, 'adreno/' + source.stem, ADRENO_INCLUDES, c_command if source.suffix == '.c' else None, False):
+        compiled[source.name] = obj
+    else:
+        failed.append(source.name)
+
+
+def symbols(obj, *flags):
+    out = subprocess.run([NM, '--just-symbol-name', *flags, str(obj)], capture_output=True, text=True, check=True).stdout
+    return set(out.split())
+
+
+definitions = {}
+for name, obj in compiled.items():
+    for symbol in symbols(obj, '--defined-only', '--extern-only'):
+        definitions.setdefault(symbol, name)
+wanted, selected = set(symbols(gpupower, '--undefined-only')), []
+while True:
+    new = sorted({definitions[s] for s in wanted if s in definitions} - set(selected))
+    if not new:
+        break
+    selected += new
+    for name in new:
+        wanted |= symbols(compiled[name], '--undefined-only')
+if '_NativeAdrenoGmuContextBringup' not in definitions or definitions['_NativeAdrenoGmuContextBringup'] not in selected:
+    logs = {name: (OUT / 'adreno' / (Path(name).stem + '.log')).read_text()[-2000:] for name in failed}
+    raise SystemExit('NativeAdrenoGmuContextBringup is not available; units that failed to compile: ' + json.dumps(logs, indent=2))
+adreno_objects = [compiled[name] for name in selected]
+(OUT / 'adreno-closure.json').write_text(json.dumps({'selected': selected, 'not_compiled': failed}, indent=2) + '\n')
 compile_unit(KEY_EVENTS, events, 'NativeKeyStoreEvents')
 subprocess.run([shutil.which('llvm-objcopy') or 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
                 '--globalize-symbol=__GLOBAL__sub_I_NativeKeyStoreEvents.cpp', str(events), str(events_late)],
@@ -95,7 +163,7 @@ if deployment != (2, 26 << 16):
     raise SystemExit(f'NativeLegacyDisplay.o: expected an iOS 26 deployment, not {deployment}')
 archive = OUT / 'libNativeLegacyDisplay.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), str(events_late)],
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), *map(str, adreno_objects), str(events_late)],
                check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'source_sha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(),

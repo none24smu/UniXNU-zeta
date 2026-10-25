@@ -251,6 +251,22 @@ void gpuOn() {
     native_gpu_power_stage = gx ? 0x87 : 0x8f;
 }
 
+// SMMU global and the GMU bank's fault state (GFSR, then FSR, FAR, FSYNR0 of context bank kGmuBank), so a GMU that stopped on a
+// translation fault reads as one. Bank b's page is (page size) << (NUMPAGENDXB + 1) + b * page, from ID1 as sheng computes it.
+void smmuFaults(uint32_t out[5]) {
+    for (unsigned i = 0; i < 5; ++i) out[i] = 0xdeadbeef;
+    const uint32_t id1 = native_gpu_gmu_context.id1;
+    if (!gSmmuMap || !id1) return;
+    const size_t page = (id1 >> 31) ? 0x10000 : 0x1000, bank = (page << (((id1 >> 28) & 7) + 1)) + kGmuBank * page;
+    if (bank + 0x70 > kSmmuWindow) return;
+    volatile uint32_t *base = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
+    out[0] = base[0x48 / 4];
+    out[1] = base[(bank + 0x58) / 4];
+    out[2] = base[(bank + 0x60) / 4];
+    out[3] = base[(bank + 0x64) / 4];
+    out[4] = base[(bank + 0x68) / 4];
+}
+
 void gmuColdStart() {
     native_gpu_power_stage = 0x71;
     IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
@@ -298,6 +314,9 @@ void gmuColdStart() {
           "ao %08x g2h %08x reset %u state %x/%x/%x/%x>%x/%x/%x/%x\n", status, l.phase, l.hash_verified, l.blocks, l.core_version,
           l.hfi_version, l.firmware_init_result, l.hfi_status, l.firmware_ready, l.hfi_ready, l.ao_fault_status,
           l.cm3_fault_status, l.reset_verified, before[0], before[1], before[2], before[3], after[0], after[1], after[2], after[3]);
+    uint32_t f[5];
+    smmuFaults(f);
+    IOLog("zeta-gpu: smmu gfsr %08x gmu bank fsr %08x far %08x%08x fsynr0 %08x\n", f[0], f[1], f[3], f[2], f[4]);
     const AdrenoHfi &q = d.hfi;
     IOLog("zeta-gpu: hfi startup %u stage %u acked %x fw-error %x transport %u sent %u %llu ms skipped %u h %x r %x\n",
           c.protocol_status, p.stage, p.acknowledged_stages, p.firmware_error, p.transport_status, p.published_commands,

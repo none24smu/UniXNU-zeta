@@ -10,14 +10,6 @@
 .set _native_adreno_audit_attr, 0
 .globl _native_adreno_audit_ticks
 .set _native_adreno_audit_ticks, 0
-.globl _native_gop_gpu_abandoned
-.set _native_gop_gpu_abandoned, 0
-.globl _native_gop_gpu_completions
-.set _native_gop_gpu_completions, 0
-.globl _native_gop_gpu_failures
-.set _native_gop_gpu_failures, 0
-.globl _native_gop_gpu_offers
-.set _native_gop_gpu_offers, 0
 .globl _native_hid_input_events
 .set _native_hid_input_events, 0
 .globl _native_hid_input_results

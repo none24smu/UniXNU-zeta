@@ -1,0 +1,34 @@
+--- a/NativeBridgeMetalFrontend.mm	2026-10-25 17:36:55.590473546 -0400
++++ b/NativeBridgeMetalFrontend.mm	2026-10-25 17:36:55.591676295 -0400
+@@ -88,11 +88,18 @@
+  if(FILE *f=fopen(gJournalPath.c_str(),"a")){fwrite(line.data(),1,line.size(),f);fputc('\n',f);fclose(f);}
+ }
+ 
+-@interface NBObject : NSObject
++static std::atomic<uint64_t> gTraceObjectIDs;
++@interface NBObject : NSObject {uint64_t _traceObjectID;}
+ @property(atomic,copy) NSString *label;
+ @end
+ @implementation NBObject
+ - (id<MTLDevice>)device {return gDeviceObject;}
++// Metal's trace identity: Apple's queues, command buffers, encoders and heaps answer globalTraceObjectID, and the UI frameworks read it
++// for signposts (SpringBoard sb4-v2 aborted on -[NBComputeEncoder globalTraceObjectID]). One number per object, never reused.
++- (uint64_t)globalTraceObjectID {
++ @synchronized(self){if(!_traceObjectID)_traceObjectID=++gTraceObjectIDs;}
++ return _traceObjectID;
++}
+ - (void)doesNotRecognizeSelector:(SEL)selector {
+  if(gMissing)gMissing(class_getName(object_getClass(self)),sel_getName(selector));
+  noteProblem([NSString stringWithFormat:@"missing %s %s",class_getName(object_getClass(self)),sel_getName(selector)]);
+@@ -635,6 +642,11 @@
+ - (void)offset:(NSUInteger)offset index:(NSUInteger)index stage:(uint32_t)stage {
+  [self check:nmb_encoder_set_buffer_offset(_handle,stage,offset,(uint32_t)index) what:"setBufferOffset"];
+ }
++// Residency hints for argument-buffer resources: every runtime allocation is resident while it lives, so these have nothing to do.
++- (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u {(void)r;(void)u;}
++- (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u {(void)r;(void)n;(void)u;}
++- (void)useHeap:(id<MTLHeap>)h {(void)h;}
++- (void)useHeaps:(const id<MTLHeap> __unsafe_unretained [])h count:(NSUInteger)n {(void)h;(void)n;}
+ @end
+ 
+ @interface NBComputeEncoder : NBEncoder

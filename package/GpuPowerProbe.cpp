@@ -68,6 +68,7 @@ extern "C" IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *
 extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak));
 extern "C" IOService *native_adreno_published_service() __attribute__((weak));
 extern "C" const char *native_adreno_metal_text(const char **, const char **, uint32_t *) __attribute__((weak));
+extern "C" const char *native_adreno_client_line(const char **) __attribute__((weak));
 // The scanout hand-off the publish unit tunnels (methods 0x7000-0x7003, memory type 'SC') is UniXNU NativeMobileDisplay's
 // NativeGOPPresenter, built beside NativeLegacyDisplay (scripts/build-native-legacy-display.py, sheng-fb-gpu=1).
 // sheng's BootLog.c keeps the render server's exported pipeline caches in its UFS log area; zeta has no export area, so every
@@ -848,7 +849,8 @@ close:
 // PS_HOLD (decode-zeta-pon-log.py, zeta-soc bit 16), which power-cycles DRAM, so the samples cannot be kept for the next boot:
 // the last lines before the log stops are the evidence.
 // The Metal plugin's text on the USB log (the boot page that shows it is off under NOTRACE): each telemetry row when its text
-// changes, and the report (GPU7: self-test, frontend refusals, scanout stats) and report2 (status pieces) lines when they change.
+// changes, the report (GPU7: self-test, frontend refusals, scanout stats) and report2 (status pieces) lines when they change, and a
+// listed client's line.
 // The plugin resends the table every few seconds two characters per marker, so a row can be caught half written; its complete
 // text follows on a later pass.
 void metalText() {
@@ -866,6 +868,10 @@ void metalText() {
     }
     if (r1[0] && strncmp(r1, report, 63)) {strlcpy(report, r1, sizeof report); IOLog("zeta-metal: report %s\n", report);}
     if (r2[0] && strncmp(r2, report2, 63)) {strlcpy(report2, r2, sizeof report2); IOLog("zeta-metal: report2 %s\n", report2);}
+    // A listed client's line (its device failure, or its own frontend status in pieces), with the process that sent it.
+    static char client[64];
+    const char *name = nullptr, *line = native_adreno_client_line ? native_adreno_client_line(&name) : nullptr;
+    if (line && line[0] && strncmp(line, client, 63)) {strlcpy(client, line, sizeof client); IOLog("zeta-metal: client %s %s\n", name, client);}
 }
 
 void beatThread(void *, wait_result_t) {

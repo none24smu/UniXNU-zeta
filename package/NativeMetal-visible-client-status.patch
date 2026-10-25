@@ -1,0 +1,47 @@
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -164,6 +164,36 @@
+         streamText(*gpu, text);
+     }
+ }
++// A listed client's own frontend status (the render server's comes through its telemetry): when it changed, every five seconds, the
++// status line (counters, then the last two problems) in pieces "C<n> <57 characters>" on the marker stream, which the kernel keeps
++// as the client line. The pieces go 1.5 s apart: the kernel's printer reads the line once a second.
++static void clientStatus(unsigned port) {
++    Gpu *gpu = makeGpu(port);
++    if (!gpu) return;
++    pthread_attr_t attributes;
++    pthread_attr_init(&attributes);
++    pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
++    pthread_t thread;
++    pthread_create(&thread, &attributes, [](void *arg) -> void * {
++        Gpu *g = static_cast<Gpu *>(arg);
++        static char full[420], last[420];
++        for (;;) {
++            sleep(5);
++            native_bridge_metal_status(full, sizeof full);
++            if (!strcmp(full, last)) continue;
++            strlcpy(last, full, sizeof last);
++            const size_t length = strlen(full);
++            for (size_t at = 0, n = 0; at < length && n < 8; at += 57, ++n) {
++                char text[64];
++                snprintf(text, sizeof text, "C%zu %.57s", n, full + at);
++                streamText(*g, text);
++                usleep(1500000);
++            }
++        }
++        return nullptr;
++    }, gpu);
++    pthread_attr_destroy(&attributes);
++}
+ static id clientDevice(unsigned port) {
+     if (!listedClient()) return nil;
+     char turnip[1024];
+@@ -196,6 +226,7 @@
+         if (!device && !lastError[0]) lastError = nmb_last_error();
+     }
+     if (!device) clientFailure(port, usable ? "no-device" : "no-cachedir", lastError);
++    else clientStatus(port);
+     return device;
+ }
+ static id deviceForPort(unsigned port) {

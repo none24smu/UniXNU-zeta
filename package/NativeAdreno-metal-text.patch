@@ -1,15 +1,50 @@
 --- a/NativeAdrenoPublish.cpp
 +++ b/NativeAdrenoPublish.cpp
-@@ -720,3 +720,12 @@
+@@ -23,6 +23,9 @@
+ extern "C" void proc_selfname(char *, int);
+ /* The plugin's telemetry table (rows of text the Metal bridge keeps), sent as markers: 0xC000|row starts a row, 0x8000|(a<<7)|b appends two characters. */
+ extern "C" {char native_adreno_metal_rows[48][96];volatile uint32_t native_adreno_metal_rows_seq;}
++/* The same text stream from a listed client (any process but the render server): its own line, so two processes streaming at once
++ * cannot interleave their characters into the render server's report lines. */
++extern "C" {char native_adreno_client_text[64];char native_adreno_client_name[17];}
+ 
+ extern "C" {
+ /* What the processes that reached this driver did, for the boot diagnostic page. Plain counters and short strings. */
+@@ -562,6 +565,19 @@
+             return kIOReturnUnsupported;
+         }
+         if(value>=0x7000 && value<0x8000) {
++            char self[17]={};
++            proc_selfname(self,sizeof self);
++            if(strncmp(self,"backboardd",sizeof self)) {
++                static uint32_t client_length;
++                if(value==0x7fff || value==0x7ffe) {
++                    memset(native_adreno_client_text,0,sizeof native_adreno_client_text);client_length=0;
++                    strlcpy(native_adreno_client_name,self,sizeof native_adreno_client_name);
++                }
++                else if(value<0x7100 && client_length<sizeof(native_adreno_client_text)-1) {
++                    native_adreno_client_text[client_length++]=char(value&0xff);native_adreno_client_text[client_length]=0;
++                }
++                return kIOReturnUnsupported;
++            }
+             /* 0x7ffe starts a line in report (GPU7) instead: the Metal bridge's result, after the raw test's line has been read. */
+             static uint32_t length;
+             static char *line=native_adreno_metal_diag.report2;
+@@ -720,3 +736,17 @@
  {
      return g.service;
  }
 +/* The plugin's text, for a kernel printer (the boot page is off under NOTRACE): the telemetry rows, their sequence, and the report (GPU7)
-+ * and report2 lines. */
++ * and report2 lines; with client, the latest client line and the process that sent it. */
 +extern "C" const char *native_adreno_metal_text(const char **report,const char **report2,uint32_t *seq)
 +{
 +    if(report)*report=native_adreno_metal_diag.report;
 +    if(report2)*report2=native_adreno_metal_diag.report2;
 +    if(seq)*seq=native_adreno_metal_rows_seq;
 +    return native_adreno_metal_rows[0];
++}
++extern "C" const char *native_adreno_client_line(const char **name)
++{
++    if(name)*name=native_adreno_client_name;
++    return native_adreno_client_text;
 +}

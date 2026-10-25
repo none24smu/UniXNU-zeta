@@ -287,6 +287,8 @@ struct Dpu {
     IOTimerEventSource *watch;
     unsigned watched, ticks, healthLogs, underruns;
     uint64_t lastStart;
+    uint32_t pending;                                               // PP done bits of the transfer in flight
+    unsigned transferTimeouts;
     uint32_t dsiLast[sizeof(kDsiRegisters) / sizeof(kDsiRegisters[0])];
     unsigned mode, ctlMask, intfMask, starts;
     bool autorefresh;
@@ -385,15 +387,34 @@ void scanoutSample(const char *when, const Display &display) {
     IOLog("zeta-display: %s scanout %u/%u lit, %u red, alpha 0 %u ff %u, bounds %u,%u-%u,%u, sum %#x\n", when, lit,
         samples, red, transparent, opaque, lit ? left : 0, lit ? top : 0, right, bottom, sum);
 }
-// One frame from memory to each command-mode panel (sde trigger_start), at least 20 ms (over one 60 Hz transfer)
-// after the previous one.
+// Ping-pong done in the MDP top interrupt status (sde_hw_interrupts.c SDE_INTR_PING_PONG_n_DONE): the panel has taken
+// the whole frame of a command-mode transfer. CTL_n drives PP_n here (DsiPanel.cpp: CTL_0 -> PP_0, CTL_1 -> PP_1).
+uint32_t ppDoneBits(unsigned ctls) {return (ctls & 0xfU) << 8;}
+// Wait for the transfer in flight, as sde_encoder_phys_cmd waits for pp_done before the next kickoff: the scanout is
+// not written while the DPU still fetches it, and the next frame starts as soon as the panel (90 Hz timing@1, the mode
+// ABL leaves) took the last one. 40 ms bounds a lost done; the gated callers sleep, never spin with interrupts off.
+void dpuIdle() {
+    if (!gDpu.pending) return;
+    const uint64_t deadline = mach_absolute_time() + 40 * 19200;
+    while ((dpuRead(kTopIntrStatus) & gDpu.pending) != gDpu.pending) {
+        if (mach_absolute_time() > deadline) {
+            gDpu.transferTimeouts++;
+            break;
+        }
+        IODelay(100);
+    }
+    gDpu.pending = 0;
+}
+// One frame from memory to each command-mode panel (sde trigger_start), after the previous transfer is done.
 void dpuKick() {
     if (gDpu.autorefresh || !gDpu.ctlMask) return;
-    const uint64_t now = mach_absolute_time(), spacing = 20 * 19200;
-    if (gDpu.lastStart && now - gDpu.lastStart < spacing) IOSleep((uint32_t)((spacing - (now - gDpu.lastStart)) / 19200) + 1);
+    dpuIdle();
+    const uint32_t done = ppDoneBits(gDpu.ctlMask);
+    dpuWrite(kTopIntrClear, done);
     for (unsigned ctl = 0; ctl < kCtls; ++ctl) {
         if (gDpu.ctlMask & (1U << ctl)) dpuWrite(kCtlBase + ctl * kBlockStride + kCtlStart, 1);
     }
+    gDpu.pending = done;
     gDpu.lastStart = mach_absolute_time();
     gDpu.starts++;
 }
@@ -492,10 +513,11 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
         auto us = [](uint64_t ticks) {return ticks * 10 / 192;};
         const uint64_t n = gTiming.n;
         IOLog("zeta-display: present %llu swaps, copy avg %llu min %llu max %llu us, map avg %llu max %llu us, wait avg %llu "
-            "max %llu us, gap avg %llu min %llu us, rows aperture %llu map %llu first fallback %lld\n", n,
+            "max %llu us, gap avg %llu min %llu us, rows aperture %llu map %llu first fallback %lld, transfer timeouts %u\n", n,
             us(gTiming.copy / n), us(gTiming.copyMin), us(gTiming.copyMax), us(gTiming.map / n), us(gTiming.mapMax),
             us(gTiming.wait / n), us(gTiming.waitMax), gTiming.gaps ? us(gTiming.gap / gTiming.gaps) : 0, us(gTiming.gapMin),
-            gTiming.apertureRows, gTiming.mapRows, gTiming.fallbackRow ? (long long)gTiming.fallbackRow - 1 : -1LL);
+            gTiming.apertureRows, gTiming.mapRows, gTiming.fallbackRow ? (long long)gTiming.fallbackRow - 1 : -1LL,
+            gDpu.transferTimeouts);
         const uint64_t last = gTiming.last;
         gTiming = {};
         gTiming.last = last;
@@ -508,7 +530,8 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     }
     if (gSnap.length) snapSend();
     else if (gSnap.taken < bootArg("zeta-snap") && gDpu.ticks >= 300 && !((gDpu.ticks - 300) % 60)) snapTake(gDisplays[0]);
-    if (gDpu.mode == 3) dpuKick();
+    // The refresh frame, only when no present sent one in the last 400 ms (presents run on this work loop).
+    if (gDpu.mode == 3 && mach_absolute_time() - gDpu.lastStart > 400 * 19200) dpuKick();
     if (gDpu.ticks < 2400 || gDpu.mode == 3) timer->setTimeoutMS(500);
 }
 // Per present, unless autorefresh sends the frames.
@@ -752,6 +775,7 @@ void kickOnce(IOService *self, Display *display) {
         OSSafeReleaseNULL(source);
         return stall(display, request, "scanout busy");
     }
+    if (gDpu.mode >= 2) dpuIdle();
     const uint64_t ready = mach_absolute_time();
     auto from = reinterpret_cast<const unsigned char *>(source->getVirtualAddress());
     // zeta-opaque=1: the source pipe blends with the alpha byte (SSPP format alpha enable), so a render-server frame

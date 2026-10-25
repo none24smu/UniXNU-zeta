@@ -122,6 +122,14 @@ struct Display {
     bool vsyncArmed;
 };
 Display gDisplays[2];
+// Where a present's time goes (sheng's native_legacy_copy_timing_observed, split): mapping the surface, waiting for the
+// scanout, the copy, and the gap since the previous present. Counter ticks, summed per 15 s watch and then cleared.
+struct PresentTiming {uint64_t n, map, mapMax, wait, waitMax, copy, copyMax, gaps, gap, gapMin, last;};
+PresentTiming gTiming;
+void timingAdd(uint64_t &sum, uint64_t &max, uint64_t ticks) {
+    sum += ticks;
+    if (ticks > max) max = ticks;
+}
 
 Display *displayFor(const void *object) {
     for (auto &display : gDisplays) {
@@ -477,6 +485,18 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     const bool full = !(gDpu.ticks++ % 30);
     dpuHealth(full);
     if (full) zeta_soc_health();
+    if (full && gTiming.n) {
+        // Microseconds from 19.2 MHz ticks.
+        auto us = [](uint64_t ticks) {return ticks * 10 / 192;};
+        const uint64_t n = gTiming.n;
+        IOLog("zeta-display: present %llu swaps, copy avg %llu max %llu us, map avg %llu max %llu us, wait avg %llu "
+            "max %llu us, gap avg %llu min %llu us\n", n, us(gTiming.copy / n), us(gTiming.copyMax),
+            us(gTiming.map / n), us(gTiming.mapMax), us(gTiming.wait / n), us(gTiming.waitMax),
+            gTiming.gaps ? us(gTiming.gap / gTiming.gaps) : 0, us(gTiming.gapMin));
+        const uint64_t last = gTiming.last;
+        gTiming = {};
+        gTiming.last = last;
+    }
     if (full && gDpu.watched < 20) {
         char when[16];
         snprintf(when, sizeof(when), "watch %u", gDpu.watched++);
@@ -622,6 +642,7 @@ void kickOnce(IOService *self, Display *display) {
         finishTransfer(self, display, request);
         return;
     }
+    const uint64_t begun = mach_absolute_time();
     IOMemoryDescriptor *memory = gBind.memory(surface);
     const uint64_t stride = gBind.rowBytes(surface), allocation = gBind.allocSize(surface);
     if (!memory || !surfaceBounds(width, height, stride, allocation, memory->getLength()))
@@ -653,10 +674,12 @@ void kickOnce(IOService *self, Display *display) {
                 field<uint32_t>(request, kRequestSwapID), ++staleFrames, display->presented + 1);
         } else if (before != after) ++staleFrames;
     }
+    const uint64_t mapped = mach_absolute_time();
     if (!prepareScanout()) {
         OSSafeReleaseNULL(source);
         return stall(display, request, "scanout busy");
     }
+    const uint64_t ready = mach_absolute_time();
     auto from = reinterpret_cast<const unsigned char *>(source->getVirtualAddress());
     // zeta-opaque=1: the source pipe blends with the alpha byte (SSPP format alpha enable), so a render-server frame
     // with transparent black would not reach the panel as black; the scanout is the top layer and takes it opaque.
@@ -671,7 +694,19 @@ void kickOnce(IOService *self, Display *display) {
         for (uint32_t x = 0; x < width / 2; ++x) out[x] = in[x] | 0xff000000ff000000ULL;
     }
     __asm__ volatile ("dsb sy" ::: "memory");
+    const uint64_t copied = mach_absolute_time();
     OSSafeReleaseNULL(source);
+    // The map figure includes the unmap.
+    timingAdd(gTiming.map, gTiming.mapMax, mapped - begun + mach_absolute_time() - copied);
+    timingAdd(gTiming.wait, gTiming.waitMax, ready - mapped);
+    timingAdd(gTiming.copy, gTiming.copyMax, copied - ready);
+    if (gTiming.last && (!gTiming.gapMin || begun - gTiming.last < gTiming.gapMin)) gTiming.gapMin = begun - gTiming.last;
+    if (gTiming.last) {
+        gTiming.gap += begun - gTiming.last;
+        gTiming.gaps++;
+    }
+    gTiming.last = begun;
+    gTiming.n++;
     dpuStart();
     display->transferred = true;
     if (display->presented < 4 || display->presented % 600 == 0) {

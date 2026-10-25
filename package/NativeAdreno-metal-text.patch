@@ -1,0 +1,15 @@
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -720,3 +720,12 @@
+ {
+     return g.service;
+ }
++/* The plugin's text, for a kernel printer (the boot page is off under NOTRACE): the telemetry rows, their sequence, and the report (GPU7)
++ * and report2 lines. */
++extern "C" const char *native_adreno_metal_text(const char **report,const char **report2,uint32_t *seq)
++{
++    if(report)*report=native_adreno_metal_diag.report;
++    if(report2)*report2=native_adreno_metal_diag.report2;
++    if(seq)*seq=native_adreno_metal_rows_seq;
++    return native_adreno_metal_rows[0];
++}

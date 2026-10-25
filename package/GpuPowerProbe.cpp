@@ -67,6 +67,7 @@ extern "C" IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *
     const NativeAdrenoTimer *, const NativeAdrenoAbiDeviceInfo *, uint32_t, uint32_t) __attribute__((weak));
 extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak));
 extern "C" IOService *native_adreno_published_service() __attribute__((weak));
+extern "C" const char *native_adreno_metal_text(const char **, const char **, uint32_t *) __attribute__((weak));
 // The scanout hand-off the publish unit tunnels (methods 0x7000-0x7003, memory type 'SC') is UniXNU NativeMobileDisplay's
 // NativeGOPPresenter, built beside NativeLegacyDisplay (scripts/build-native-legacy-display.py, sheng-fb-gpu=1).
 // sheng's BootLog.c keeps the render server's exported pipeline caches in its UFS log area; zeta has no export area, so every
@@ -846,6 +847,27 @@ close:
 // otherwise. GX registers are read only while the GX GDSC reports power on. A Zeta reset is a PMIC HARD_RESET triggered by
 // PS_HOLD (decode-zeta-pon-log.py, zeta-soc bit 16), which power-cycles DRAM, so the samples cannot be kept for the next boot:
 // the last lines before the log stops are the evidence.
+// The Metal plugin's text on the USB log (the boot page that shows it is off under NOTRACE): each telemetry row when its text
+// changes, and the report (GPU7: self-test, frontend refusals, scanout stats) and report2 (status pieces) lines when they change.
+// The plugin resends the table every few seconds two characters per marker, so a row can be caught half written; its complete
+// text follows on a later pass.
+void metalText() {
+    static char rows[48][96], report[64], report2[64];
+    const char *r1 = nullptr, *r2 = nullptr;
+    uint32_t seq = 0;
+    const char *table = native_adreno_metal_text ? native_adreno_metal_text(&r1, &r2, &seq) : nullptr;
+    if (!table) return;
+    for (unsigned i = 0; i < 48; ++i) {
+        const char *row = table + 96 * i;
+        if (row[0] && strncmp(row, rows[i], 95)) {
+            strlcpy(rows[i], row, sizeof rows[i]);
+            IOLog("zeta-metal: row %u %s\n", i, rows[i]);
+        }
+    }
+    if (r1[0] && strncmp(r1, report, 63)) {strlcpy(report, r1, sizeof report); IOLog("zeta-metal: report %s\n", report);}
+    if (r2[0] && strncmp(r2, report2, 63)) {strlcpy(report2, r2, sizeof report2); IOLog("zeta-metal: report2 %s\n", report2);}
+}
+
 void beatThread(void *, wait_result_t) {
     if (!gSmmuMap) return;
     volatile uint32_t *smmu = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
@@ -890,6 +912,7 @@ void beatThread(void *, wait_result_t) {
             IOLog("zeta-beat: %llu ms gfsr %08x fsr %08x/%08x far %08x%08x fsynr %08x crumb %08x ao %08x g2h %08x sysreset %08x gx %08x "
                   "cx %08x clients %u/%u rbbm %08x int %08x rb %x/%x hwfault %08x cp-int %08x\n", now / 1000000, r[0], r[1], r[2], r[4],
                   r[3], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], g[0], g[1], g[2], g[3], g[4], g[5]);
+        if (n % 4 == 0) metalText();
         memcpy(last, r, sizeof r);
         lastRoutes = routes;
         IOSleep(250);

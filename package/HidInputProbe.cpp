@@ -113,8 +113,8 @@ bool gFromEdge[kContacts];
 }  // namespace edge
 }  // namespace
 // [0] installed (negative: the slot check that failed), [1] contacts begun, [2] of them at an edge, [3] skipped events,
-// [4] digitizer events dispatched
-extern "C" {volatile int32_t native_touch_edge_stats[5];}
+// [4] digitizer events dispatched, [5] [6] the last contact's begin x and y as the driver normalised them (IOFixed)
+extern "C" {volatile int32_t native_touch_edge_stats[7];}
 namespace {
 namespace edge {
 template <typename R, typename... A> R call(void *object, unsigned slot, A... args) {
@@ -132,6 +132,8 @@ bool mark(void *child) {
         const int32_t y = call<int32_t, uint32_t, IOOptionBits>(child, kGetFixed, kY, 0);
         gFromEdge[index] = x < kEdgeX || x > 65536 - kEdgeX || y < kEdgeY || y > 65536 - kEdgeY;
         native_touch_edge_stats[1] = native_touch_edge_stats[1] + 1;
+        native_touch_edge_stats[5] = x;
+        native_touch_edge_stats[6] = y;
         if (gFromEdge[index]) native_touch_edge_stats[2] = native_touch_edge_stats[2] + 1;
     }
     const bool edged = gFromEdge[index];
@@ -310,7 +312,8 @@ void touchSend() {
     for (unsigned i = 0; i < count; ++i, ++slot) {
         const unsigned x = clamp(xs[i]), y = clamp(ys[i]);
         uint8_t *f = report + 1 + slot * 6;
-        f[0] = 3; f[1] = (uint8_t)ids[i];   // Tip Switch, Confidence f[2] = (uint8_t)x; f[3] = (uint8_t)(x >> 8); f[4] = (uint8_t)y; f[5] = (uint8_t)(y >> 8);
+        f[0] = 3; f[1] = (uint8_t)ids[i];   // Tip Switch, Confidence
+        f[2] = (uint8_t)x; f[3] = (uint8_t)(x >> 8); f[4] = (uint8_t)y; f[5] = (uint8_t)(y >> 8);
         gPrevIds[slot] = ids[i]; gPrevX[slot] = x; gPrevY[slot] = y;
     }
     for (unsigned j = count; j < kFingers; ++j) {
@@ -398,9 +401,10 @@ void tick(OSObject *, IOTimerEventSource *source) {
         if (native_touch_hid_reports != gTouchLogged && counterNow() >= gTouchLogNext) {
             gTouchLogged = native_touch_hid_reports;
             gTouchLogNext = counterNow() + 10 * gFrequency;
-            IOLog("zeta-hid: touch reports %u last %#x, digitizer events %d, edge %d begun %d at edge %d skipped %d\n", gTouchLogged,
-                  gTouchResult, native_touch_edge_stats[4], native_touch_edge_stats[0], native_touch_edge_stats[1],
-                  native_touch_edge_stats[2], native_touch_edge_stats[3]);
+            IOLog("zeta-hid: touch reports %u last %#x, digitizer events %d, edge %d begun %d at edge %d skipped %d, "
+                  "last begin %d/65536,%d/65536\n", gTouchLogged, gTouchResult, native_touch_edge_stats[4], native_touch_edge_stats[0],
+                  native_touch_edge_stats[1], native_touch_edge_stats[2], native_touch_edge_stats[3], native_touch_edge_stats[5],
+                  native_touch_edge_stats[6]);
         }
     }
     if (driver && homeRequested()) {

@@ -830,75 +830,50 @@ int clientRound(IOService *svc, int &ok, int &n, IOReturn &err, int &errAt, uint
     uc->release();
     return matched;
 }
-// After the publish, a heartbeat every 250 ms into the CVP carve-out (stock DT pil_cvp_region@85c00000, reserved in the zeta UEFI
-// memory map and never loaded here; the zap region is secure once the zap shader is authenticated): a ring of the last 16
-// samples of the SMMU fault state (GFSR, GMU and GPU bank FSR), all six stream routes (SMR, S2CR), the GMU breadcrumb, AO and
-// G2H words, sysreset and the GX and CX GDSCRs. A reset that stops the cores leaves the ring in DRAM; the next boot logs it
-// (beatReport) before it starts a new one. Only CX-side blocks are read: nothing in GX, which may be collapsed.
-constexpr uint64_t kBeatPhys = 0x85c00000;
-constexpr uint32_t kBeatMagic = 0x5a474842, kBeatHead = 4, kBeatWords = 24, kBeatRing = 16;
-OSSharedPtr<IOMemoryMap> gBeatMap;
-volatile uint32_t *beatWords() {
-    if (!gBeatMap) {
-        IODeviceMemory *m = IODeviceMemory::withRange(kBeatPhys, 0x1000);
-        if (m) {
-            gBeatMap = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
-            m->release();
-        }
-    }
-    return gBeatMap ? reinterpret_cast<volatile uint32_t *>(gBeatMap->getVirtualAddress()) : nullptr;
-}
-uint32_t gBeatBoot;
-void beatReport() {
-    // Logged before the first access, so a page the secure side protects still names itself before the reset.
-    IOLog("zeta-gpu: beat page %#llx\n", static_cast<unsigned long long>(kBeatPhys));
-    IOSleep(30);
-    volatile uint32_t *b = beatWords();
-    if (!b) {IOLog("zeta-gpu: beat page not mapped\n"); return;}
-    if (b[0] != kBeatMagic) {IOLog("zeta-gpu: no earlier beat (%08x)\n", b[0]); return;}
-    gBeatBoot = b[1];
-    const uint32_t count = b[2];
-    IOLog("zeta-gpu: earlier beat boot %u samples %u\n", b[1], count);
-    const uint32_t first = count > kBeatRing ? count - kBeatRing : 0;
-    for (uint32_t n = first; n < count; ++n) {
-        volatile uint32_t *r = b + kBeatHead + (n % kBeatRing) * kBeatWords;
-        IOLog("zeta-gpu: beat %u %u ms gfsr %08x fsr %08x/%08x smr %08x %08x %08x %08x %08x %08x s2cr %08x %08x %08x %08x %08x "
-              "%08x crumb %08x ao %08x g2h %08x sysreset %08x gx %08x cx %08x\n", r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8],
-              r[9], r[10], r[11], r[12], r[13], r[14], r[15], r[16], r[17], r[18], r[19], r[20], r[21], r[22]);
-        IOSleep(10);
-    }
-    b[0] = 0;
-    __asm__ volatile("dsb sy" ::: "memory");
-}
+// After the publish, a heartbeat on the USB log: every 250 ms a sample of the SMMU fault state (GFSR, the GMU bank's FSR, the
+// GPU bank's FSR with its FAR and FSYNR0), all six stream routes (SMR, S2CR, logged when they change), the GMU breadcrumb, AO and
+// G2H words, sysreset, the GX and CX GDSCRs and the user-client opens and closes; a line whenever a field changes and every 2 s
+// otherwise. Only CX-side blocks are read: nothing in GX, which may be collapsed. A Zeta reset is a PMIC HARD_RESET triggered by
+// PS_HOLD (decode-zeta-pon-log.py, zeta-soc bit 16), which power-cycles DRAM, so the samples cannot be kept for the next boot:
+// the last lines before the log stops are the evidence.
 void beatThread(void *, wait_result_t) {
-    volatile uint32_t *b = beatWords();
-    if (!b || !gSmmuMap) return;
-    b[1] = gBeatBoot + 1; b[2] = 0; b[0] = kBeatMagic;
+    if (!gSmmuMap) return;
     volatile uint32_t *smmu = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
     const uint32_t id1 = native_gpu_gmu_context.id1;
     const size_t page = (id1 >> 31) ? 0x10000 : 0x1000, banks = page << (((id1 >> 28) & 7) + 1);
+    uint32_t last[16] = {}, lastRoutes = 0;
     for (uint32_t n = 0;; ++n) {
-        volatile uint32_t *r = b + kBeatHead + (n % kBeatRing) * kBeatWords;
+        uint32_t r[16] = {};
+        r[0] = smmu[0x48 / 4];
+        r[1] = smmu[(banks + kGmuBank * page + 0x58) / 4];
+        r[2] = smmu[(banks + 0x58) / 4];
+        r[3] = r[2] ? smmu[(banks + 0x60) / 4] : 0;
+        r[4] = r[2] ? smmu[(banks + 0x64) / 4] : 0;
+        r[5] = r[2] ? smmu[(banks + 0x68) / 4] : 0;
+        r[6] = coldRd(ZetaGmuCore, kGmuReg(0x1d3f7));
+        r[7] = coldRd(ZetaGmuCore, kGmuReg(0x23b03));
+        r[8] = coldRd(ZetaGmuCore, kG2hInfo);
+        r[9] = coldRd(ZetaGmuCore, kSysReset);
+        rd(nullptr, GPB_WIN_GPUCC, 0x100c, &r[10]);
+        rd(nullptr, GPB_WIN_GPUCC, 0x106c, &r[11]);
+        r[12] = native_adreno_publish_stats(&r[13]);
+        uint32_t routes = 0, smr[6], s2cr[6];
+        for (unsigned i = 0; i < 6; ++i) {
+            smr[i] = smmu[(0x800 + 4 * i) / 4];
+            s2cr[i] = smmu[(0xc00 + 4 * i) / 4];
+            routes = routes * 31 + smr[i] * 7 + s2cr[i];
+        }
         uint64_t now = 0;
         absolutetime_to_nanoseconds(mach_absolute_time(), &now);
-        r[0] = n;
-        r[1] = static_cast<uint32_t>(now / 1000000);
-        r[2] = smmu[0x48 / 4];
-        r[3] = smmu[(banks + kGmuBank * page + 0x58) / 4];
-        r[4] = smmu[(banks + 0x58) / 4];
-        for (unsigned i = 0; i < 6; ++i) {r[5 + i] = smmu[(0x800 + 4 * i) / 4]; r[11 + i] = smmu[(0xc00 + 4 * i) / 4];}
-        r[17] = coldRd(ZetaGmuCore, kGmuReg(0x1d3f7));
-        r[18] = coldRd(ZetaGmuCore, kGmuReg(0x23b03));
-        r[19] = coldRd(ZetaGmuCore, kG2hInfo);
-        r[20] = coldRd(ZetaGmuCore, kSysReset);
-        uint32_t gx = 0, cx = 0;
-        rd(nullptr, GPB_WIN_GPUCC, 0x100c, &gx);
-        rd(nullptr, GPB_WIN_GPUCC, 0x106c, &cx);
-        r[21] = gx;
-        r[22] = cx;
-        __asm__ volatile("dsb sy" ::: "memory");
-        b[2] = n + 1;
-        __asm__ volatile("dsb sy" ::: "memory");
+        if (n == 0 || routes != lastRoutes)
+            IOLog("zeta-beat: %llu ms routes smr %08x %08x %08x %08x %08x %08x s2cr %08x %08x %08x %08x %08x %08x\n", now / 1000000,
+                  smr[0], smr[1], smr[2], smr[3], smr[4], smr[5], s2cr[0], s2cr[1], s2cr[2], s2cr[3], s2cr[4], s2cr[5]);
+        if (n % 8 == 0 || memcmp(r, last, sizeof r))
+            IOLog("zeta-beat: %llu ms gfsr %08x fsr %08x/%08x far %08x%08x fsynr %08x crumb %08x ao %08x g2h %08x sysreset %08x gx %08x "
+                  "cx %08x clients %u/%u\n", now / 1000000, r[0], r[1], r[2], r[4], r[3], r[5], r[6], r[7], r[8], r[9], r[10], r[11],
+                  r[12], r[13]);
+        memcpy(last, r, sizeof r);
+        lastRoutes = routes;
         IOSleep(250);
     }
 }
@@ -992,7 +967,6 @@ void gmuColdStart() {
     }
     if (!gGmuFirmware) {IOLog("zeta-gpu: cold start skipped, no /chosen zeta-gpu-gmu in the ADT\n"); return;}
     lastTrace();
-    beatReport();
     if (!NativeAdrenoGmuContextPayloads) {IOLog("zeta-gpu: cold start: payloads not linked\n"); return;}
     NativeAdrenoGmuPayload payloads[5];
     const IOReturn got = NativeAdrenoGmuContextPayloads(payloads);

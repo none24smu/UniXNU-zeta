@@ -124,7 +124,9 @@ struct Display {
 Display gDisplays[2];
 // Where a present's time goes (sheng's native_legacy_copy_timing_observed, split): mapping the surface, waiting for the
 // scanout, the copy, and the gap since the previous present. Counter ticks, summed per 15 s watch and then cleared.
-struct PresentTiming {uint64_t n, map, mapMax, wait, waitMax, copy, copyMax, gaps, gap, gapMin, last;};
+// zeta-copy=1 adds the rows each path copied (aperture, surface map) and the first row a present fell back at.
+struct PresentTiming {uint64_t n, map, mapMax, wait, waitMax, copy, copyMax, copyMin, gaps, gap, gapMin, last;
+                      uint64_t apertureRows, mapRows, fallbackRow;};
 PresentTiming gTiming;
 void timingAdd(uint64_t &sum, uint64_t &max, uint64_t ticks) {
     sum += ticks;
@@ -489,10 +491,11 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
         // Microseconds from 19.2 MHz ticks.
         auto us = [](uint64_t ticks) {return ticks * 10 / 192;};
         const uint64_t n = gTiming.n;
-        IOLog("zeta-display: present %llu swaps, copy avg %llu max %llu us, map avg %llu max %llu us, wait avg %llu "
-            "max %llu us, gap avg %llu min %llu us\n", n, us(gTiming.copy / n), us(gTiming.copyMax),
-            us(gTiming.map / n), us(gTiming.mapMax), us(gTiming.wait / n), us(gTiming.waitMax),
-            gTiming.gaps ? us(gTiming.gap / gTiming.gaps) : 0, us(gTiming.gapMin));
+        IOLog("zeta-display: present %llu swaps, copy avg %llu min %llu max %llu us, map avg %llu max %llu us, wait avg %llu "
+            "max %llu us, gap avg %llu min %llu us, rows aperture %llu map %llu first fallback %lld\n", n,
+            us(gTiming.copy / n), us(gTiming.copyMin), us(gTiming.copyMax), us(gTiming.map / n), us(gTiming.mapMax),
+            us(gTiming.wait / n), us(gTiming.waitMax), gTiming.gaps ? us(gTiming.gap / gTiming.gaps) : 0, us(gTiming.gapMin),
+            gTiming.apertureRows, gTiming.mapRows, gTiming.fallbackRow ? (long long)gTiming.fallbackRow - 1 : -1LL);
         const uint64_t last = gTiming.last;
         gTiming = {};
         gTiming.last = last;
@@ -626,7 +629,7 @@ uint64_t memoryAttribute(uintptr_t va) {
 // invalidated first; a copyback page is coherent with the client's cache as it is.
 bool apertureRead(unsigned char *to, const unsigned char *from, size_t bytes, bool invalidate) {
     while (bytes) {
-        const size_t chunk = bytes < 0x1000 - (uintptr_t(from) & 0xfff) ? bytes : 0x1000 - (uintptr_t(from) & 0xfff);
+        const size_t left = PAGE_SIZE - (uintptr_t(from) & PAGE_MASK), chunk = bytes < left ? bytes : left;
         const uint64_t pa = kvtophys(vm_offset_t(from));
         if (!pa || pa < gPhysBase || pa - gPhysBase >= real_phys_size) return false;
         const auto aperture = reinterpret_cast<const unsigned char *>(phystokv(pa));
@@ -659,7 +662,7 @@ void copyProbe(const unsigned char *from, uint64_t stride, unsigned char *to, ui
         read += middle - start;
     }
     const uint64_t pa = kvtophys(vm_offset_t(from));
-    const unsigned wimg = pa ? pmap_cache_attributes(unsigned(pa >> 12)) : 0;
+    const unsigned wimg = pa ? pmap_cache_attributes(unsigned(pa >> PAGE_SHIFT)) : 0;
     const uint64_t start = mach_absolute_time();
     bool ok = true;
     for (uint32_t row = 0; row < 64 && ok; ++row) ok = apertureRead(line, from + row * stride, bytes, wimg != 2);
@@ -751,13 +754,18 @@ void kickOnce(IOService *self, Display *display) {
     if (display->presented % 60 == 1) copyProbe(from, stride, destination, display->rowBytes, width);
     bool aperture = !opaque && bootArg("zeta-copy") == 1;
     const uint64_t page = aperture ? kvtophys(vm_offset_t(from)) : 0;
-    const bool invalidate = !page || pmap_cache_attributes(unsigned(page >> 12)) != 2;
+    const bool invalidate = !page || pmap_cache_attributes(unsigned(page >> PAGE_SHIFT)) != 2;
     for (uint32_t row = 0; row < height; ++row) {
         if (aperture) {
             aperture = apertureRead(destination + (uint64_t)row * display->rowBytes, from + row * stride, (size_t)width * 4,
                 invalidate);
-            if (aperture) continue;
+            if (aperture) {
+                gTiming.apertureRows++;
+                continue;
+            }
+            if (!gTiming.fallbackRow || row + 1 < gTiming.fallbackRow) gTiming.fallbackRow = row + 1;
         }
+        gTiming.mapRows++;
         if (!opaque) {
             memcpy(destination + (uint64_t)row * display->rowBytes, from + row * stride, (size_t)width * 4);
             continue;
@@ -773,6 +781,7 @@ void kickOnce(IOService *self, Display *display) {
     timingAdd(gTiming.map, gTiming.mapMax, mapped - begun + mach_absolute_time() - copied);
     timingAdd(gTiming.wait, gTiming.waitMax, ready - mapped);
     timingAdd(gTiming.copy, gTiming.copyMax, copied - ready);
+    if (!gTiming.copyMin || copied - ready < gTiming.copyMin) gTiming.copyMin = copied - ready;
     if (gTiming.last && (!gTiming.gapMin || begun - gTiming.last < gTiming.gapMin)) gTiming.gapMin = begun - gTiming.last;
     if (gTiming.last) {
         gTiming.gap += begun - gTiming.last;

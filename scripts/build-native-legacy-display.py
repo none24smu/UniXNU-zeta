@@ -101,7 +101,14 @@ touch = OUT / 'TouchProbe.o'
 compile_unit(TOUCH_PROBE, touch, 'TouchProbe')
 GPU_POWER_PROBE = ROOT / 'kits/zeta/GpuPowerProbe.cpp'
 gpupower = OUT / 'GpuPowerProbe.o'
-ADRENO_INCLUDES = ['-I', str(ROOT / 'drivers/NativeAdreno'), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'),
+# The board's NativeAdreno patches (kits/zeta/NativeAdreno-*.patch, in name order) apply to a copy of the driver: the upstream
+# submodule is not ours to change. NativeAdreno-16k-vm.patch: xnu-12377 keeps 16 KiB VM pages over the 4 KiB granule.
+ADRENO_SOURCE = OUT / 'adreno-src'
+shutil.rmtree(ADRENO_SOURCE, ignore_errors=True)
+shutil.copytree(ROOT / 'drivers/NativeAdreno', ADRENO_SOURCE, ignore=shutil.ignore_patterns('.git'))
+for patch in sorted((ROOT / 'kits/zeta').glob('NativeAdreno-*.patch')):
+    subprocess.run(['patch', '-p1', '--forward', '-d', str(ADRENO_SOURCE), '-i', str(patch)], check=True)
+ADRENO_INCLUDES = ['-I', str(ADRENO_SOURCE), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'),
                    '-I', str(ROOT / 'kits/AdrenoFirmware')]
 compile_unit(GPU_POWER_PROBE, gpupower, 'GpuPowerProbe', ADRENO_INCLUDES)
 # sheng scripts/build-native-adreno-kits.py's NativeAdreno and kit sources, of which the archive takes only the objects the GPU
@@ -111,7 +118,7 @@ compile_unit(GPU_POWER_PROBE, gpupower, 'GpuPowerProbe', ADRENO_INCLUDES)
 NM = shutil.which('llvm-nm') or 'llvm-nm'
 ADRENO_DIR = OUT / 'adreno'
 ADRENO_DIR.mkdir(exist_ok=True)
-candidates = [p for p in sorted((ROOT / 'drivers/NativeAdreno').glob('NativeAdreno*.cpp'))
+candidates = [p for p in sorted(ADRENO_SOURCE.glob('NativeAdreno*.cpp'))
               if p.name not in ('NativeAdrenoClient.cpp', 'NativeAdrenoService.cpp', 'NativeAdrenoAccelerator.cpp')]
 candidates += sorted((ROOT / 'kits/ArmSmmu4K').glob('ArmSmmu4K*.c'))
 candidates += [ROOT / 'kits/AdrenoPM4/AdrenoPM4.c']

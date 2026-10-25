@@ -1,0 +1,40 @@
+diff --git a/NativeAdrenoCpu.cpp b/NativeAdrenoCpu.cpp
+index 862de46..ee4a58a 100644
+--- a/NativeAdrenoCpu.cpp
++++ b/NativeAdrenoCpu.cpp
+@@ -36,7 +36,10 @@ IOReturn NativeAdrenoQueryCpu4K(NativeAdrenoCpuState *out)
+     out->kernel_page_bytes=page_size;
+     out->kernel_map_page_bytes=vm_map_page_size(kernel_map);
+     enable_preemption();
+-    bool native=PAGE_SIZE==4096 && out->kernel_page_bytes==4096 && out->kernel_map_page_bytes==4096 &&
++    /* The translation granule is what the GPU and its SMMU share with the CPU: 4 KiB for TTBR0 and TTBR1. The VM page above it may be
++     * 4 KiB or 16 KiB (xnu-12377 on a 4 KiB granule keeps 16 KiB VM pages); a VM page is then four granules, and a ppnum_t counts VM
++     * pages. */
++    bool native=(PAGE_SIZE==4096 || PAGE_SIZE==16384) && out->kernel_page_bytes==PAGE_SIZE && out->kernel_map_page_bytes==PAGE_SIZE &&
+         ((out->tcr>>14)&3)==0 && ((out->tcr>>30)&3)==2 &&
+         (out->sctlr&1) && (out->ttbr1&UINT64_C(0x0000fffffffff000));
+     return native?kIOReturnSuccess:kIOReturnUnsupported;
+@@ -119,9 +122,10 @@ IOReturn NativeAdrenoSetPagesCacheMode(const NativeAdrenoPhysicalSpan *spans,siz
+             span.physical<gPhysBase || span.physical+span.bytes-gPhysBase>gPhysSize)return kIOReturnBadArgument;
+         pages+=span.bytes/4096;
+     }
++    /* The attribute belongs to a VM page: every VM page a span touches. */
+     for(size_t i=0;i<count;++i)
+-        for(uint64_t offset=0;offset<spans[i].bytes;offset+=4096)
+-            pmap_set_cache_attributes((ppnum_t)((spans[i].physical+offset)>>12),write_combined?VM_WIMG_WCOMB:VM_WIMG_USE_DEFAULT);
++        for(uint64_t page=spans[i].physical&~(uint64_t)PAGE_MASK;page<spans[i].physical+spans[i].bytes;page+=PAGE_SIZE)
++            pmap_set_cache_attributes((ppnum_t)(page>>PAGE_SHIFT),write_combined?VM_WIMG_WCOMB:VM_WIMG_USE_DEFAULT);
+     if(write_combined)__atomic_fetch_add(&native_adreno_cache_stats[4],pages,__ATOMIC_RELAXED);
+     else __atomic_fetch_sub(&native_adreno_cache_stats[4],pages,__ATOMIC_RELAXED);
+     return kIOReturnSuccess;
+@@ -134,8 +138,8 @@ IOReturn NativeAdrenoReassertWriteCombined(const NativeAdrenoPhysicalSpan *spans
+         const NativeAdrenoPhysicalSpan &span=spans[i];
+         if(!span.bytes || ((span.physical|span.bytes)&4095) || span.physical>UINT64_MAX-span.bytes ||
+             span.physical<gPhysBase || span.physical+span.bytes-gPhysBase>gPhysSize)return kIOReturnBadArgument;
+-        for(uint64_t offset=0;offset<span.bytes;offset+=4096) {
+-            const ppnum_t pn=(ppnum_t)((span.physical+offset)>>12);
++        for(uint64_t page=span.physical&~(uint64_t)PAGE_MASK;page<span.physical+span.bytes;page+=PAGE_SIZE) {
++            const ppnum_t pn=(ppnum_t)(page>>PAGE_SHIFT);
+             /* From the default attribute the pmap also cleans and invalidates the page (pmap_sync_wimg), so lines a cacheable view
+              * dirtied reach DRAM before the GPU reads it. */
+             if((pmap_cache_attributes(pn)&VM_WIMG_MASK)!=VM_WIMG_WCOMB) {pmap_set_cache_attributes(pn,VM_WIMG_WCOMB);++*reset;}

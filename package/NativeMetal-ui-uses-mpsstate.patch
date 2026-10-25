@@ -1,0 +1,88 @@
+--- a/bridge/NativeMetalObjects.h
++++ b/bridge/NativeMetalObjects.h
+@@ -119,6 +119,8 @@
+ void nmb_compute_pipeline_release(NmbComputePipeline *);
+ uint64_t nmb_compute_pipeline_max_threads(const NmbComputePipeline *);
+ uint64_t nmb_compute_pipeline_execution_width(const NmbComputePipeline *);
++uint64_t nmb_compute_pipeline_static_threadgroup_memory(const NmbComputePipeline *);
++bool nmb_compute_pipeline_required_threads(const NmbComputePipeline *, uint64_t out[3]);   /* zeros where the descriptor requires none */
+ 
+ struct NmbColorAttachment {
+     uint64_t format, write_mask, blending, source_rgb, destination_rgb, rgb_operation, source_alpha, destination_alpha, alpha_operation;
+--- a/bridge/NativeMetalObjects.rs
++++ b/bridge/NativeMetalObjects.rs
+@@ -1054,6 +1054,24 @@
+     guard(0, || Ok(get(pipeline)?.0.thread_execution_width() as u64))
+ }
+ 
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_compute_pipeline_static_threadgroup_memory(pipeline: *const NmbComputePipeline) -> u64 {
++    guard(0, || Ok(get(pipeline)?.0.static_threadgroup_memory_length() as u64))
++}
++
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_compute_pipeline_required_threads(pipeline: *const NmbComputePipeline, out: *mut u64) -> bool {
++    guard(false, || {
++        if out.is_null() {
++            return Err("null size".into());
++        }
++        let size = get(pipeline)?.0.required_threads_per_threadgroup();
++        // SAFETY: the header's three words.
++        unsafe { std::slice::from_raw_parts_mut(out, 3) }.copy_from_slice(&[size.width, size.height, size.depth]);
++        Ok(true)
++    })
++}
++
+ #[repr(C)]
+ pub struct NmbColorAttachment {
+     pub format: u64,
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -134,6 +134,10 @@
+ - (MTLTextureCompressionType)compressionType {return MTLTextureCompressionTypeLossless;} \
+ - (NSInteger)sparseTextureTier {return 0; /* MTLSparseTextureTierNone: the enum is macOS-only in the iOS SDK */} \
+ - (int)setOwnerWithIdentity:(unsigned)identity {(void)identity;return 46; /* KERN_NOT_SUPPORTED */} \
++- (NSUInteger)resourceSize {return [self allocatedSize];} \
++- (NSInteger)sparseBufferTier {return 0;} \
++- (void)addDebugMarker:(NSString *)marker range:(NSRange)range {(void)marker;(void)range;} \
++- (void)removeAllDebugMarkers {} \
+ - (void)waitUntilComplete {waitForResource(self);}
+ // No bindless resource table: an object's GPU resource ID (argument buffers tier 2) is the null ID.
+ #define NB_NO_RESOURCE_ID \
+@@ -488,6 +492,15 @@
+ - (NSUInteger)maxTotalThreadsPerThreadgroup {return nmb_compute_pipeline_max_threads(_handle);}
+ - (NSUInteger)threadExecutionWidth {return nmb_compute_pipeline_execution_width(_handle);}
+ - (NSUInteger)allocatedSize {return 0;}   // the runtime keeps no figure for a pipeline's shader memory
++// The kernel's own threadgroup memory and required threadgroup size: MPS sizes its dispatches and dynamic threadgroup memory from them.
++- (NSUInteger)staticThreadgroupMemoryLength {return nmb_compute_pipeline_static_threadgroup_memory(_handle);}
++- (MTLSize)requiredThreadsPerThreadgroup {
++ uint64_t s[3]={};
++ if(!nmb_compute_pipeline_required_threads(_handle,s))noteProblem([NSString stringWithFormat:@"requiredThreadsPerThreadgroup: %@",lastError()]);
++ return MTLSizeMake(s[0],s[1],s[2]);
++}
++- (BOOL)supportIndirectCommandBuffers {return NO;}
++- (MTLShaderValidation)shaderValidation {return MTLShaderValidationDefault;}
+ NB_NO_RESOURCE_ID
+ @end
+ @interface NBRenderPipeline : NBObject
+@@ -587,6 +600,7 @@
+ @property(nonatomic,strong) dispatch_group_t schedulingHandlers;
+ @property(nonatomic) BOOL schedulingDelivered;
+ @property(nonatomic) MTLCommandBufferErrorOption errorOptions;   // kept for the caller; the runtime reports no encoder execution status
++@property(nonatomic,strong) NSMutableDictionary *userDictionaryStorage;
+ - (void)refuse:(NSString *)what;
+ @end
+ @interface NBEncoder : NBObject
+@@ -935,6 +949,12 @@
+ }
+ - (void)useResidencySet:(id)set {(void)set;}
+ - (void)useResidencySets:(const id __unsafe_unretained [])sets count:(NSUInteger)n {(void)sets;(void)n;}
++// _MTLCommandBuffer's dictionary for its users' own state (MPS keeps its per-buffer state there), made on first use.
++- (NSMutableDictionary *)userDictionary {
++ @synchronized(self){if(!_userDictionaryStorage)_userDictionaryStorage=[NSMutableDictionary new];return _userDictionaryStorage;}
++}
++// Shader logs: the runtime has no shader logging, so a finished buffer has none.
++- (id<NSFastEnumeration>)logs {return @[];}
+ - (id<MTLRenderCommandEncoder>)renderCommandEncoderWithDescriptor:(MTLRenderPassDescriptor *)d {
+  NmbRenderPassDescriptor pass={};
+  {

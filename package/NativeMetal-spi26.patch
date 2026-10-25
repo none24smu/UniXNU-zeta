@@ -1,6 +1,158 @@
 --- a/NativeBridgeMetalFrontend.mm
 +++ b/NativeBridgeMetalFrontend.mm
-@@ -781,6 +781,9 @@
+@@ -105,13 +105,23 @@
+ static NSMutableSet *gInFlight;
+ static void waitForResource(id resource);
+ // Resource SPI the runtime has no state for: no protected content (Metal's default options), and no owner transfer
+-// (memory attribution is the kernel driver's, by the importing task), refused as not supported.
++// (memory attribution is the kernel driver's, by the importing task), refused as not supported. iOS 26 QuartzCore also names
++// the process a resource works for (IOGPUMetalResource setResponsibleProcess:, v@:i), accepted and not kept for the same
++// reason; asks for aliasing (none: a heap placement is never reused while its resource lives, isAliasable stays NO); and
++// reads the compression and sparse tiers (_MTLResource): resources here are uncompressed and never sparse.
+ #define NB_RESOURCE_SPI \
+ - (uint64_t)protectionOptions {return 0;} \
+ - (id<MTLHeap>)heap {return _parentHeap;} \
+ - (BOOL)isAliasable {return NO;} \
++- (void)makeAliasable {} \
++- (void)setResponsibleProcess:(int)pid {(void)pid;} \
++- (MTLTextureCompressionType)compressionType {return MTLTextureCompressionTypeLossless;} \
++- (MTLSparseTextureTier)sparseTextureTier {return MTLSparseTextureTierNone;} \
+ - (int)setOwnerWithIdentity:(unsigned)identity {(void)identity;return 46; /* KERN_NOT_SUPPORTED */} \
+ - (void)waitUntilComplete {waitForResource(self);}
++// No bindless resource table: an object's GPU resource ID (argument buffers tier 2) is the null ID.
++#define NB_NO_RESOURCE_ID \
++- (MTLResourceID)gpuResourceID {MTLResourceID none;memset(&none,0,sizeof none);return none;}
+ @interface NBBuffer : NBObject
+ @property(nonatomic) NmbBuffer *handle;
+ @property(nonatomic) MTLResourceOptions options;
+@@ -128,6 +138,7 @@
+ @property(nonatomic) IOSurfaceRef surface;
+ @property(nonatomic) NSUInteger offset,rowBytes;
+ @property(nonatomic,strong) id<MTLTexture> parent;
++@property(nonatomic) NSUInteger parentLevel,parentSlice;   // a view's first level and slice in its parent
+ @property(nonatomic,strong) id<MTLHeap> parentHeap;
+ @property(nonatomic) NSUInteger heapOffset;
+ @end
+@@ -152,6 +163,7 @@
+ }
+ - (NSUInteger)allocatedSize {return nmb_buffer_length(_handle);}
+ - (IOSurfaceRef)iosurface {return nullptr;}   // a buffer is never the backing of a surface here (surfaces back textures)
++- (NSUInteger)bufferOffset {return 0;}         // a buffer is its own allocation: its GPU address already includes a heap placement
+ NB_RESOURCE_SPI
+ @end
+ // Reuse only an import still held by a texture/view or pending command. Weak
+@@ -212,6 +224,31 @@
+ - (NSUInteger)bufferBytesPerRow {return _rowBytes;}
+ - (id<MTLTexture>)parentTexture {return _parent;}
+ - (NSUInteger)rotation {return 0;}
++// iOS 26 texture queries (IOGPUMetalTexture, AGXTexture): textures here are linear and uncompressed, never sparse or shareable.
++// The size counts the bytes a texture holds: a surface's allocation, a buffer texture's rows, nothing for a view (its parent
++// holds them); a private texture's is the descriptor's extent at 4 bytes a sample, the runtime keeping no other figure.
++- (NSUInteger)allocatedSize {
++ if(_parent)return 0;
++ if(_surface)return IOSurfaceGetAllocSize(_surface);
++ const NSUInteger images=MAX(_descriptor.depth,1ULL)*MAX(_descriptor.array_length,1ULL);
++ if(_rowBytes)return _rowBytes*_descriptor.height*images;
++ return _descriptor.width*_descriptor.height*images*MAX(_descriptor.samples,1ULL)*4;
++}
++- (MTLHazardTrackingMode)hazardTrackingMode {return (MTLHazardTrackingMode)((_descriptor.options&MTLResourceHazardTrackingModeMask)>>MTLResourceHazardTrackingModeShift);}
++- (BOOL)allowGPUOptimizedContents {return NO;}
++- (BOOL)isSparse {return NO;}
++- (NSUInteger)firstMipmapInTail {return 0;}
++- (NSUInteger)tailSizeInBytes {return 0;}
++- (BOOL)isShareable {return NO;}
++- (MTLSharedTextureHandle *)newSharedTextureHandle {return nil;}
++- (NSUInteger)parentRelativeLevel {return _parentLevel;}
++- (NSUInteger)parentRelativeSlice {return _parentSlice;}
++- (id<MTLResource>)rootResource {
++ if(_parent)return [(id)_parent rootResource];
++ return !_surface && _buffer?(id<MTLResource>)_buffer:(id<MTLResource>)self;
++}
++- (MTLTextureSwizzleChannels)swizzle {return MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed,MTLTextureSwizzleGreen,MTLTextureSwizzleBlue,MTLTextureSwizzleAlpha);}
++NB_NO_RESOURCE_ID
+ - (MTLPurgeableState)setPurgeableState:(MTLPurgeableState)state {
+  const uint64_t answer=nmb_texture_set_purgeable_state(_handle,state);
+  if(!answer)NBLOG(@"native-metal: texture setPurgeableState refused: %@",lastError());
+@@ -230,7 +267,28 @@
+ }
+ - (id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format textureType:(MTLTextureType)type levels:(NSRange)levels slices:(NSRange)slices {
+  const uint64_t l[2]={levels.location,levels.length},s[2]={slices.location,slices.length};
+- return [self view:nmb_texture_new_view(_handle,format,type,l,s,false)];
++ NBTexture *view=(NBTexture *)[self view:nmb_texture_new_view(_handle,format,type,l,s,false)];
++ view.parentLevel=levels.location;view.parentSlice=slices.location;
++ return (id<MTLTexture>)view;
++}
++// Views take the identity swizzle only: the runtime's views reinterpret the format, they do not remap channels.
++static bool identitySwizzle(MTLTextureSwizzleChannels c) {
++ return c.red==MTLTextureSwizzleRed && c.green==MTLTextureSwizzleGreen && c.blue==MTLTextureSwizzleBlue && c.alpha==MTLTextureSwizzleAlpha;
++}
++- (id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format textureType:(MTLTextureType)type levels:(NSRange)levels slices:(NSRange)slices swizzle:(MTLTextureSwizzleChannels)swizzle {
++ if(!identitySwizzle(swizzle)){NBLOG(@"native-metal: swizzled texture view refused (%u %u %u %u)",swizzle.red,swizzle.green,swizzle.blue,swizzle.alpha);return nil;}
++ return [self newTextureViewWithPixelFormat:format textureType:type levels:levels slices:slices];
++}
++// iOS 26's descriptor form (MTLTextureViewDescriptor: pixelFormat, textureType, levelRange, sliceRange, swizzle), read by key so the
++// build does not depend on the SDK declaring the class.
++- (id<MTLTexture>)newTextureViewWithDescriptor:(id)d {
++ if(!d)return nil;
++ const MTLPixelFormat format=(MTLPixelFormat)[[d valueForKey:@"pixelFormat"] unsignedIntegerValue];
++ const MTLTextureType type=(MTLTextureType)[[d valueForKey:@"textureType"] unsignedIntegerValue];
++ const NSRange levels=[[d valueForKey:@"levelRange"] rangeValue],slices=[[d valueForKey:@"sliceRange"] rangeValue];
++ MTLTextureSwizzleChannels swizzle=MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed,MTLTextureSwizzleGreen,MTLTextureSwizzleBlue,MTLTextureSwizzleAlpha);
++ if(NSValue *value=[d valueForKey:@"swizzle"])[value getValue:&swizzle size:sizeof swizzle];
++ return [self newTextureViewWithPixelFormat:format textureType:type levels:levels slices:slices swizzle:swizzle];
+ }
+ - (void)replaceRegion:(MTLRegion)r mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice withBytes:(const void *)bytes bytesPerRow:(NSUInteger)row bytesPerImage:(NSUInteger)image {
+  const uint64_t region[6]={r.origin.x,r.origin.y,r.origin.z,r.size.width,r.size.height,r.size.depth};
+@@ -413,6 +471,8 @@
+ - (void)dealloc {nmb_compute_pipeline_release(_handle);}
+ - (NSUInteger)maxTotalThreadsPerThreadgroup {return nmb_compute_pipeline_max_threads(_handle);}
+ - (NSUInteger)threadExecutionWidth {return nmb_compute_pipeline_execution_width(_handle);}
++- (NSUInteger)allocatedSize {return 0;}   // the runtime keeps no figure for a pipeline's shader memory
++NB_NO_RESOURCE_ID
+ @end
+ @interface NBRenderPipeline : NBObject
+ @property(nonatomic) NmbRenderPipeline *handle;
+@@ -424,6 +484,8 @@
+  uint64_t s[3]={};if(!nmb_device_max_threads_per_threadgroup(gDevice,s))return 0;
+  return s[0];
+ }
++- (NSUInteger)allocatedSize {return 0;}   // the runtime keeps no figure for a pipeline's shader memory
++NB_NO_RESOURCE_ID
+ @end
+ @interface NBSampler : NBObject
+ @property(nonatomic) NmbSampler *handle;
+@@ -431,12 +493,14 @@
+ @implementation NBSampler
+ - (void)dealloc {nmb_sampler_release(_handle);}
+ - (NSUInteger)pixelFormat {return MTLPixelFormatInvalid;}   // SPI: a sampler built from a plain descriptor names no format
++NB_NO_RESOURCE_ID
+ @end
+ @interface NBDepthStencil : NBObject
+ @property(nonatomic) NmbDepthStencil *handle;
+ @end
+ @implementation NBDepthStencil
+ - (void)dealloc {nmb_depth_stencil_release(_handle);}
++NB_NO_RESOURCE_ID
+ @end
+ 
+ // ---- events and fences ----
+@@ -574,6 +638,7 @@
+ @end
+ @implementation NBComputeEncoder
+ - (MTLDispatchType)dispatchType {return MTLDispatchTypeSerial;}
++- (void)setImageblockWidth:(NSUInteger)w height:(NSUInteger)h {(void)w;(void)h;[self.commandBuffer refuse:@"imageblocks are not supported"];}
+ - (void)setComputePipelineState:(id<MTLComputePipelineState>)state {
+  if(![(id)state isKindOfClass:[NBComputePipeline class]]){[self.commandBuffer refuse:@"foreign compute pipeline"];return;}
+  [self check:nmb_compute_set_pipeline(self.handle,[(NBComputePipeline *)state handle]) what:"setComputePipelineState"];
+@@ -664,6 +729,7 @@
+ - (NSUInteger)tileWidth {return 0;}
+ - (NSUInteger)tileHeight {return 0;}
+ - (void)setTileTexture:(id<MTLTexture>)t atIndex:(NSUInteger)i {(void)t;(void)i;[self.commandBuffer refuse:@"tile shaders are not supported"];}
++- (void)setTileBuffer:(id<MTLBuffer>)b offset:(NSUInteger)o atIndex:(NSUInteger)i {(void)b;(void)o;(void)i;[self.commandBuffer refuse:@"tile shaders are not supported"];}
+ - (void)setTileBytes:(const void *)p length:(NSUInteger)n atIndex:(NSUInteger)i {(void)p;(void)n;(void)i;[self.commandBuffer refuse:@"tile shaders are not supported"];}
+ - (void)dispatchThreadsPerTile:(MTLSize)size {(void)size;[self.commandBuffer refuse:@"tile shaders are not supported"];}
+ - (void)dispatchThreadsPerTile:(MTLSize)size inRegion:(MTLRegion)region {(void)size;(void)region;[self.commandBuffer refuse:@"tile shaders are not supported"];}
+@@ -781,6 +847,9 @@
  // the command buffer.
  - (uint64_t)protectionOptions {return 0;}
  - (void)setProtectionOptions:(uint64_t)options {if(options)[self refuse:[NSString stringWithFormat:@"protection options 0x%llx",options]];}
@@ -10,3 +162,11 @@
  - (void)refuse:(NSString *)what {
   if(!self.encodeFailure){self.encodeFailure=what;NBLOG(@"native-metal: command buffer refused: %@",what);}
  }
+@@ -1131,6 +1200,7 @@
+ - (NSUInteger)size {return nmb_heap_size(_handle);}
+ - (NSUInteger)usedSize {return nmb_heap_used_size(_handle);}
+ - (NSUInteger)currentAllocatedSize {return nmb_heap_allocated_size(_handle);}
++- (NSUInteger)allocatedSize {return nmb_heap_size(_handle);}   // _MTLHeap's: the heap's whole extent
+ - (NSUInteger)maxAvailableSizeWithAlignment:(NSUInteger)alignment {return nmb_heap_max_available_size(_handle,alignment);}
+ - (MTLResourceOptions)resourceOptions {return _options;}
+ - (MTLStorageMode)storageMode {return (MTLStorageMode)((_options&MTLResourceStorageModeMask)>>MTLResourceStorageModeShift);}

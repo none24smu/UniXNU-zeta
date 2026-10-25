@@ -169,6 +169,9 @@ static unsigned process_worker_status,process_capture_age;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
+extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_steps_seen[8];
+extern volatile uint64_t __attribute__((weak_import)) native_smp_reset_trace[16];
+extern uint64_t __attribute__((weak_import)) cpu_ttep;
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
 extern int nprocs;
 extern volatile int native_ufs_owner_root_accepted;   // the xnu-12377 owner root binding
@@ -1185,11 +1188,24 @@ static void monitor(void *arg, wait_result_t result) {
         if(&armcpu_smp_requested) {
           // Each secondary core's bring-up step (ArmCpu: 1 nub started .. 4 PSCI CPU_ON issued .. 7 running), CPU_ON's result
           // and the failure code, so a boot whose cores stay down shows where they stopped.
-          char cores[160];unsigned n=0;cores[0]=0;
+          char cores[240];unsigned n=0;cores[0]=0;
           for(unsigned c=1;c<8&&n<sizeof(cores)-24;++c)
             n+=(unsigned)snprintf(cores+n,sizeof(cores)-n," c%u=%u/%d/%u",c,armcpu_smp_step[c],armcpu_smp_psci_rc[c],armcpu_smp_fail[c]);
           printf("zeta-trace: smp req=%u run=%u cond=%u avail=%d boot=%x%s\n",armcpu_smp_requested,armcpu_smp_running,
                  armcpu_smp_conduit,machine_info.logical_cpu,armcpu_boot_mpidr&0xffffff,cores);
+          // Every ArmCpu step each core reached (bit n = step n), and its last reset-path step (XNU_NATIVE_SMP_TRACE: 1 reset
+          // vector .. 5 TTBR1 loaded .. 6 MMU on, 16-19 arm_init_cpu) with the TTBR1 it loaded, against the real cpu_ttep.
+          // Steps 1-5 were stored with the MMU off, so this core's copy of the trace is discarded before the read.
+          if(&armcpu_smp_steps_seen && &native_smp_reset_trace && &cpu_ttep) {
+            for(uintptr_t line=(uintptr_t)native_smp_reset_trace;line<(uintptr_t)native_smp_reset_trace+sizeof(uint64_t)*16;line+=64)
+              __asm__ volatile("dc civac, %0" :: "r"(line) : "memory");
+            __asm__ volatile("dsb sy" ::: "memory");
+            n=0;cores[0]=0;
+            for(unsigned c=1;c<8&&n<sizeof(cores)-32;++c)
+              n+=(unsigned)snprintf(cores+n,sizeof(cores)-n," c%u=%x/%llu/%llx",c,armcpu_smp_steps_seen[c],
+                 (unsigned long long)(native_smp_reset_trace[2*c]&0xff),(unsigned long long)native_smp_reset_trace[2*c+1]);
+            printf("zeta-trace: smp-reset ttep=%llx%s\n",(unsigned long long)cpu_ttep,cores);
+          }
         }
         for(unsigned i=0;i<10;++i)if(boot_process_rows[i][0])printf("zeta-trace: proc %.119s\n",boot_process_rows[i]);
         if(&boot_ui_trace_role_rows)

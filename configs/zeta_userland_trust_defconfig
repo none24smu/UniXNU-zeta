@@ -17,6 +17,8 @@ CONFIG_XNU_NATIVE_UFS_SM8350=y
 # Link the real DT platform expert and GICv3 boot CPU provider into XNU 12377.
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
+# Each secondary core's reset-path steps, MMU-off ones included, for the boot progress smp line.
+CONFIG_XNU_NATIVE_SMP_TRACE=y
 # Polling CDC ACM transport after ExitBootServices; ADT selects the USB0 aperture.
 CONFIG_XNU_NATIVE_DWC3_CONSOLE=y
 # Cortex-A55/A78/X1 are ARMv8.2 (Arm TRMs), so PAN is present.

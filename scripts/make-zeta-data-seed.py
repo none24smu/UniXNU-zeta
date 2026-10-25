@@ -13,12 +13,16 @@ packed as DBRDISK1 (DarwinBoot Test/packed_ramdisk.py) for the PackedRAMDisk pla
 --overlay DIR adds DIR's tree to the volume, root owned with its own modes (DIR/ngpu/addons becomes /private/var/ngpu/addons): the
 owner GPU addon content UniXNU's add-gpu-plugin-data.py stages (the Metal plugin bundle, its .publish and .clients files, the probe
 daemon and its job), for the kernel's boot-time addon mount (sheng-gpu-addon=1).
+--preferences PLIST merges PLIST's keys into backboardd.plist and .GlobalPreferences.plist of mobile and root, as add-gpu-plugin-data.py
+--publish does for the render server's framebuffer keys: an existing file keeps its other keys, owner and mode; a new one is owned by
+the home's user, mode 644.
 """
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import stat
 import subprocess
@@ -65,7 +69,30 @@ def overlay(tree, directories, files):
             files.append(dict(source=source, path=target, uid=0, gid=0, mode=f'{stat.S_IMODE(info.st_mode):o}'))
 
 
-def plan(var, overlays=()):
+def preferences(values, directories, files, scratch):
+    """Merge values into the render server's own and the global preference domain of mobile and root."""
+    byPath = {f['path']: f for f in files}
+    for home in ('mobile', 'root'):
+        owner = MOBILE if home == 'mobile' else 0
+        parts = [home, 'Library', 'Preferences']
+        for depth in range(1, 4):
+            path = '/' + '/'.join(parts[:depth])
+            if path not in directories:
+                directories[path] = (owner, owner, '755')
+        for name in ('backboardd.plist', '.GlobalPreferences.plist'):
+            path = f'/{home}/Library/Preferences/{name}'
+            entry = byPath.get(path)
+            merged = plistlib.loads(Path(entry['source']).read_bytes()) if entry else {}
+            merged.update(values)
+            source = Path(scratch) / f'{home}-{name}'
+            source.write_bytes(plistlib.dumps(merged, fmt=plistlib.FMT_BINARY))
+            if entry:
+                entry['source'] = str(source)
+            else:
+                files.append(dict(source=str(source), path=path, uid=owner, gid=owner, mode='644'))
+
+
+def plan(var, overlays=(), merge=None, scratch=None):
     """Directories, files and symlinks of the OS /private/var as Data volume paths, with owners and modes."""
     directories, files, symlinks = {}, [], []
     for current, subdirs, names in os.walk(var):
@@ -92,6 +119,8 @@ def plan(var, overlays=()):
                 raise SystemExit(f'Unexpected file type: {path}')
     for tree in overlays:
         overlay(tree, directories, files)
+    if merge:
+        preferences(merge, directories, files, scratch)
     added = []
     for name in RUNTIME + SKELETON:
         parts = name.split('/')
@@ -120,6 +149,8 @@ def main():
     parser.add_argument('--busybox', type=Path)
     parser.add_argument('--overlay', action='append', default=[], type=Path,
                         help='owner tree added under /private/var (root owned, modes kept); may repeat')
+    parser.add_argument('--preferences', type=Path,
+                        help='plist whose keys are merged into backboardd and global preferences of mobile and root')
     parser.add_argument('--mkapfs', default='mkapfs',
                         help='apfsprogs mkapfs; it must set INODE_NO_RSRC_FORK on the directories it makes (1bd1c1c)')
     args = parser.parse_args()
@@ -135,9 +166,10 @@ def main():
     for tree in args.overlay:
         if not tree.is_dir():
             raise SystemExit(f'--overlay must be a directory: {tree}')
-    directories, files, symlinks, added = plan(var, args.overlay)
+    merge = plistlib.loads(args.preferences.read_bytes()) if args.preferences else None
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='zeta-data-seed-', dir=args.output.parent) as temporary:
+        directories, files, symlinks, added = plan(var, args.overlay, merge, temporary)
         raw = args.raw or Path(temporary) / 'data.apfs'
         if raw.exists():
             raise SystemExit(f'Refuse to overwrite {raw}')
@@ -164,6 +196,7 @@ def main():
             raise SystemExit('mkapfs did not produce a raw APFS container')
         raw_sha256 = hashlib.sha256(data).hexdigest()
         del data
+        file_bytes = sum(os.path.getsize(f['source']) for f in files)
         sys.path.insert(0, str(ROOT.parent / 'UniXNU/drivers/DarwinBoot/Test'))
         from packed_ramdisk import pack
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -172,8 +205,8 @@ def main():
                   packed_bytes=args.output.stat().st_size,
                   packed_sha256=hashlib.sha256(args.output.read_bytes()).hexdigest(),
                   directories=len(directories), files=len(files), symlinks=len(symlinks),
-                  file_bytes=sum(os.path.getsize(f['source']) for f in files), added_directories=added,
-                  overlays=[str(tree) for tree in args.overlay],
+                  file_bytes=file_bytes, added_directories=added,
+                  overlays=[str(tree) for tree in args.overlay], preferences=merge,
                   seed='OS private/var excluding staged_system_apps; owners, modes and symlinks preserved; '
                        'runtime and user-management directories added; no keys or user records')
     args.output.with_suffix('.json').write_text(json.dumps(report, indent=2) + '\n')

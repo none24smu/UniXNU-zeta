@@ -1,0 +1,15 @@
+diff --git a/ArmSmmu4KStreams.c b/ArmSmmu4KStreams.c
+index 4145ef2..d6582c7 100644
+--- a/ArmSmmu4KStreams.c
++++ b/ArmSmmu4KStreams.c
+@@ -40,7 +40,9 @@ static ArmSmmu4KStatus scan(const ArmSmmu4KIo *io,const ArmSmmu4KStream *s,unsig
+             unsigned live=valid(r->id0,smr,s2cr);
+             if(attached) {
+                 if(smr!=(valid_smr(r->id0)|s[own].sid) || s2cr!=(bank|valid_s2cr(r->id0)))return ArmSmmu4KStateMismatch;
+-            } else if((s2cr&~valid_s2cr(r->id0))!=FAULT ||
++            /* A free slot faults its stream (TYPE 2). Its other fields are what the reset or the firmware left:
++             * the Qualcomm Adreno SMMU resets them to 0x007220ff (CBNDX 0xff, MemAttr/RACFG/WACFG set), not 0. */
++            } else if(((s2cr&~valid_s2cr(r->id0))&(3u<<16))!=FAULT ||
+                 (live && smr!=(valid_smr(r->id0)|s[own].sid)))return ArmSmmu4KBusy;
+             ++r->streams_verified;
+         } else if(valid(r->id0,smr,s2cr)) {

@@ -630,7 +630,13 @@ uint64_t memoryAttribute(uintptr_t va) {
 bool apertureRead(unsigned char *to, const unsigned char *from, size_t bytes, bool invalidate) {
     while (bytes) {
         const size_t left = PAGE_SIZE - (uintptr_t(from) & PAGE_MASK), chunk = bytes < left ? bytes : left;
-        const uint64_t pa = kvtophys(vm_offset_t(from));
+        uint64_t pa = kvtophys(vm_offset_t(from));
+        // The surface map is entered on first touch (copyprobe-v1: only the rows the probe had read translated): one read
+        // through it faults the page in.
+        if (!pa) {
+            (void)*reinterpret_cast<const volatile unsigned char *>(from);
+            pa = kvtophys(vm_offset_t(from));
+        }
         if (!pa || pa < gPhysBase || pa - gPhysBase >= real_phys_size) return false;
         const auto aperture = reinterpret_cast<const unsigned char *>(phystokv(pa));
         if (invalidate) {

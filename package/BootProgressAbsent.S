@@ -10,12 +10,6 @@
 .set _native_adreno_audit_attr, 0
 .globl _native_adreno_audit_ticks
 .set _native_adreno_audit_ticks, 0
-.globl _native_adreno_coherence
-.set _native_adreno_coherence, 0
-.globl _native_adreno_wc_audit
-.set _native_adreno_wc_audit, 0
-.globl _native_adreno_wc_distrusted
-.set _native_adreno_wc_distrusted, 0
 .globl _native_gop_gpu_abandoned
 .set _native_gop_gpu_abandoned, 0
 .globl _native_gop_gpu_completions

@@ -14,7 +14,7 @@
  @interface NBQueue : NBObject
  @property(nonatomic) NmbQueue *handle;
  @property(atomic,strong) dispatch_queue_t completionQueue;   // SPI: where command buffers' handlers run (nil: the runtime's thread)
-+@property(atomic) uint64_t gpuPriority,backgroundGPUPriority;   // SPI: what the setters were last given (not applied: one hardware queue)
++@property(atomic) uint64_t keptPriority,keptBackgroundPriority;   // SPI: what the setters were last given (not applied: one hardware queue)
  @end
  @interface NBCommandBuffer : NBObject {
  @public
@@ -51,16 +51,16 @@
  // GPU priorities are not applied (one hardware queue): reported as not applied.
 -- (BOOL)setGPUPriority:(NSUInteger)priority {(void)priority;return NO;}
 -- (BOOL)setBackgroundGPUPriority:(NSUInteger)priority {(void)priority;return NO;}
-+- (BOOL)setGPUPriority:(NSUInteger)priority {self.gpuPriority=priority;return NO;}
-+- (BOOL)setBackgroundGPUPriority:(NSUInteger)priority {self.backgroundGPUPriority=priority;return NO;}
++- (BOOL)setGPUPriority:(NSUInteger)priority {self.keptPriority=priority;return NO;}
++- (BOOL)setBackgroundGPUPriority:(NSUInteger)priority {self.keptBackgroundPriority=priority;return NO;}
 +// iOS 26 IOGPUMetalCommandQueue SPI: RenderBox reads both priorities after making its queue, to give them back later.
-+- (BOOL)setGPUPriority:(uint64_t)priority offset:(uint16_t)offset {(void)offset;self.gpuPriority=priority;return NO;}
-+- (BOOL)setBackgroundGPUPriority:(uint64_t)priority offset:(uint16_t)offset {(void)offset;self.backgroundGPUPriority=priority;return NO;}
++- (BOOL)setGPUPriority:(uint64_t)priority offset:(uint16_t)offset {(void)offset;self.keptPriority=priority;return NO;}
++- (BOOL)setBackgroundGPUPriority:(uint64_t)priority offset:(uint16_t)offset {(void)offset;self.keptBackgroundPriority=priority;return NO;}
 +- (BOOL)_setGPUPriority:(uint64_t)priority backgroundPriority:(uint64_t)background {
-+ self.gpuPriority=priority;self.backgroundGPUPriority=background;return NO;
++ self.keptPriority=priority;self.keptBackgroundPriority=background;return NO;
 +}
-+- (uint64_t)getGPUPriority {return self.gpuPriority;}
-+- (uint64_t)getBackgroundGPUPriority {return self.backgroundGPUPriority;}
++- (uint64_t)getGPUPriority {return self.keptPriority;}
++- (uint64_t)getBackgroundGPUPriority {return self.keptBackgroundPriority;}
 +- (BOOL)supportsBackgroundAppRole {return NO;}
 +// Command buffers complete in submission order on the one hardware ring: an empty one committed last completes after all the others.
 +- (void)finish {

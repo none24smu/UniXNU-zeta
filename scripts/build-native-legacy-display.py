@@ -129,6 +129,9 @@ candidates = [p for p in sorted(ADRENO_SOURCE.glob('NativeAdreno*.cpp'))
               if p.name not in ('NativeAdrenoClient.cpp', 'NativeAdrenoService.cpp', 'NativeAdrenoAccelerator.cpp')]
 candidates += sorted(SMMU_SOURCE.glob('ArmSmmu4K*.c'))
 candidates += [ROOT / 'kits/AdrenoPM4/AdrenoPM4.c']
+# The A660 GMU cold start (modes 7 and 8) over the kit's HFI transport and startup messages.
+candidates += [ROOT / 'kits/zeta/ZetaGmu.c', ROOT / 'kits/zeta/ZetaGmuVotes.c']
+candidates += [ROOT / 'kits/AdrenoFirmware' / (name + '.c') for name in ('AdrenoFirmware', 'AdrenoHfi', 'AdrenoHfiStartup')]
 compiled, failed = {}, []
 for source in candidates:
     obj = ADRENO_DIR / (source.stem + ('.kit.o' if source.suffix == '.c' else '.o'))

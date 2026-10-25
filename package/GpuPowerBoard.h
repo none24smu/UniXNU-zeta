@@ -218,6 +218,187 @@ static inline void gpb_run(const struct gpb_io *io, unsigned mode, unsigned have
     }
 }
 
+// Mode 5/6: the GMU clocks of the stock GMU node (clock-names gmu_clk cxo_clk axi_clk memnoc_clk ahb_clk hub_clk:
+// gpu_cc_cx_gmu, gpu_cc_cxo, gcc_ddrss_gpu_axi, gcc_gpu_memnoc_gfx, gpu_cc_ahb, gpu_cc_hub_cx_int), plus the kgsl-3d0 node's
+// gcc_gpu_snoc_dvm_gfx and gpu_cc_hub_aon. gpucc-lahaina.ko: lucid_5lpe PLL0 at 0x0 and PLL1 at 0x100 (MODE 0x0, L 0x04,
+// CAL_L 0x08, USER_CTL 0x0c, USER_CTL_U 0x10, CONFIG_CTL 0x18/0x1c/0x20, TEST_CTL_U1 0x2c, OPMODE 0x38, ALPHA 0x40);
+// gpu_cc_gmu_clk_src cmd_rcgr 0x1120 and gpu_cc_hub_clk_src 0x117c (hid 5 bits, HW_CLK_CTRL_MODE, enable_safe_config).
+#define GPB_CC_PLL0 0x0000
+#define GPB_CC_PLL1 0x0100
+#define GPB_PLL_MODE 0x00
+#define GPB_PLL_L_VAL 0x04
+#define GPB_PLL_CAL_L_VAL 0x08
+#define GPB_PLL_USER_CTL 0x0c
+#define GPB_PLL_USER_CTL_U 0x10
+#define GPB_PLL_CONFIG_CTL 0x18
+#define GPB_PLL_CONFIG_CTL_U 0x1c
+#define GPB_PLL_CONFIG_CTL_U1 0x20
+#define GPB_PLL_TEST_CTL_U1 0x2c
+#define GPB_PLL_OPMODE 0x38
+#define GPB_PLL_ALPHA_VAL 0x40
+#define GPB_PLL_OUTCTRL (1u << 0)
+#define GPB_PLL_RESET_N (1u << 2)
+#define GPB_PLL_RUN 1u
+#define GPB_CC_GMU_RCGR 0x1120
+#define GPB_CC_HUB_RCGR 0x117c
+#define GPB_RCG_UPDATE (1u << 0)
+#define GPB_RCG_ROOT_EN (1u << 1)
+#define GPB_RCG_ROOT_OFF (1u << 31)
+#define GPB_RCG_CFG_MASK (0x1fu | (7u << 8) | (3u << 12) | (1u << 20))   // hid, SRC_SEL, MODE, HW_CLK_CTRL
+#define GPB_RCG_HW_CLK_CTRL (1u << 20)
+// ftbl_gpu_cc_gmu_clk_src F(200000000, P_GPLL0_OUT_MAIN_DIV, 1.5) on parent_map_0 (cfg 6): GMU_FREQUENCY. ftbl_gpu_cc_hub_clk_src
+// F(150000000, P_GPLL0_OUT_MAIN_DIV, 2) on parent_map_1 (cfg 6): a6xx_gmu_enable_clks' hub rate. F() stores 2 * div - 1.
+#define GPB_GMU_CFG (GPB_RCG_HW_CLK_CTRL | 6u << 8 | 2u)
+#define GPB_HUB_CFG (GPB_RCG_HW_CLK_CTRL | 6u << 8 | 3u)
+#define GPB_CC_CXO_AON_CLK 0x1004
+#define GPB_CC_CXO_CLK 0x109c
+#define GPB_CC_HUB_AON_CLK 0x1178
+#define GPB_CC_HUB_CX_INT_CLK 0x1204
+#define GPB_GPLL0_VOTES ((1u << 15) | (1u << 16))   // gcc_gpu_gpll0_clk_src, gcc_gpu_gpll0_div_clk_src
+
+struct gpb_gmu_clocks {
+    uint32_t pll0_mode, pll0_opmode, pll1_mode, pll1_opmode, pll1_l, pll1_cal_l;
+    uint32_t gmu_cmd, gmu_cfg, hub_cmd, hub_cfg;
+    uint32_t cx_gmu, cxo, hub_cx_int, hub_aon, axi, memnoc, dvm, gpll0_vote;
+    int done;                            // 0: GPUCC was not readable, nothing was read
+};
+// A branch digit: bit 0 enable, bit 1 CLK_OFF.
+static inline unsigned gpb_branch_digit(uint32_t cbcr) {return (cbcr & GPB_CBCR_ENABLE) | ((cbcr >> 30) & 2);}
+// The GMU registers are read only with CX on and both gpu_cc_ahb_clk and gpu_cc_cx_gmu_clk running.
+static inline int gpb_gmu_regs_readable(const struct gpb_result *r, const struct gpb_gmu_clocks *k) {
+    return k->done && gpb_gdsc_on(r->cx_gdscr) && gpb_clock_on(r->cc_ahb) && gpb_clock_on(k->cx_gmu);
+}
+static inline void gpb_read_gmu_clocks(const struct gpb_io *io, struct gpb_result *r, struct gpb_gmu_clocks *k) {
+    __builtin_memset(k, 0, sizeof *k);
+    if (r->cc != GPB_DONE || !gpb_cfg_ahb_enabled(r->cfg_ahb_after)) return;
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_PLL0 + GPB_PLL_MODE, &k->pll0_mode);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_PLL0 + GPB_PLL_OPMODE, &k->pll0_opmode);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_PLL1 + GPB_PLL_MODE, &k->pll1_mode);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_PLL1 + GPB_PLL_OPMODE, &k->pll1_opmode);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_PLL1 + GPB_PLL_L_VAL, &k->pll1_l);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_PLL1 + GPB_PLL_CAL_L_VAL, &k->pll1_cal_l);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_GMU_RCGR, &k->gmu_cmd);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_GMU_RCGR + 4, &k->gmu_cfg);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_HUB_RCGR, &k->hub_cmd);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_HUB_RCGR + 4, &k->hub_cfg);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_CX_GMU_CLK, &k->cx_gmu);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_CXO_CLK, &k->cxo);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_HUB_CX_INT_CLK, &k->hub_cx_int);
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_HUB_AON_CLK, &k->hub_aon);
+    gpb_rd(io, r, GPB_WIN_GCC_GPU, GPB_GCC_DDRSS_GPU_AXI, &k->axi);
+    gpb_rd(io, r, GPB_WIN_GCC_GPU, GPB_GCC_GPU_MEMNOC_GFX, &k->memnoc);
+    gpb_rd(io, r, GPB_WIN_GCC_GPU, GPB_GCC_GPU_SNOC_DVM_GFX, &k->dvm);
+    gpb_rd(io, r, GPB_WIN_GCC_VOTE, GPB_GCC_PLL_VOTE, &k->gpll0_vote);
+    k->done = 1;
+}
+
+// Mode 6, in stock order:
+//   1 the GPLL0 GPU branch votes (gcc_gpu_gpll0_clk_src / _div_clk_src, 0x52000 bits 15/16)
+//   2 gpu_cc_lahaina_probe: clk_lucid_5lpe_pll_configure of PLL0 and PLL1 (skipped for a PLL that runs: OPMODE RUN and OUTCTRL);
+//     the PLLs are left in standby, as there. The GMU runs from GPLL0 at its stock 200 MHz, so no PLL is enabled.
+//   3 hub_clk 150 MHz and 4 gmu_clk 200 MHz: clk_rcg2_enable with enable_safe_config (force ROOT_EN, wait ROOT_OFF clear,
+//     CFG, CMD_UPDATE until it clears within 500 us, drop ROOT_EN)
+//   5 clk_bulk_prepare_enable of the GMU node's branches and the kgsl-3d0 node's, waiting for cx_gmu CLK_OFF to clear
+struct gpb_gmu_clock_on {
+    unsigned step;                       // last step started (1..5), 6 when all passed
+    int failed;                          // 1 timeout or refusal at `step`, 2 I/O error
+    unsigned hub_polls, gmu_polls, configured;   // configured: bit 0 PLL0, bit 1 PLL1
+    uint32_t hub_cfg, gmu_cfg, cx_gmu, pll1_mode;
+};
+static inline int gpb_pll_running(uint32_t mode, uint32_t opmode) {return (opmode & GPB_PLL_RUN) && (mode & GPB_PLL_OUTCTRL);}
+// gpu_cc_pll0_config / gpu_cc_pll1_config; clk_lucid_5lpe_pll_configure skips zero fields except CAL_L.
+static inline int gpb_pll_configure(const struct gpb_io *io, struct gpb_result *r, uint32_t base, uint32_t l, uint32_t alpha) {
+    static const uint32_t off[] = {GPB_PLL_L_VAL, GPB_PLL_CAL_L_VAL, GPB_PLL_ALPHA_VAL, GPB_PLL_CONFIG_CTL, GPB_PLL_CONFIG_CTL_U,
+                                   GPB_PLL_CONFIG_CTL_U1, GPB_PLL_USER_CTL_U, GPB_PLL_TEST_CTL_U1};
+    const uint32_t val[] = {l, 0x44, alpha, 0x20485699u, 0x00002261u, 0x2a9a699cu, 0x00000805u, 0x01800000u};
+    uint32_t mode = 0;
+    for (unsigned i = 0; i < sizeof off / sizeof off[0]; ++i)
+        if (io->write32(io->cookie, GPB_WIN_GPUCC, base + off[i], val[i])) return -1;
+    if (gpb_rd(io, r, GPB_WIN_GPUCC, base + GPB_PLL_MODE, &mode)) return -1;
+    if (io->write32(io->cookie, GPB_WIN_GPUCC, base + GPB_PLL_MODE, mode & ~GPB_PLL_OUTCTRL)) return -1;
+    if (io->write32(io->cookie, GPB_WIN_GPUCC, base + GPB_PLL_OPMODE, 0)) return -1;      // PLL_OPMODE_STANDBY
+    if (gpb_rd(io, r, GPB_WIN_GPUCC, base + GPB_PLL_MODE, &mode)) return -1;
+    return io->write32(io->cookie, GPB_WIN_GPUCC, base + GPB_PLL_MODE, mode | GPB_PLL_RESET_N);
+}
+// 0 done, 1 timeout, -1 I/O.
+static inline int gpb_rcg_set(const struct gpb_io *io, struct gpb_result *r, uint32_t rcgr, uint32_t cfg_value,
+                              uint32_t *cfg_after, unsigned *polls) {
+    uint32_t cmd = 0, cfg = 0;
+    int timeout = 1;
+    if (gpb_rd(io, r, GPB_WIN_GPUCC, rcgr, &cmd) || io->write32(io->cookie, GPB_WIN_GPUCC, rcgr, cmd | GPB_RCG_ROOT_EN)) return -1;
+    for (unsigned i = 0; i < 500; ++i) {
+        if (gpb_rd(io, r, GPB_WIN_GPUCC, rcgr, &cmd)) return -1;
+        if (!(cmd & GPB_RCG_ROOT_OFF)) {timeout = 0; break;}
+        if (io->delay_us) io->delay_us(io->cookie, 1);
+    }
+    if (timeout) return 1;
+    if (gpb_rd(io, r, GPB_WIN_GPUCC, rcgr + 4, &cfg) ||
+        io->write32(io->cookie, GPB_WIN_GPUCC, rcgr + 4, (cfg & ~GPB_RCG_CFG_MASK) | cfg_value)) return -1;
+    if (gpb_rd(io, r, GPB_WIN_GPUCC, rcgr, &cmd) || io->write32(io->cookie, GPB_WIN_GPUCC, rcgr, cmd | GPB_RCG_UPDATE)) return -1;
+    timeout = 1;
+    for (unsigned i = 0; i < 500; ++i) {
+        ++*polls;
+        if (gpb_rd(io, r, GPB_WIN_GPUCC, rcgr, &cmd)) return -1;
+        if (!(cmd & GPB_RCG_UPDATE)) {timeout = 0; break;}
+        if (io->delay_us) io->delay_us(io->cookie, 1);
+    }
+    if (timeout) return 1;
+    if (io->write32(io->cookie, GPB_WIN_GPUCC, rcgr, cmd & ~GPB_RCG_ROOT_EN)) return -1;
+    return gpb_rd(io, r, GPB_WIN_GPUCC, rcgr + 4, cfg_after) ? -1 : 0;
+}
+static inline int gpb_set_bit0(const struct gpb_io *io, struct gpb_result *r, unsigned w, uint32_t off) {
+    uint32_t v = 0;
+    if (gpb_rd(io, r, w, off, &v)) return -1;
+    return (v & GPB_CBCR_ENABLE) ? 0 : io->write32(io->cookie, w, off, v | GPB_CBCR_ENABLE);
+}
+static inline void gpb_gmu_clocks_on(const struct gpb_io *io, struct gpb_result *r, const struct gpb_gmu_clocks *k,
+                                     struct gpb_gmu_clock_on *o) {
+    __builtin_memset(o, 0, sizeof *o);
+    int e = 0;
+    uint32_t v = 0;
+    o->step = 1;
+    if (!k->done || !gpb_gdsc_on(r->cx_gdscr)) {o->failed = 1; return;}
+    if (gpb_rd(io, r, GPB_WIN_GCC_VOTE, GPB_GCC_PLL_VOTE, &v)) goto io;
+    if ((v & GPB_GPLL0_VOTES) != GPB_GPLL0_VOTES) {
+        if (io->write32(io->cookie, GPB_WIN_GCC_VOTE, GPB_GCC_PLL_VOTE, v | GPB_GPLL0_VOTES)) goto io;
+        if (io->delay_us) io->delay_us(io->cookie, 10);   // BRANCH_HALT_DELAY
+    }
+    o->step = 2;
+    if (!gpb_pll_running(k->pll0_mode, k->pll0_opmode)) {
+        if (gpb_pll_configure(io, r, GPB_CC_PLL0, 0x18, 0x6000)) goto io;
+        o->configured |= 1;
+    }
+    if (!gpb_pll_running(k->pll1_mode, k->pll1_opmode)) {
+        if (gpb_pll_configure(io, r, GPB_CC_PLL1, 0x1a, 0xaaa)) goto io;
+        o->configured |= 2;
+    }
+    o->step = 3;
+    e = gpb_rcg_set(io, r, GPB_CC_HUB_RCGR, GPB_HUB_CFG, &o->hub_cfg, &o->hub_polls);
+    if (e) {o->failed = e < 0 ? 2 : 1; goto out;}
+    o->step = 4;
+    e = gpb_rcg_set(io, r, GPB_CC_GMU_RCGR, GPB_GMU_CFG, &o->gmu_cfg, &o->gmu_polls);
+    if (e) {o->failed = e < 0 ? 2 : 1; goto out;}
+    o->step = 5;
+    if (gpb_set_bit0(io, r, GPB_WIN_GPUCC, GPB_CC_CXO_AON_CLK) || gpb_set_bit0(io, r, GPB_WIN_GPUCC, GPB_CC_CX_GMU_CLK) ||
+        gpb_set_bit0(io, r, GPB_WIN_GPUCC, GPB_CC_CXO_CLK) || gpb_set_bit0(io, r, GPB_WIN_GCC_GPU, GPB_GCC_DDRSS_GPU_AXI) ||
+        gpb_set_bit0(io, r, GPB_WIN_GCC_GPU, GPB_GCC_GPU_MEMNOC_GFX) || gpb_set_bit0(io, r, GPB_WIN_GPUCC, GPB_CC_AHB_CLK) ||
+        gpb_set_bit0(io, r, GPB_WIN_GPUCC, GPB_CC_HUB_CX_INT_CLK) || gpb_set_bit0(io, r, GPB_WIN_GCC_GPU, GPB_GCC_GPU_SNOC_DVM_GFX) ||
+        gpb_set_bit0(io, r, GPB_WIN_GPUCC, GPB_CC_HUB_AON_CLK)) goto io;
+    e = 1;
+    for (unsigned i = 0; i < 500; ++i) {
+        if (gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_CX_GMU_CLK, &o->cx_gmu)) goto io;
+        if (gpb_clock_on(o->cx_gmu)) {e = 0; break;}
+        if (io->delay_us) io->delay_us(io->cookie, 1);
+    }
+    if (e) {o->failed = 1; goto out;}
+    o->step = 6;
+    goto out;
+io:
+    o->failed = 2;
+out:
+    gpb_rd(io, r, GPB_WIN_GPUCC, GPB_CC_PLL1 + GPB_PLL_MODE, &o->pll1_mode);
+}
+
 static inline const char *gpb_state_text(enum gpb_state s) {
     return s == GPB_DONE ? "ok" : s == GPB_SKIPPED_PREREQ ? "skip" : s == GPB_SKIPPED_MODE ? "off" : s == GPB_NOMAP ? "nomap" : "-";
 }

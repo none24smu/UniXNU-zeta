@@ -1,0 +1,42 @@
+diff --git a/NativeAdrenoMetalPlugin.mm b/NativeAdrenoMetalPlugin.mm
+index e8aeeee..9ca3013 100644
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -111,6 +111,9 @@ static void reportDisplayState(Gpu &gpu) {
+     ++gReports;
+     static DisplaySample before;
+     static bool changed;
++    // The display object offsets and QuartzCore globals below are iPadOS 17.7.11 (21H461) addresses; on any other system the
++    // experiment would read and write unrelated memory, so it is left out there.
++    if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion != 17) return;
+     Class serverClass = NSClassFromString(@"CAWindowServer");
+     void *start = dlsym(RTLD_DEFAULT, "CARenderServerStart");
+     if (!serverClass || !start) return;
+diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
+index 86d237f..6885961 100644
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -1027,7 +1027,9 @@ static std::string quartzCoreCallers() {
+  }
+  static auto global=(uint32_t (*)(void))dlsym(RTLD_DEFAULT,"CARenderGetGlobalFeatureFlags");
+  snprintf(item,sizeof item," global=%x",global?global():0xffffffffu);out+=item;
+- if(header) {
++ // ca_debug_options is a 21H461 address: other systems report dbg=? rather than read an unrelated QuartzCore byte.
++ if(header && [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion!=17)out+=" dbg=?";
++ else if(header) {
+   const uintptr_t options=header+(0x1f491b3c5ull-0x189429000ull);
+   Dl_info info{};
+   if(dladdr((void *)options,&info) && info.dli_fname && strstr(info.dli_fname,"/QuartzCore") && (uintptr_t)info.dli_fbase==header) {
+@@ -1481,8 +1483,10 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
+  if(getenv("NMB_DEVICE_BASE_NSOBJECT"))base=[NSObject class];
+ #endif
+ #if TARGET_OS_IPHONE
+- // The target's base class ABI (iPadOS 17.7.11): the dynamic subclass adds no instance variables.
+- if(!base || class_getInstanceSize(base)!=536){NBLOG(@"native-metal: unexpected _MTLDevice ABI");return nil;}
++ // The target's base class ABI: 536 bytes on iPadOS 17.7.11, 656 on iOS 26.5 (23F84). The dynamic subclass adds no instance
++ // variables and reaches the base only through selectors, so either size is served.
++ if(!base || (class_getInstanceSize(base)!=536 && class_getInstanceSize(base)!=656)){
++  NBLOG(@"native-metal: unexpected _MTLDevice ABI (%zu bytes)",base?class_getInstanceSize(base):0);return nil;}
+ #endif
+  if(!base)base=[NSObject class];
+  Class cls=objc_allocateClassPair(base,"NativeBridgeMetalDevice",0);if(!cls)return nil;

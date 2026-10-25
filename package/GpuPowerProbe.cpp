@@ -35,6 +35,7 @@
 #include <pexpert/pexpert.h>
 #include "GpuPowerBoard.h"
 #include <IOKit/IORegistryEntry.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/crypto/sha2.h>
 #include <kern/clock.h>

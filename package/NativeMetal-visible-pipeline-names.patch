@@ -1,0 +1,42 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -1214,7 +1214,10 @@
+ static void noteRefusal(NSString *what,NSString *function,NSError **error) {
+  noteProblem([NSString stringWithFormat:@"%@ %@: %@",what,function?:@"?",error && *error?(*error).localizedDescription:@"refused"]);
+ }
++// Also logged: a client run with OS_ACTIVITY_DT_MODE has its stderr forwarded (the plugin's E rows), so every refusal is seen, not only
++// the last two the status line keeps.
+ template <typename T> static T failWith(NSError **error,NSString *what,T value) {
++ NSLog(@"native-metal: %@: %@",what,lastError());
+  noteProblem([NSString stringWithFormat:@"%@: %@",what,lastError()]);
+  if(error)*error=nbError([NSString stringWithFormat:@"%@: %@",what,lastError()]);
+  return value;
+@@ -1622,7 +1625,7 @@
+  const NmbPipelineOptions creation={(uint64_t)options,nullptr,0};
+  const uint64_t pipelineBegan=nowUs();
+  NmbComputePipeline *handle=nmb_compute_pipeline_new_with_options(gDevice,[(NBFunction *)function handle],&creation);gTimePipeline.add(pipelineBegan);
+- if(!handle)return failWith<id<MTLComputePipelineState>>(error,@"compute pipeline",nil);
++ if(!handle)return failWith<id<MTLComputePipelineState>>(error,[@"compute pipeline " stringByAppendingString:function.name?:@"-"],nil);
+  MTLComputePipelineDescriptor *made=[MTLComputePipelineDescriptor new];made.computeFunction=function;
+  NBComputePipeline *state=[[NBComputePipeline alloc] initWithDevice:gDeviceObject pipelineStateDescriptor:made];
+  state.handle=handle;gPipelines++;if(error)*error=nil;return (id<MTLComputePipelineState>)state;
+@@ -1637,7 +1640,7 @@
+  const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
+  const uint64_t pipelineBegan=nowUs();
+  NmbComputePipeline *handle=nmb_compute_pipeline_new_with_descriptor(gDevice,&p,&creation);gTimePipeline.add(pipelineBegan);
+- if(!handle)return failWith<id<MTLComputePipelineState>>(error,@"compute pipeline",nil);
++ if(!handle)return failWith<id<MTLComputePipelineState>>(error,[@"compute pipeline " stringByAppendingString:d.computeFunction.name?:@"-"],nil);
+  NBComputePipeline *state=[[NBComputePipeline alloc] initWithDevice:gDeviceObject pipelineStateDescriptor:d];state.handle=handle;state.label=d.label;gPipelines++;
+  if(error)*error=nil;return (id<MTLComputePipelineState>)state;
+ }
+@@ -1656,7 +1659,9 @@
+  const uint64_t pipelineBegan=nowUs();const NBCost costBegan=NBCost::now();
+  NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
+  journalRenderPipeline(d,pipelineBegan,handle?nullptr:nmb_last_error(),gJournalPath.empty()?std::string():NBCost::now().since(costBegan));
+- if(!handle)return failWith<id<MTLRenderPipelineState>>(error,@"render pipeline",nil);
++ // Named by its functions: the telemetry keeps the last two problems, and a caller (HelloView) that gets no pipeline draws nothing.
++ if(!handle)return failWith<id<MTLRenderPipelineState>>(error,[NSString stringWithFormat:@"render pipeline %@/%@",
++  d.vertexFunction.name?:@"-",d.fragmentFunction.name?:@"-"],nil);
+  NBRenderPipeline *state=[[NBRenderPipeline alloc] initWithDevice:gDeviceObject pipelineStateDescriptor:d];state.handle=handle;gPipelines++;if(error)*error=nil;return (id<MTLRenderPipelineState>)state;
+ }
+ - (id<MTLBinaryArchive>)newBinaryArchiveWithDescriptor:(MTLBinaryArchiveDescriptor *)d error:(NSError **)error {

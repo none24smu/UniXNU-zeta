@@ -1,0 +1,49 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -1052,6 +1052,11 @@
+ @end
+ 
+ // ---- the device ----
++// A descriptor this frontend refuses before the runtime sees it: noted like the runtime's own refusals (the telemetry's P rows), with the
++// function's name, since the caller may abort on it (backboardd: "Metal failed to build compute pipeline").
++static void noteRefusal(NSString *what,NSString *function,NSError **error) {
++ noteProblem([NSString stringWithFormat:@"%@ %@: %@",what,function?:@"?",error && *error?(*error).localizedDescription:@"refused"]);
++}
+ template <typename T> static T failWith(NSError **error,NSString *what,T value) {
+  noteProblem([NSString stringWithFormat:@"%@: %@",what,lastError()]);
+  if(error)*error=nbError([NSString stringWithFormat:@"%@: %@",what,lastError()]);
+@@ -1437,7 +1442,7 @@
+ - (id<MTLComputePipelineState>)newComputePipelineStateWithFunction:(id<MTLFunction>)function options:(MTLPipelineOption)options
+                                                          reflection:(MTLAutoreleasedComputePipelineReflection *)reflection error:(NSError **)error {
+  if(reflection)*reflection=nil;
+- if(![(id)function isKindOfClass:[NBFunction class]]){if(error)*error=nbError(@"foreign function");return nil;}
++ if(![(id)function isKindOfClass:[NBFunction class]]){if(error)*error=nbError(@"foreign function");noteRefusal(@"compute function",function.name,error);return nil;}
+  const NmbPipelineOptions creation={(uint64_t)options,nullptr,0};
+  const uint64_t pipelineBegan=nowUs();
+  NmbComputePipeline *handle=nmb_compute_pipeline_new_with_options(gDevice,[(NBFunction *)function handle],&creation);gTimePipeline.add(pipelineBegan);
+@@ -1447,9 +1452,10 @@
+ - (id<MTLComputePipelineState>)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d options:(MTLPipelineOption)options
+                                                        reflection:(MTLAutoreleasedComputePipelineReflection *)reflection error:(NSError **)error {
+  if(reflection)*reflection=nil;
+- NmbComputePipelineDescriptor p={};if(!computeDescriptor(d,&p,error))return nil;
++ NSError *refusal=nil;if(!error)error=&refusal;
++ NmbComputePipelineDescriptor p={};if(!computeDescriptor(d,&p,error)){noteRefusal(@"compute descriptor",d.computeFunction.name,error);return nil;}
+  std::vector<NmbBinaryArchive *> archives;
+- if(!pipelineArchives(d.binaryArchives,archives,error))return nil;
++ if(!pipelineArchives(d.binaryArchives,archives,error)){noteRefusal(@"compute archives",d.computeFunction.name,error);return nil;}
+  const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
+  const uint64_t pipelineBegan=nowUs();
+  NmbComputePipeline *handle=nmb_compute_pipeline_new_with_descriptor(gDevice,&p,&creation);gTimePipeline.add(pipelineBegan);
+@@ -1464,9 +1470,10 @@
+                                                         reflection:(MTLAutoreleasedRenderPipelineReflection *)reflection error:(NSError **)error {
+  if(reflection)*reflection=nil;
+  auto *p=new NmbRenderPipelineDescriptor();
+- if(!renderDescriptor(d,p,error)){delete p;return nil;}
++ NSError *refusal=nil;if(!error)error=&refusal;
++ if(!renderDescriptor(d,p,error)){noteRefusal(@"render descriptor",d.fragmentFunction.name?:d.vertexFunction.name,error);delete p;return nil;}
+  std::vector<NmbBinaryArchive *> archives;
+- if(!pipelineArchives(d.binaryArchives,archives,error)){delete p;return nil;}
++ if(!pipelineArchives(d.binaryArchives,archives,error)){noteRefusal(@"render archives",d.fragmentFunction.name?:d.vertexFunction.name,error);delete p;return nil;}
+  const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
+  const uint64_t pipelineBegan=nowUs();const NBCost costBegan=NBCost::now();
+  NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);

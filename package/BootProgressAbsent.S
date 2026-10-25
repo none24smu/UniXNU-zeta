@@ -10,12 +10,8 @@
 .set _native_adreno_audit_attr, 0
 .globl _native_adreno_audit_ticks
 .set _native_adreno_audit_ticks, 0
-.globl _native_adreno_cache_stats
-.set _native_adreno_cache_stats, 0
 .globl _native_adreno_coherence
 .set _native_adreno_coherence, 0
-.globl _native_adreno_reassert_ticks
-.set _native_adreno_reassert_ticks, 0
 .globl _native_adreno_wc_audit
 .set _native_adreno_wc_audit, 0
 .globl _native_adreno_wc_distrusted

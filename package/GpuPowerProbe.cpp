@@ -69,6 +69,10 @@ extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak)
 extern "C" IOService *native_adreno_published_service() __attribute__((weak));
 extern "C" const char *native_adreno_metal_text(const char **, const char **, uint32_t *) __attribute__((weak));
 extern "C" const char *native_adreno_client_line(const char **) __attribute__((weak));
+// One row per process name that opened the plugin type (NativeAdrenoPublish.cpp, same layout): opens granted, refused (open cap or no free
+// slot) with the last refusal, closes, the slot held now (0xff none) and the peak window use.
+struct ZetaClientRecord {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
+extern "C" ZetaClientRecord native_adreno_client_log[8] __attribute__((weak));
 // The scanout hand-off the publish unit tunnels (methods 0x7000-0x7003, memory type 'SC') is UniXNU NativeMobileDisplay's
 // NativeGOPPresenter, built beside NativeLegacyDisplay (scripts/build-native-legacy-display.py, sheng-fb-gpu=1).
 // sheng's BootLog.c keeps the render server's exported pipeline caches in its UFS log area; zeta has no export area, so every
@@ -874,6 +878,21 @@ void metalText() {
     if (line && line[0] && strncmp(line, client, 63)) {strlcpy(client, line, sizeof client); IOLog("zeta-metal: client %s %s\n", name, client);}
 }
 
+// Each opener row of the plugin's connections when it changes: which process holds a slot, and which was refused (the open cap: a process
+// other than the render server gets eight per boot; or every slot taken), so a respawned client's "no-device" names its cause.
+void openers() {
+    const ZetaClientRecord *log = native_adreno_client_log;
+    if (!log) return;
+    static ZetaClientRecord seen[8];
+    for (unsigned i = 0; i < 8; ++i) {
+        const ZetaClientRecord row = log[i];
+        if (!row.name[0] || !memcmp(&row, &seen[i], sizeof row)) continue;
+        seen[i] = row;
+        IOLog("zeta-gpu: opener %.20s opens %u refused %u (last %08x) closes %u slot %u peak %u MiB\n", row.name, row.opens, row.refused,
+              row.last_refusal, row.closes, row.slot, row.peak_mib);
+    }
+}
+
 void beatThread(void *, wait_result_t) {
     if (!gSmmuMap) return;
     volatile uint32_t *smmu = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
@@ -919,6 +938,7 @@ void beatThread(void *, wait_result_t) {
                   "cx %08x clients %u/%u rbbm %08x int %08x rb %x/%x hwfault %08x cp-int %08x\n", now / 1000000, r[0], r[1], r[2], r[4],
                   r[3], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], g[0], g[1], g[2], g[3], g[4], g[5]);
         if (n % 4 == 0) metalText();
+        if (n % 4 == 0) openers();
         memcpy(last, r, sizeof r);
         lastRoutes = routes;
         IOSleep(250);

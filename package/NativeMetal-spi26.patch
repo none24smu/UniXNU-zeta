@@ -16,7 +16,7 @@
 +- (void)makeAliasable {} \
 +- (void)setResponsibleProcess:(int)pid {(void)pid;} \
 +- (MTLTextureCompressionType)compressionType {return MTLTextureCompressionTypeLossless;} \
-+- (MTLSparseTextureTier)sparseTextureTier {return MTLSparseTextureTierNone;} \
++- (NSInteger)sparseTextureTier {return 0; /* MTLSparseTextureTierNone: the enum is macOS-only in the iOS SDK */} \
  - (int)setOwnerWithIdentity:(unsigned)identity {(void)identity;return 46; /* KERN_NOT_SUPPORTED */} \
  - (void)waitUntilComplete {waitForResource(self);}
 +// No bindless resource table: an object's GPU resource ID (argument buffers tier 2) is the null ID.

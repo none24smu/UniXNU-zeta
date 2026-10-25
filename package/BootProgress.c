@@ -1182,7 +1182,15 @@ static void monitor(void *arg, wait_result_t result) {
         static char trace_rows[32][120];
         console_at=now;
         printf("zeta-trace: %us pass %u seen %u\n",now,boot_process_passes,boot_process_seen);
-        if(&armcpu_smp_requested)printf("zeta-trace: smp req=%u run=%u cond=%u avail=%d\n",armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,machine_info.logical_cpu);
+        if(&armcpu_smp_requested) {
+          // Each secondary core's bring-up step (ArmCpu: 1 nub started .. 4 PSCI CPU_ON issued .. 7 running), CPU_ON's result
+          // and the failure code, so a boot whose cores stay down shows where they stopped.
+          char cores[160];unsigned n=0;cores[0]=0;
+          for(unsigned c=1;c<8&&n<sizeof(cores)-24;++c)
+            n+=(unsigned)snprintf(cores+n,sizeof(cores)-n," c%u=%u/%d/%u",c,armcpu_smp_step[c],armcpu_smp_psci_rc[c],armcpu_smp_fail[c]);
+          printf("zeta-trace: smp req=%u run=%u cond=%u avail=%d boot=%x%s\n",armcpu_smp_requested,armcpu_smp_running,
+                 armcpu_smp_conduit,machine_info.logical_cpu,armcpu_boot_mpidr&0xffffff,cores);
+        }
         for(unsigned i=0;i<10;++i)if(boot_process_rows[i][0])printf("zeta-trace: proc %.119s\n",boot_process_rows[i]);
         if(&boot_ui_trace_role_rows)
           for(unsigned role=0;role<4;++role) {

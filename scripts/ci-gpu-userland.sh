@@ -24,7 +24,7 @@ for patch in "$Z"/package/ArmSmmu4K-*.patch; do
   patch -p1 --forward -d "$U/kits/ArmSmmu4K" -i "$patch"
 done
 
-brew install glslang shaderc spirv-tools llvm bison flex ninja >/dev/null
+brew install glslang shaderc spirv-tools vulkan-headers llvm bison flex ninja >/dev/null
 LLVM=$(brew --prefix llvm)
 export PATH="$LLVM/bin:$PATH"
 

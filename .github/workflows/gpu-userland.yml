@@ -28,7 +28,7 @@ jobs:
           ref: ${{ inputs.unixnu_ref }}
           path: unixnu
       - name: Check out the GPU submodules
-        run: git -C unixnu submodule update --init --depth 1 drivers/NativeAdreno drivers/NativeMetal kits/AdrenoPM4 kits/ArmSmmu4K
+        run: git -C unixnu submodule update --init --depth 1 drivers/NativeAdreno drivers/NativeMetal drivers/NativeMobileDisplay kits/AdrenoPM4 kits/ArmSmmu4K
       - name: Build Turnip, the Metal bridge and the plugin
         run: bash zeta/scripts/ci-gpu-userland.sh unixnu zeta "$RUNNER_TEMP/gpu-userland"
       - name: Upload the plugin

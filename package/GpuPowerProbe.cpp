@@ -762,7 +762,9 @@ int clientRound(IOService *svc, int &ok, int &n, IOReturn &err, int &errAt, uint
         return !s;
     };
     IOUserClient *uc = nullptr;
-    if (!step(svc->newUserClient(kernel_task, nullptr, 0, nullptr, &uc)) || !uc) return -1;
+    // The Adreno plugin's open type ('AG', NativeAdrenoPluginOpenType): the driver serves only that one and refuses the rest as
+    // foreign (kIOReturnUnsupported; gpu10-v1 opened with type 0 as sheng's older wrapperRound does).
+    if (!step(svc->newUserClient(kernel_task, nullptr, 0x4147, nullptr, &uc)) || !uc) return -1;
     NativeAdrenoAbiParams params{};
     step(wcall(uc, NativeAdrenoMethodQuery, nullptr, &params));
     NativeAdrenoAbiDeviceInfo info{};

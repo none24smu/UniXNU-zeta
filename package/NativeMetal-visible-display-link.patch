@@ -1,0 +1,96 @@
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -8,6 +8,8 @@
+ // gets its own native device (its own driver connection, GPU address window and shader cache) when its name is listed in the file
+ // NativeAdrenoMetal.clients beside the bundle ("*" lists every process); an unlisted one returns nil and keeps the software renderer.
+ #import <Foundation/Foundation.h>
++#import <objc/runtime.h>
++#include <atomic>
+ #include <pthread.h>
+ #include <dlfcn.h>
+ #include <unistd.h>
+@@ -164,12 +166,70 @@
+         streamText(*gpu, text);
+     }
+ }
++// How far a client's CAMetalDisplayLinks get (Setup's hello is one: HelloView, metalDisplayLink:needsUpdate:, on a CAMetalLayer), for its status
++// line: links made, added to a run loop, paused/resumed, the preferred frame latency, the delegate's updates, nextDrawable calls (nil ones),
++// drawables presented and presented feedback (setPresentedTime:). Counters only; every call goes on to the original.
++static std::atomic<unsigned> gLinks, gLinkRuns, gLinkPauses, gLinkResumes, gLinkUpdates, gNextDrawables, gNilDrawables, gPresents, gPresented;
++static std::atomic<int> gLinkLatency{-1};
++static char gLinkDelegate[24];
++static void replaceMethod(Class c, const char *name, id (^make)(IMP original, SEL selector)) {
++    const SEL selector = sel_registerName(name);
++    Method method = c ? class_getInstanceMethod(c, selector) : nullptr;
++    if (method) method_setImplementation(method, imp_implementationWithBlock(make(method_getImplementation(method), selector)));
++}
++static void countDelegateUpdates(Class c) {
++    static Class counted[4];
++    static unsigned used;
++    @synchronized([NSObject class]) {
++        for (unsigned i = 0; i < used; ++i) if (counted[i] == c) return;
++        if (!c || used == 4 || !class_getInstanceMethod(c, sel_registerName("metalDisplayLink:needsUpdate:"))) return;
++        counted[used++] = c;
++        const char *name = class_getName(c);
++        const size_t length = strlen(name);
++        strlcpy(gLinkDelegate, name + (length > sizeof gLinkDelegate - 1 ? length - (sizeof gLinkDelegate - 1) : 0), sizeof gLinkDelegate);
++    }
++    replaceMethod(c, "metalDisplayLink:needsUpdate:", ^id(IMP original, SEL selector) {
++        return ^(id self, id link, id update) {++gLinkUpdates; ((void (*)(id, SEL, id, id))original)(self, selector, link, update);};
++    });
++}
++static void countDisplayLinks() {
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        Class link = (Class)objc_getClass("CAMetalDisplayLink");
++        replaceMethod(link, "initWithMetalLayer:", ^id(IMP original, SEL selector) {
++            return ^id(id self, id layer) {++gLinks; return ((id (*)(id, SEL, id))original)(self, selector, layer);};
++        });
++        replaceMethod(link, "addToRunLoop:forMode:", ^id(IMP original, SEL selector) {
++            return ^(id self, id loop, id mode) {++gLinkRuns; ((void (*)(id, SEL, id, id))original)(self, selector, loop, mode);};
++        });
++        replaceMethod(link, "setPaused:", ^id(IMP original, SEL selector) {
++            return ^(id self, BOOL paused) {++(paused ? gLinkPauses : gLinkResumes); ((void (*)(id, SEL, BOOL))original)(self, selector, paused);};
++        });
++        replaceMethod(link, "setPreferredFrameLatency:", ^id(IMP original, SEL selector) {
++            return ^(id self, float latency) {gLinkLatency = int(latency); ((void (*)(id, SEL, float))original)(self, selector, latency);};
++        });
++        replaceMethod(link, "setDelegate:", ^id(IMP original, SEL selector) {
++            return ^(id self, id delegate) {countDelegateUpdates(object_getClass(delegate)); ((void (*)(id, SEL, id))original)(self, selector, delegate);};
++        });
++        replaceMethod((Class)objc_getClass("CAMetalLayer"), "nextDrawable", ^id(IMP original, SEL selector) {
++            return ^id(id self) {++gNextDrawables; id drawable = ((id (*)(id, SEL))original)(self, selector); if (!drawable) ++gNilDrawables; return drawable;};
++        });
++        Class drawable = (Class)objc_getClass("CAMetalDrawable");
++        replaceMethod(drawable, "present", ^id(IMP original, SEL selector) {
++            return ^(id self) {++gPresents; ((void (*)(id, SEL))original)(self, selector);};
++        });
++        replaceMethod(drawable, "setPresentedTime:", ^id(IMP original, SEL selector) {
++            return ^(id self, double time) {++gPresented; ((void (*)(id, SEL, double))original)(self, selector, time);};
++        });
++    });
++}
+ // A listed client's own frontend status (the render server's comes through its telemetry): when it changed, every five seconds, the
+ // status line (counters, then the last two problems) in pieces "C<n> <57 characters>" on the marker stream, which the kernel keeps
+ // as the client line. The pieces go 1.5 s apart: the kernel's printer reads the line once a second.
+ static void clientStatus(unsigned port) {
+     Gpu *gpu = makeGpu(port);
+     if (!gpu) return;
++    countDisplayLinks();
+     pthread_attr_t attributes;
+     pthread_attr_init(&attributes);
+     pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+@@ -179,7 +239,12 @@
+         static char full[420], last[420];
+         for (;;) {
+             sleep(5);
+-            native_bridge_metal_status(full, sizeof full);
++            // the hello's delegate when its link was made before these counters were in place
++            countDelegateUpdates((Class)objc_getClass("_TtC23SetupAssistantSupportUI9HelloView"));
++            const int used = snprintf(full, sizeof full, "L%u r%u p%u/%u f%d u%u n%u/%u q%u y%u %s || ", gLinks.load(), gLinkRuns.load(),
++                gLinkPauses.load(), gLinkResumes.load(), gLinkLatency.load(), gLinkUpdates.load(), gNextDrawables.load(), gNilDrawables.load(),
++                gPresents.load(), gPresented.load(), gLinkDelegate);
++            native_bridge_metal_status(full + used, sizeof full - used);
+             if (!strcmp(full, last)) continue;
+             strlcpy(last, full, sizeof last);
+             const size_t length = strlen(full);

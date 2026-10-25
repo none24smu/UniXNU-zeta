@@ -607,6 +607,70 @@ void stall(Display *display, const void *request, const char *gate) {
     IOLog("zeta-display: swap %u held (%s)\n", request ? field<uint32_t>(request, kRequestSwapID) : 0, gate);
 }
 
+// The present copy runs near 170 MB/s. AT S1E1R gives a mapping's memory attribute (PAR_EL1.ATTR: 0xff write-back,
+// 0x44 non-cacheable, 0x00/0x04 device); XNU keeps a page's own attribute (VM_WIMG: 2 copyback, 6 write-combined, 7 io).
+extern "C" unsigned int pmap_cache_attributes(unsigned int pn);
+extern "C" uint64_t kvtophys(vm_offset_t va);
+extern "C" uint64_t phystokv(uint64_t pa);
+extern "C" unsigned long gPhysBase, real_phys_size;
+extern "C" boolean_t ml_set_interrupts_enabled(boolean_t enable);
+uint64_t memoryAttribute(uintptr_t va) {
+    const boolean_t enabled = ml_set_interrupts_enabled(false);
+    uint64_t par;
+    __asm__ volatile ("at s1e1r, %1\n isb\n mrs %0, par_el1" : "=r"(par) : "r"(va));
+    ml_set_interrupts_enabled(enabled);
+    return par & 1 ? ~0ULL : par >> 56;
+}
+// zeta-copy=1: read the surface through the kernel's cacheable physical aperture, page by page from the surface map's
+// translations. A page the client maps non-cacheable reaches DRAM past the caches, so its aperture lines are cleaned and
+// invalidated first; a copyback page is coherent with the client's cache as it is.
+bool apertureRead(unsigned char *to, const unsigned char *from, size_t bytes, bool invalidate) {
+    while (bytes) {
+        const size_t chunk = bytes < 0x1000 - (uintptr_t(from) & 0xfff) ? bytes : 0x1000 - (uintptr_t(from) & 0xfff);
+        const uint64_t pa = kvtophys(vm_offset_t(from));
+        if (!pa || pa < gPhysBase || pa - gPhysBase >= real_phys_size) return false;
+        const auto aperture = reinterpret_cast<const unsigned char *>(phystokv(pa));
+        if (invalidate) {
+            for (uintptr_t at = uintptr_t(aperture) & ~uintptr_t(63); at < uintptr_t(aperture) + chunk; at += 64)
+                __asm__ volatile ("dc civac, %0" :: "r"(at) : "memory");
+            __asm__ volatile ("dsb sy" ::: "memory");
+        }
+        memcpy(to, aperture, chunk);
+        to += chunk;
+        from += chunk;
+        bytes -= chunk;
+    }
+    return true;
+}
+// Every 60th present: 64 rows read from the surface map into a cached line, the same rows read through the aperture,
+// and the line written to the scanout (the copy that follows writes those rows again), with each side's attributes.
+void copyProbe(const unsigned char *from, uint64_t stride, unsigned char *to, uint32_t rowBytes, uint32_t width) {
+    const size_t bytes = size_t(width) * 4;
+    auto line = static_cast<unsigned char *>(IOMallocData(bytes));
+    if (!line) return;
+    uint64_t read = 0, write = 0;
+    for (uint32_t row = 0; row < 64; ++row) {
+        const uint64_t start = mach_absolute_time();
+        memcpy(line, from + row * stride, bytes);
+        const uint64_t middle = mach_absolute_time();
+        memcpy(to + uint64_t(row) * rowBytes, line, bytes);
+        __asm__ volatile ("dsb sy" ::: "memory");
+        write += mach_absolute_time() - middle;
+        read += middle - start;
+    }
+    const uint64_t pa = kvtophys(vm_offset_t(from));
+    const unsigned wimg = pa ? pmap_cache_attributes(unsigned(pa >> 12)) : 0;
+    const uint64_t start = mach_absolute_time();
+    bool ok = true;
+    for (uint32_t row = 0; row < 64 && ok; ++row) ok = apertureRead(line, from + row * stride, bytes, wimg != 2);
+    const uint64_t aperture = mach_absolute_time() - start;
+    IOLog("zeta-display: copy probe 64 rows of %zu bytes: surface read %llu us, scanout write %llu us, aperture read %llu us%s; "
+        "attr surface %#llx aperture %#llx scanout %#llx, surface page %#llx wimg %#x\n", bytes, read * 10 / 192, write * 10 / 192,
+        aperture * 10 / 192, ok ? "" : " (failed)", memoryAttribute(uintptr_t(from)),
+        pa ? memoryAttribute(uintptr_t(phystokv(pa))) : ~0ULL, memoryAttribute(uintptr_t(to)), pa, wimg);
+    IOFreeData(line, bytes);
+}
+
 // Retire the swap after the copy and its store barrier: memory scanout completion, not a vblank or a fence.
 void finishTransfer(IOService *self, Display *display, const void *request) {
     if (bootArg("offline-legacy-retire") != 1 && bootArg("offline-legacy-cpu-present") != 1) return;
@@ -684,7 +748,16 @@ void kickOnce(IOService *self, Display *display) {
     // zeta-opaque=1: the source pipe blends with the alpha byte (SSPP format alpha enable), so a render-server frame
     // with transparent black would not reach the panel as black; the scanout is the top layer and takes it opaque.
     const bool opaque = bootArg("zeta-opaque") == 1;
+    if (display->presented % 60 == 1) copyProbe(from, stride, destination, display->rowBytes, width);
+    bool aperture = !opaque && bootArg("zeta-copy") == 1;
+    const uint64_t page = aperture ? kvtophys(vm_offset_t(from)) : 0;
+    const bool invalidate = !page || pmap_cache_attributes(unsigned(page >> 12)) != 2;
     for (uint32_t row = 0; row < height; ++row) {
+        if (aperture) {
+            aperture = apertureRead(destination + (uint64_t)row * display->rowBytes, from + row * stride, (size_t)width * 4,
+                invalidate);
+            if (aperture) continue;
+        }
         if (!opaque) {
             memcpy(destination + (uint64_t)row * display->rowBytes, from + row * stride, (size_t)width * 4);
             continue;

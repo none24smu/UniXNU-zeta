@@ -1,0 +1,84 @@
+--- a/bridge/NativeMetalObjects.h	2026-10-25 16:24:45.382040070 -0400
++++ b/bridge/NativeMetalObjects.h	2026-10-25 16:24:45.393410515 -0400
+@@ -47,6 +47,9 @@
+ bool nmb_device_shader_cache_stats(const NmbDevice *, struct NmbShaderCacheStats *);
+ size_t nmb_last_warning(char *out, size_t size);
+ bool nmb_device_max_threads_per_threadgroup(const NmbDevice *, uint64_t out[3]);
++/* heapTextureSizeAndAlignWithDescriptor: and heapBufferSizeAndAlignWithLength:options: (the runtime's heap layout): size, then alignment. */
++bool nmb_device_heap_texture_size_and_align(const NmbDevice *, const struct NmbTextureDescriptor *, uint64_t out[2]);
++bool nmb_device_heap_buffer_size_and_align(const NmbDevice *, uint64_t length, uint64_t options, uint64_t out[2]);
+ /* Device queries the runtime answers by Metal selector: Apple's private counts and flags where the device has an answer of its own,
+  * and the public queries. A selector's kind says its result and argument. */
+ enum {NMB_ANSWER_COUNT = 0, NMB_ANSWER_FLAG = 1, NMB_ANSWER_COUNT_ARG = 2, NMB_ANSWER_FLAG_ARG = 3};
+--- a/bridge/NativeMetalObjects.rs	2026-10-25 16:24:45.381970332 -0400
++++ b/bridge/NativeMetalObjects.rs	2026-10-25 16:24:45.393707225 -0400
+@@ -300,6 +300,35 @@
+     })
+ }
+ 
++/// `heapTextureSizeAndAlignWithDescriptor:`, the runtime's heap layout, into the caller's two words: size, then alignment.
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_device_heap_texture_size_and_align(device: *const NmbDevice, descriptor: *const NmbTextureDescriptor, out: *mut u64) -> bool {
++    guard(false, || {
++        if out.is_null() {
++            return Err("null size".into());
++        }
++        let descriptor = texture_descriptor(descriptor)?;
++        let answer = get(device)?.0.heap_texture_size_and_align(&descriptor).map_err(e("heap texture size"))?;
++        // SAFETY: the header's two words.
++        unsafe { std::slice::from_raw_parts_mut(out, 2) }.copy_from_slice(&[answer.size, answer.align]);
++        Ok(true)
++    })
++}
++
++/// `heapBufferSizeAndAlignWithLength:options:` into the caller's two words: size, then alignment.
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_device_heap_buffer_size_and_align(device: *const NmbDevice, length: u64, options_word: u64, out: *mut u64) -> bool {
++    guard(false, || {
++        if out.is_null() {
++            return Err("null size".into());
++        }
++        let answer = get(device)?.0.heap_buffer_size_and_align(length, options(options_word)?);
++        // SAFETY: the header's two words.
++        unsafe { std::slice::from_raw_parts_mut(out, 2) }.copy_from_slice(&[answer.size, answer.align]);
++        Ok(true)
++    })
++}
++
+ /// The device selectors `nmb_device_answer` takes beyond Apple's private counts and flags: the selector and its kind
+ /// (the header's NMB_ANSWER_* values).
+ const PUBLIC_ANSWERS: &[(&str, u32)] = &[
+--- a/NativeBridgeMetalFrontend.mm	2026-10-25 16:24:45.380763465 -0400
++++ b/NativeBridgeMetalFrontend.mm	2026-10-25 16:24:45.395232231 -0400
+@@ -1338,6 +1338,7 @@
+  return true;
+ }
+ 
++static uint64_t askAnswer(SEL cmd,NSUInteger arg);
+ @interface NBDeviceMethods : NSObject
+ @end
+ @implementation NBDeviceMethods
+@@ -1366,6 +1367,23 @@
+  uint64_t s[3]={};if(!nmb_device_max_threads_per_threadgroup(gDevice,s))NBLOG(@"native-metal: maxThreadsPerThreadgroup: %@",lastError());
+  return MTLSizeMake(s[0],s[1],s[2]);
+ }
++// Queries SpringBoard's frameworks send (SetupAssistantSupportUI's hello, IconRendering, RenderBox; sb1-v2 aborted on the first): a texture
++// buffer's offset alignment is the linear one (the runtime's, 16 bytes for every format a buffer can back), and a heap's sizes are the
++// runtime's heap layout. A refusal answers {0, 0} with the reason logged.
++- (NSUInteger)minimumTextureBufferAlignmentForPixelFormat:(MTLPixelFormat)format {
++ return (NSUInteger)askAnswer(sel_registerName("minimumLinearTextureAlignmentForPixelFormat:"),format);
++}
++- (MTLSizeAndAlign)heapTextureSizeAndAlignWithDescriptor:(MTLTextureDescriptor *)d {
++ NmbTextureDescriptor descriptor;uint64_t out[2]={};
++ if(!textureDescriptor(d,&descriptor) || !nmb_device_heap_texture_size_and_align(gDevice,&descriptor,out))
++  NBLOG(@"native-metal: heapTextureSizeAndAlignWithDescriptor: %@",lastError());
++ return (MTLSizeAndAlign){(NSUInteger)out[0],(NSUInteger)out[1]};
++}
++- (MTLSizeAndAlign)heapBufferSizeAndAlignWithLength:(NSUInteger)length options:(MTLResourceOptions)options {
++ uint64_t out[2]={};
++ if(!nmb_device_heap_buffer_size_and_align(gDevice,length,options,out))NBLOG(@"native-metal: heapBufferSizeAndAlignWithLength: %@",lastError());
++ return (MTLSizeAndAlign){(NSUInteger)out[0],(NSUInteger)out[1]};
++}
+ - (void)doesNotRecognizeSelector:(SEL)selector {
+  if(gMissing)gMissing("NativeBridgeMetalDevice",sel_getName(selector));
+  noteProblem([NSString stringWithFormat:@"missing device %s",sel_getName(selector)]);

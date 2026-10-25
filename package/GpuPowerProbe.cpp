@@ -754,6 +754,11 @@ IOReturn wcall(IOUserClient *uc, uint32_t method, const void *in, void *out) {
     return uc->externalMethod(method, &a, nullptr, nullptr, nullptr);
 }
 // One connection, as sheng's wrapperRound: returns the matching dwords of 4 (three written, one untouched) or -1.
+// zeta-gpu-round-stop=<k> ends the round after a stage, to find which one the reset ~20-35 s after the rounds needs (gpu10-v1, whose
+// opens were refused, and gpu13-v3, without the publish, ran to the 300 s reset; every boot whose rounds completed reset): 1 open
+// and the device queries, 2 the BO allocations, 3 their GPU mappings, 4 their CPU views, 5 (default) the submission, fence and
+// timestamp. zeta-gpu-round-keep=1 leaves the connection open (nothing unmapped or freed).
+unsigned gRoundStop = 5, gRoundKeep;
 int clientRound(IOService *svc, int &ok, int &n, IOReturn &err, int &errAt, uint32_t &memStatus) {
     auto step = [&](IOReturn s) {
         const int idx = n++;
@@ -770,18 +775,22 @@ int clientRound(IOService *svc, int &ok, int &n, IOReturn &err, int &errAt, uint
     NativeAdrenoAbiDeviceInfo info{};
     step(wcall(uc, NativeAdrenoMethodGetDeviceInfo, nullptr, &info));
     step(info.chip_id == gDeviceInfo.chip_id && info.gmem_bytes == gDeviceInfo.gmem_bytes ? 0 : kIOReturnError);
+    int matched = -1;
+    if (gRoundStop <= 1) goto close;
+    {
     NativeAdrenoAbiBoAlloc alloc{4096, 12, 0};
     NativeAdrenoAbiBoAllocReply ib{}, tgt{};
-    int matched = -1;
     IOMemoryDescriptor *desc[2] = {};
     IOMemoryMap *maps[2] = {};
-    if (step(wcall(uc, NativeAdrenoMethodBoAlloc, &alloc, &ib)) && step(wcall(uc, NativeAdrenoMethodBoAlloc, &alloc, &tgt))) {
+    if (step(wcall(uc, NativeAdrenoMethodBoAlloc, &alloc, &ib)) && step(wcall(uc, NativeAdrenoMethodBoAlloc, &alloc, &tgt)) &&
+        gRoundStop >= 3) {
         const uint64_t ibIova = 0x10004000, tgtIova = 0x10005000;
         NativeAdrenoAbiBoMap mapIb{ib.handle, ibIova, 1, 0, 2, 0}, mapTgt{tgt.handle, tgtIova, 3, 0, 2, 0};
         NativeAdrenoAbiBoMapReply r{};
         NativeAdrenoAbiBoCpuMap cmIb{ib.handle}, cmTgt{tgt.handle};
         NativeAdrenoAbiBoCpuMapReply crIb{}, crTgt{};
         if (step(wcall(uc, NativeAdrenoMethodBoMap, &mapIb, &r)) && step(wcall(uc, NativeAdrenoMethodBoMap, &mapTgt, &r)) &&
+            gRoundStop >= 4 &&
             step(wcall(uc, NativeAdrenoMethodBoCpuMap, &cmIb, &crIb)) && step(wcall(uc, NativeAdrenoMethodBoCpuMap, &cmTgt, &crTgt))) {
             IOOptionBits opt[2] = {};
             const uint32_t tokens[2] = {crIb.token, crTgt.token};
@@ -794,7 +803,7 @@ int clientRound(IOService *svc, int &ok, int &n, IOReturn &err, int &errAt, uint
                 if (!maps[i]) {mapped = false; if (!memStatus) memStatus = 0xbad;}
             }
             step(mapped ? 0 : kIOReturnNoMemory);
-            if (mapped) {
+            if (mapped && gRoundStop >= 5) {
                 volatile uint32_t *iw = reinterpret_cast<volatile uint32_t *>(maps[0]->getVirtualAddress());
                 volatile uint32_t *tw = reinterpret_cast<volatile uint32_t *>(maps[1]->getVirtualAddress());
                 for (unsigned i = 0; i < 1024; ++i) tw[i] = 0xdeadbeef;
@@ -826,14 +835,17 @@ int clientRound(IOService *svc, int &ok, int &n, IOReturn &err, int &errAt, uint
     }
     for (auto *m : maps) if (m) m->release();
     for (auto *d : desc) if (d) d->release();
+    if (gRoundKeep) return matched;   // the connection, its BOs and mappings stay
+    }
+close:
     step(uc->clientClose());   // drains the CP, unmaps and frees everything the connection made
     uc->release();
     return matched;
 }
 // After the publish, a heartbeat on the USB log: every 250 ms a sample of the SMMU fault state (GFSR, the GMU bank's FSR, the
 // GPU bank's FSR with its FAR and FSYNR0), all six stream routes (SMR, S2CR, logged when they change), the GMU breadcrumb, AO and
-// G2H words, sysreset, the GX and CX GDSCRs and the user-client opens and closes; a line whenever a field changes and every 2 s
-// otherwise. Only CX-side blocks are read: nothing in GX, which may be collapsed. A Zeta reset is a PMIC HARD_RESET triggered by
+// G2H words, sysreset, the GX and CX GDSCRs, the user-client opens and closes and, while GX is powered, RBBM and CP status; a line whenever a field changes and every 2 s
+// otherwise. GX registers are read only while the GX GDSC reports power on. A Zeta reset is a PMIC HARD_RESET triggered by
 // PS_HOLD (decode-zeta-pon-log.py, zeta-soc bit 16), which power-cycles DRAM, so the samples cannot be kept for the next boot:
 // the last lines before the log stops are the evidence.
 void beatThread(void *, wait_result_t) {
@@ -857,6 +869,14 @@ void beatThread(void *, wait_result_t) {
         rd(nullptr, GPB_WIN_GPUCC, 0x100c, &r[10]);
         rd(nullptr, GPB_WIN_GPUCC, 0x106c, &r[11]);
         r[12] = native_adreno_publish_stats(&r[13]);
+        // GX side only while its GDSC reports power on (bit 31): RBBM_STATUS, RBBM_INT_0_STATUS, the ring pointers, CP_HW_FAULT and
+        // CP_INTERRUPT_STATUS, as cpState reads them.
+        uint32_t g[6] = {};
+        if (r[10] >> 31) {
+            g[0] = gpuRd(ZETA_RBBM_STATUS); g[1] = gpuRd(ZETA_RBBM_INT_0_STATUS); g[2] = gpuRd(ZETA_CP_RB_RPTR);
+            g[3] = gpuRd(ZETA_CP_RB_WPTR); g[4] = gpuRd(ZETA_CP_HW_FAULT); g[5] = gpuRd(ZETA_CP_INTERRUPT_STATUS);
+        }
+        r[14] = g[0] ^ (g[1] << 1) ^ (g[2] << 7) ^ (g[3] << 17) ^ g[4] ^ (g[5] << 3);   // change detector
         uint32_t routes = 0, smr[6], s2cr[6];
         for (unsigned i = 0; i < 6; ++i) {
             smr[i] = smmu[(0x800 + 4 * i) / 4];
@@ -870,8 +890,8 @@ void beatThread(void *, wait_result_t) {
                   smr[0], smr[1], smr[2], smr[3], smr[4], smr[5], s2cr[0], s2cr[1], s2cr[2], s2cr[3], s2cr[4], s2cr[5]);
         if (n % 8 == 0 || memcmp(r, last, sizeof r))
             IOLog("zeta-beat: %llu ms gfsr %08x fsr %08x/%08x far %08x%08x fsynr %08x crumb %08x ao %08x g2h %08x sysreset %08x gx %08x "
-                  "cx %08x clients %u/%u\n", now / 1000000, r[0], r[1], r[2], r[4], r[3], r[5], r[6], r[7], r[8], r[9], r[10], r[11],
-                  r[12], r[13]);
+                  "cx %08x clients %u/%u rbbm %08x int %08x rb %x/%x hwfault %08x cp-int %08x\n", now / 1000000, r[0], r[1], r[2], r[4],
+                  r[3], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], g[0], g[1], g[2], g[3], g[4], g[5]);
         memcpy(last, r, sizeof r);
         lastRoutes = routes;
         IOSleep(250);
@@ -902,12 +922,14 @@ void publishGpu() {
         svc->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
         svc->setProperty("NativeSandboxGrantProcess", "backboardd");
     }
+    PE_parse_boot_argn("zeta-gpu-round-stop", &gRoundStop, sizeof gRoundStop);
+    PE_parse_boot_argn("zeta-gpu-round-keep", &gRoundKeep, sizeof gRoundKeep);
     int ok = 0, n = 0, errAt = -1, v1 = -1, v2 = -1;
     IOReturn err = 0;
     uint32_t memStatus = 0, closed = 0;
     if (svc) {
         v1 = clientRound(svc, ok, n, err, errAt, memStatus);
-        v2 = clientRound(svc, ok, n, err, errAt, memStatus);   // the slot recycles after clientClose
+        if (!gRoundKeep) v2 = clientRound(svc, ok, n, err, errAt, memStatus);   // the slot recycles after clientClose
     }
     const uint32_t opened = native_adreno_publish_stats(&closed);
     uint32_t f[5];

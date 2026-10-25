@@ -9,7 +9,7 @@
  #include <pthread.h>
  #include <dlfcn.h>
  #include <unistd.h>
-@@ -164,12 +166,134 @@
+@@ -164,12 +166,139 @@
          streamText(*gpu, text);
      }
  }
@@ -51,7 +51,7 @@
 +    if (!object) return "-";
 +    const char *name = class_getName(object_getClass(object));
 +    const size_t length = strlen(name);
-+    return name + (length > 20 ? length - 20 : 0);
++    return name + (length > 28 ? length - 28 : 0);
 +}
 +static void readHello() {
 +    dispatch_async(dispatch_get_main_queue(), ^{
@@ -68,7 +68,12 @@
 +            }
 +        }
 +        id top = send(key, "rootViewController");
-+        for (unsigned i = 0; i < 16 && send(top, "presentedViewController"); ++i) top = send(top, "presentedViewController");
++        // down through presented controllers and navigation stacks to the screen being shown
++        for (unsigned i = 0; i < 16; ++i) {
++            if (id presented = send(top, "presentedViewController")) top = presented;
++            else if ([top respondsToSelector:sel_registerName("topViewController")] && send(top, "topViewController")) top = send(top, "topViewController");
++            else break;
++        }
 +        id hello = gHello ?: found;
 +        int used = snprintf(gHelloState, sizeof gHelloState, "W%u V%u f%d root %s top %s", windows, views, found != nil,
 +                            classTail(send(key, "rootViewController")), classTail(top));
@@ -144,7 +149,7 @@
      pthread_attr_t attributes;
      pthread_attr_init(&attributes);
      pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-@@ -179,7 +303,13 @@
+@@ -179,7 +308,13 @@
          static char full[420], last[420];
          for (;;) {
              sleep(5);

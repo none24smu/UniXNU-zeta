@@ -77,6 +77,24 @@ void gmuProgress(uint32_t step) {
     IOLog("zeta-gpu: gmu context step %u\n", step);
     native_gpu_power_stage = 0x40 + step;
 }
+// Why the GMU memory is refused: sheng's allocator wants a 4 KiB-granule kernel (NativeAdrenoQueryCpu4K) and each buffer
+// physically contiguous below the SMMU output size. Each buffer of the default layout is tried alone and released at once.
+void gmuMemoryCheck(unsigned bits) {
+    NativeAdrenoCpuState cpu{};
+    const IOReturn query = NativeAdrenoQueryCpu4K(&cpu);
+    IOLog("zeta-gpu: cpu4k %#x tcr %llx page %llu map page %llu PAGE_SIZE %u sctlr %llx ttbr1 %llx\n",
+          static_cast<unsigned>(query), cpu.tcr, cpu.kernel_page_bytes, cpu.kernel_map_page_bytes,
+          static_cast<unsigned>(PAGE_SIZE), cpu.sctlr, cpu.ttbr1);
+    const NativeAdrenoGmuSizes sizes = NativeAdrenoGmuDefaultSizes(NativeAdrenoGmuContext::TablePages * 0x1000);
+    const uint64_t bytes[] = {sizes.icache, sizes.dummy, sizes.debug, sizes.log, sizes.hfi, sizes.tables};
+    for (unsigned i = 0; i < 6; ++i) {
+        NativeAdrenoMemory memory;
+        const IOReturn status = memory.allocate(static_cast<size_t>(bytes[i]), bits, true, static_cast<size_t>(bytes[i]));
+        IOLog("zeta-gpu: gmu buffer %u bytes %#llx status %#x spans %zu physical %#llx\n", i, bytes[i],
+              static_cast<unsigned>(status), memory.spanCount(), memory.spanCount() ? memory.spans()[0].physical : 0ULL);
+        (void)memory.release();
+    }
+}
 void gmuContext(const gpb_result &r) {
     const bool ready = r.smmu == GPB_DONE && !r.io_error && gpb_gdsc_on(r.cx_gdscr) && !r.smr_valid;
     if (!ready || !NativeAdrenoGmuContextBringup) {
@@ -89,6 +107,7 @@ void gmuContext(const gpb_result &r) {
         memory->release();
     }
     if (!gSmmuMap) {IOLog("zeta-gpu: gmu context: no SMMU map\n"); return;}
+    gmuMemoryCheck(36);
     NativeAdrenoGmuContextReport &g = native_gpu_gmu_context;
     const IOReturn status = NativeAdrenoGmuContextBringup(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
         kSmmuWindow, kGmuBank, kGmuAsid, kGmuSlot, kGmuSid, gmuProgress, &g);

@@ -31,6 +31,8 @@ typedef struct {
     int (*sha256)(void *, const void *, size_t, uint8_t digest[32]);
     int (*now_us)(void *, uint64_t *);
     int (*wait_us)(void *, unsigned);
+    /* Optional: called before each step of the cold start (phase, step), so a bus hang leaves the last step in the log. */
+    void (*progress)(void *, unsigned phase, unsigned step);
 } ZetaGmuServices;
 /* CPU view and GMU address of one payload of the GMU's SMMU context (NativeAdrenoGmuContextPayloads order). */
 typedef struct {volatile uint32_t *cpu; size_t bytes; uint64_t iova;} ZetaGmuMemory;

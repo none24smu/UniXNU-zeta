@@ -209,6 +209,12 @@ int coldNow(void *, uint64_t *us) {
     return 0;
 }
 int coldWait(void *, unsigned us) {IODelay(us); return 0;}
+// Before each cold-start step; the pause lets the USB console send the line before a bus hang can stop the core.
+void coldStep(void *, unsigned phase, unsigned at) {
+    IOLog("zeta-gpu: cold step %u.%x\n", phase, at);
+    native_gpu_power_stage = 0x70 + phase;
+    IOSleep(30);
+}
 int hfiWait(void *) {IODelay(100); return 0;}
 bool mapCold() {
     for (unsigned w = 0; w < ZetaGmuWindows; ++w) {
@@ -674,7 +680,7 @@ void gmuColdStart() {
     ZetaGmuDevice &d = gColdDevice;
     d = {};
     if (ZetaGmuBindMmio(&gColdMmio, &d.io)) {IOLog("zeta-gpu: cold start: bind refused\n"); return;}
-    d.services = {nullptr, coldSha256, coldNow, coldWait};
+    d.services = {nullptr, coldSha256, coldNow, coldWait, coldStep};
     gColdConfig.firmware = static_cast<const uint8_t *>(gGmuFirmware->getBytesNoCopy());
     gColdConfig.firmware_bytes = gGmuFirmware->getLength();
     gColdConfig.poll_budget = 1000;   // with 100 us waits, the stock 100 ms GMU_START_TIMEOUT

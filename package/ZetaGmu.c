@@ -173,6 +173,9 @@ static int read_word(ZetaGmuDevice *d, const ZetaGmuConfig *c, const AdrenoFirmw
     return core_rd(d, reg + (uint32_t)(at / 4), word, r);
 }
 
+static void step(ZetaGmuDevice *d, unsigned phase, unsigned at)
+{if (d->services.progress) d->services.progress(d->services.cookie, phase, at);}
+
 static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c, ZetaGmuResult *r)
 {
     ZetaGmuStatus status = validate(d, c, r);
@@ -184,6 +187,7 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
         return ZetaGmuFirmware;
     r->blocks = (uint32_t)count;
     r->phase = 1;
+    step(d, 1, 0);
     uint32_t value;
     if (core_rd(d, GMU_CM3_SYSRESET, &r->sysreset_before, r) || core_rd(d, GMU_HFI_CTRL_STATUS, &r->hfi_status_before, r) ||
         rd(d, ZetaGmuRscc, RSCC_SEQ_BUSY_DRV0 << 2, &r->rsc_busy_before, r) || core_rd(d, GMU_GENERAL_7, &r->general7_before, r))
@@ -195,19 +199,25 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
     if (status != ZetaGmuSuccess) return status;
 
     r->phase = 2;
+    step(d, 2, 0);
     d->boot_attempted = 1;
     /* The payloads are the GMU's own and zero, as dma_alloc_attrs + memset leave them; then the HFI queues. */
     const ZetaGmuMemory *memory[] = {&c->icache, &c->dummy, &c->debug, &c->log};
     for (unsigned m = 0; m < 4; ++m) for (size_t i = 0; i < memory[m]->bytes / 4; ++i) memory[m]->cpu[i] = 0;
+    step(d, 2, 1);
     if (AdrenoHfiInitializeStopped(&d->hfi, c->hfi.cpu, c->hfi.bytes, c->hfi.iova, d, notify) != AdrenoHfiSuccess) {
         status = ZetaGmuArgument; goto failed;
     }
-    for (size_t i = 0; i < count; ++i)
+    step(d, 2, 2);
+    for (size_t i = 0; i < count; ++i) {
+        step(d, 2, 0x100 + (unsigned)i);
         for (size_t at = 0; at < blocks[i].bytes; at += 4)
             if (load_word(d, c, blocks + i, at, le32(c->firmware + blocks[i].payload_offset + at), r)) {
                 status = ZetaGmuIoError; goto failed;
             }
+    }
     if (d->io.barrier(d->io.cookie)) {status = ZetaGmuIoError; goto failed;}
+    step(d, 2, 3);
     for (size_t i = 0; i < count; ++i)
         for (size_t at = 0; at < blocks[i].bytes; at += 4) {
             if (read_word(d, c, blocks + i, at, &value, r)) {status = ZetaGmuIoError; goto failed;}
@@ -216,14 +226,17 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
 
     /* a6xx_gmu_register_config. */
     r->phase = 3;
+    step(d, 3, 0);
     {
         const uint32_t regs[] = {GMU_CX_FALNEXT_INTF, GMU_CX_FAL_INTF, GMU_GENERAL_7, GMU_CM3_FW_INIT_RESULT,
                                  GMU_CM3_BOOT_CONFIG, GMU_HFI_QTBL_ADDR, GMU_HFI_QTBL_INFO, GMU_AHB_FENCE_RANGE_0, GMU_CM3_CFG};
         const uint32_t values[] = {1, 1, 1, 0, 2, (uint32_t)c->hfi.iova, 1, FENCE_RANGE_MASK, 0x4052};
         for (unsigned i = 0; i < sizeof regs / sizeof regs[0]; ++i)
             if (core_wr(d, regs[i], values[i], r)) {status = ZetaGmuIoError; goto failed;}
+        step(d, 3, 1);
         /* GBIF halt may be left asserted by an earlier reset; the GPU block's GBIF is in CX. */
         if (wr(d, ZetaGmuGpu, (size_t)GPU_GBIF_HALT << 2, 0, r)) {status = ZetaGmuIoError; goto failed;}
+        step(d, 3, 2);
         const uint32_t regs2[] = {GMU_PWR_COL_CP_RESP, GMU_HFI_SFR_ADDR, GMU_PWR_COL_CP_MSG,
                                   /* a6xx_gmu_power_config, IFPC off */
                                   GMU_SYS_BUS_CONFIG, GMU_ICACHE_CONFIG, GMU_DCACHE_CONFIG, GMU_PWR_COL_INTER_FRAME_CTRL};
@@ -231,12 +244,14 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
                                     1, 1, 1, 0x9c40400};
         for (unsigned i = 0; i < sizeof regs2 / sizeof regs2[0]; ++i)
             if (core_wr(d, regs2[i], values2[i], r)) {status = ZetaGmuIoError; goto failed;}
+        step(d, 3, 3);
         if (core_rd(d, GMU_RPMH_CTRL, &value, r) || core_wr(d, GMU_RPMH_CTRL, value | RPMH_ENABLE_MASK, r)) {
             status = ZetaGmuIoError; goto failed;
         }
     }
     /* a6xx_gmu_version_info: fixed DTCM words; then a6xx_gmu_irq_enable's clear and mask (interrupts stay unrouted: this
      * driver polls). */
+    step(d, 3, 4);
     if (core_rd(d, GMU_CM3_DTCM_START + 0xff8, &r->core_version, r) || core_rd(d, GMU_CM3_DTCM_START + 0xffc, &r->hfi_version, r) ||
         core_wr(d, GMU_GMU2HOST_INTR_CLR, UINT32_MAX, r) || core_wr(d, GMU_AO_HOST_INTERRUPT_CLR, UINT32_MAX, r) ||
         core_wr(d, GMU_GMU2HOST_INTR_MASK, ~HFI_IRQ_MASK, r) || core_wr(d, GMU_AO_HOST_INTERRUPT_MASK, ~AO_INT_MASK, r) ||
@@ -245,6 +260,7 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
 
     /* a6xx_gmu_device_start. */
     r->phase = 4;
+    step(d, 4, 0);
     {
         const uint32_t mask = r->core_version <= UINT32_C(0x20010004) ? UINT32_MAX : 0x1ff;
         const uint32_t ready = mask == UINT32_MAX ? UINT32_C(0xbabeface) : 0x100;
@@ -253,13 +269,16 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
         status = poll(d, GMU_CM3_FW_INIT_RESULT, mask, ready, c->poll_budget, &r->firmware_init_result, r);
         if (status != ZetaGmuSuccess) goto failed;
         r->firmware_ready = 1;
+        step(d, 4, 1);
     }
     /* a6xx_load_pdc_ucode with pdc_in_aop (only the GPU PDC start address and enable), then a6xx_load_rsc_ucode. */
     r->phase = 5;
+    step(d, 5, 0);
     if (wr(d, ZetaGmuPdc, (size_t)PDC_GPU_SEQ_START_ADDR << 2, 0, r) ||
         wr(d, ZetaGmuPdc, (size_t)PDC_GPU_ENABLE_PDC << 2, 0x80000001u, r) || d->io.barrier(d->io.cookie)) {
         status = ZetaGmuIoError; goto failed;
     }
+    step(d, 5, 1);
     {
         const uint32_t regs[] = {RSCC_RSC_STATUS0_DRV0, RSCC_PDC_SLAVE_ID_DRV0, RSCC_HIDDEN_TCS_CMD0_DATA,
             RSCC_HIDDEN_TCS_CMD0_ADDR, RSCC_HIDDEN_TCS_CMD0_DATA + 2, RSCC_HIDDEN_TCS_CMD0_ADDR + 2,
@@ -274,12 +293,14 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
     }
     /* a6xx_gmu_hfi_start. */
     r->phase = 6;
+    step(d, 6, 0);
     if (core_wr(d, GMU_HFI_CTRL_INIT, 1, r) || d->io.barrier(d->io.cookie)) {status = ZetaGmuIoError; goto failed;}
     status = poll(d, GMU_HFI_CTRL_STATUS, 1, 1, c->poll_budget, &r->hfi_status, r);
     if (status != ZetaGmuSuccess) goto failed;
     status = check_faults(d, r);
     if (status != ZetaGmuSuccess) goto failed;
     r->hfi_ready = 1;
+    step(d, 6, 1);
     r->phase = 7;
     return ZetaGmuSuccess;
 failed:

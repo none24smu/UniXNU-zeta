@@ -42,6 +42,7 @@ extern "C" void sheng_cpufreq_probe(void);
 extern "C" void zeta_soc_health(void);
 extern "C" void zeta_hid_input_probe(void);
 extern "C" void zeta_touch_probe(void);
+extern "C" void sheng_gpu_power_probe(void);
 extern "C" void zeta_dsi_survey(volatile unsigned char *mdp);
 extern "C" uint64_t mach_continuous_time(void);
 
@@ -1102,6 +1103,8 @@ void native_legacy_display_late_probe(void) {
     zeta_hid_input_probe();
     // The touch digitizer's staged bring-up (TouchProbe.cpp, zeta-touch=<n>).
     zeta_touch_probe();
+    // The Adreno power and clock observation (GpuPowerProbe.cpp, sheng-gpu-power=<n>).
+    sheng_gpu_power_probe();
     if (bootArg("offline-mobile-graphics-load") != 1) return;
     kern_return_t surfaceLoad = OSKextLoadKextWithIdentifier(kSurfaceKext);
     kern_return_t familyLoad = OSKextLoadKextWithIdentifier(kFamily);

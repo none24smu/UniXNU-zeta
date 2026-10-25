@@ -1,0 +1,56 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -655,6 +655,8 @@
+ - (void)useResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n usage:(MTLResourceUsage)u {(void)r;(void)n;(void)u;}
+ - (void)useHeap:(id<MTLHeap>)h {(void)h;}
+ - (void)useHeaps:(const id<MTLHeap> __unsafe_unretained [])h count:(NSUInteger)n {(void)h;(void)n;}
++- (void)useResidencySet:(id)set {(void)set;}
++- (void)useResidencySets:(const id __unsafe_unretained [])sets count:(NSUInteger)n {(void)sets;(void)n;}
+ @end
+ 
+ @interface NBComputeEncoder : NBEncoder
+@@ -677,6 +679,17 @@
+  for(NSUInteger k=0;k<r.length;k++)[self texture:t[k] index:r.location+k stage:0];
+ }
+ - (void)setSamplerState:(id<MTLSamplerState>)s atIndex:(NSUInteger)i {[self sampler:s index:i stage:0];}
++- (void)setSamplerStates:(const id<MTLSamplerState> __unsafe_unretained [])s withRange:(NSRange)r {
++ for(NSUInteger k=0;k<r.length;k++)[self sampler:s[k] index:r.location+k stage:0];
++}
++// MPS binds its samplers with LOD clamps. The runtime's sampler carries the clamps it was made with, so these bind that sampler and keep
++// its own clamps; a kernel that needs a narrower range samples a wider one.
++- (void)setSamplerState:(id<MTLSamplerState>)s lodMinClamp:(float)lo lodMaxClamp:(float)hi atIndex:(NSUInteger)i {(void)lo;(void)hi;[self sampler:s index:i stage:0];}
++- (void)setSamplerStates:(const id<MTLSamplerState> __unsafe_unretained [])s lodMinClamps:(const float [])lo lodMaxClamps:(const float [])hi
++               withRange:(NSRange)r {
++ (void)lo;(void)hi;
++ for(NSUInteger k=0;k<r.length;k++)[self sampler:s[k] index:r.location+k stage:0];
++}
+ - (void)setThreadgroupMemoryLength:(NSUInteger)n atIndex:(NSUInteger)i {
+  [self check:nmb_compute_set_threadgroup_memory(self.handle,(uint32_t)n,(uint32_t)i) what:"setThreadgroupMemoryLength"];
+ }
+@@ -689,6 +702,7 @@
+ - (void)dispatchThreadgroups:(MTLSize)t threadsPerThreadgroup:(MTLSize)g {[self dispatch:t group:g threads:false];}
+ - (void)useResource:(id<MTLResource>)r usage:(MTLResourceUsage)u {(void)r;(void)u;}
+ - (void)memoryBarrierWithScope:(MTLBarrierScope)s {(void)s;}
++- (void)memoryBarrierWithResources:(const id<MTLResource> __unsafe_unretained [])r count:(NSUInteger)n {(void)r;(void)n;}
+ @end
+ 
+ @interface NBRenderEncoder : NBEncoder
+@@ -909,10 +923,18 @@
+  if(type!=MTLDispatchTypeSerial){[self refuse:@"concurrent compute dispatch"];return nil;}
+  return [self computeCommandEncoder];
+ }
++// The pass descriptors (MPS makes its encoders this way): the dispatch type is honoured as above; counter sample attachments are not
++// supported (the device has no counter sets), so a pass that names them is encoded without them.
++- (id<MTLComputeCommandEncoder>)computeCommandEncoderWithDescriptor:(MTLComputePassDescriptor *)d {
++ return [self computeCommandEncoderWithDispatchType:d?d.dispatchType:MTLDispatchTypeSerial];
++}
++- (id<MTLBlitCommandEncoder>)blitCommandEncoderWithDescriptor:(MTLBlitPassDescriptor *)d {(void)d;return [self blitCommandEncoder];}
+ - (id<MTLBlitCommandEncoder>)blitCommandEncoder {
+  gBlits++;encodedWork.blits++;
+  return [self encoder:[NBBlitEncoder new] handle:self.committed?nullptr:nmb_blit_encoder_new(_handle) what:@"blitCommandEncoder"];
+ }
++- (void)useResidencySet:(id)set {(void)set;}
++- (void)useResidencySets:(const id __unsafe_unretained [])sets count:(NSUInteger)n {(void)sets;(void)n;}
+ - (id<MTLRenderCommandEncoder>)renderCommandEncoderWithDescriptor:(MTLRenderPassDescriptor *)d {
+  NmbRenderPassDescriptor pass={};
+  {

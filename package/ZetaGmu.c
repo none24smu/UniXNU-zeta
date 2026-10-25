@@ -266,6 +266,7 @@ static ZetaGmuStatus load_and_start_hfi(ZetaGmuDevice *d, const ZetaGmuConfig *c
         const uint32_t ready = mask == UINT32_MAX ? UINT32_C(0xbabeface) : 0x100;
         r->reset_verified = 0;
         if (core_wr(d, GMU_CM3_SYSRESET, 0, r) || d->io.barrier(d->io.cookie)) {status = ZetaGmuIoError; goto failed;}
+        for (unsigned at = 0x10; at <= 0x13; ++at) step(d, 4, at);
         status = poll(d, GMU_CM3_FW_INIT_RESULT, mask, ready, c->poll_budget, &r->firmware_init_result, r);
         if (status != ZetaGmuSuccess) goto failed;
         r->firmware_ready = 1;

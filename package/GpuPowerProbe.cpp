@@ -209,9 +209,13 @@ int coldNow(void *, uint64_t *us) {
     return 0;
 }
 int coldWait(void *, unsigned us) {IODelay(us); return 0;}
-// Before each cold-start step; the pause lets the USB console send the line before a bus hang can stop the core.
+void releaseProbe(unsigned at);
+// Before each cold-start step; the pause lets the USB console send the line before a bus hang can stop the core. Steps 4.11-4.13
+// follow the CM3 release and read, in order, GPUCC (outside CX), the SMMU and then the GMU itself, so a reset names the first
+// block that no longer answers.
 void coldStep(void *, unsigned phase, unsigned at) {
-    IOLog("zeta-gpu: cold step %u.%x\n", phase, at);
+    if (phase == 4 && at >= 0x11) releaseProbe(at);
+    else IOLog("zeta-gpu: cold step %u.%x\n", phase, at);
     native_gpu_power_stage = 0x70 + phase;
     IOSleep(30);
 }
@@ -250,6 +254,22 @@ void smmuFaults(uint32_t out[5]) {
     out[2] = base[(bank + 0x60) / 4];
     out[3] = base[(bank + 0x64) / 4];
     out[4] = base[(bank + 0x68) / 4];
+}
+
+void releaseProbe(unsigned at) {
+    uint32_t v[5] = {0, 0, 0, 0, 0};
+    if (at == 0x11) {
+        rd(nullptr, GPB_WIN_GPUCC, 0x106c, v + 0); rd(nullptr, GPB_WIN_GPUCC, 0x100c, v + 1);
+        rd(nullptr, GPB_WIN_GPUCC, 0x1098, v + 2); rd(nullptr, GPB_WIN_GPUCC, 0x1540, v + 3);
+        IOLog("zeta-gpu: cold step 4.11 gpucc cx %08x gx %08x cx_gmu %08x cx_hw %08x\n", v[0], v[1], v[2], v[3]);
+    } else if (at == 0x12) {
+        smmuFaults(v);
+        IOLog("zeta-gpu: cold step 4.12 smmu gfsr %08x fsr %08x far %08x:%08x fsynr0 %08x\n", v[0], v[1], v[3], v[2], v[4]);
+    } else {
+        v[0] = coldRd(ZetaGmuCore, kGmuReg(0x23b03)); v[1] = coldRd(ZetaGmuCore, kG2hInfo);
+        v[2] = coldRd(ZetaGmuCore, kGmuReg(0x1f81c)); v[3] = coldRd(ZetaGmuCore, kSysReset);
+        IOLog("zeta-gpu: cold step 4.%x gmu ao %08x g2h %08x init %08x sysreset %08x\n", at, v[0], v[1], v[2], v[3]);
+    }
 }
 
 // Mode 9: the stock A660 GPU start after the GMU has powered GX (a6xx_gpu_boot from a6xx_start on, adreno_a6xx.c), with

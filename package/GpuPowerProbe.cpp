@@ -916,6 +916,17 @@ void publishGpu() {
     const IOReturn published = attached ? attached :
         native_adreno_publish(vm, &gSubmit, &gRing, &clock, timer ? nullptr : &gTimer, &gDeviceInfo, 31, 40);
     IOService *svc = published ? nullptr : native_adreno_published_service();
+    // zeta-gpu-metal=1: the two keys Metal's discovery reads (the IOAcceleratorES match is aliased to this service by the
+    // kernel's iOS class aliases) and the one process whose opens the kernel grants in place of the sandbox verdict
+    // (zzzz-native-adreno-sandbox-grant.patch), as sheng's publishMetal sets them on its accelerator. The bundle comes from the
+    // Data seed through the boot-time addon mount (sheng-gpu-addon=1).
+    unsigned metal = 0;
+    PE_parse_boot_argn("zeta-gpu-metal", &metal, sizeof metal);
+    if (svc && metal == 1) {
+        svc->setProperty("MetalPluginName", "NativeAdrenoMetal");
+        svc->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
+        svc->setProperty("NativeSandboxGrantProcess", "backboardd");
+    }
     int ok = 0, n = 0, errAt = -1, v1 = -1, v2 = -1;
     IOReturn err = 0;
     uint32_t memStatus = 0, closed = 0;

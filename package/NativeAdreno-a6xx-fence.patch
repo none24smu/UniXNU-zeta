@@ -1,0 +1,40 @@
+--- a/NativeAdrenoRing.h
++++ b/NativeAdrenoRing.h
+@@ -50,7 +50,7 @@
+     size_t ring_bytes_=0,fence_bytes_=0;
+     uint64_t ring_iova_=0,fence_iova_=0;
+     uint32_t next_=0,rptr_shadow_=0,seqno_=0,completed_=0,submissions_=0;
+-    bool attached_=false,poisoned_=false,reset_pending_=false;
++    bool attached_=false,poisoned_=false,reset_pending_=false,a6xx_=false;
+     IOReturn poison();
+     IOReturn readRptr(uint32_t *);
+     IOReturn emitPrologue(uint32_t at,bool reset,uint32_t *end);
+@@ -82,6 +82,9 @@
+     /* The next framed submission starts with the A7XX context entry of a6xx_set_pagetable() (BR/BV counters, on-chip
+      * timestamps and resource table cleared between thread syncs); a new user client requests it, as Linux does per context. */
+     void requestContextReset() {reset_pending_=true;}
++    /* A6XX timestamps (zeta, Adreno 660): the plain submit() fence becomes the stock KGSL one, CP_EVENT_WRITE with
++     * CACHE_FLUSH_TS and the interrupt bit (adreno_ringbuffer.c), without the A7XX WRITE_ENABLED field. Before attach. */
++    void useA6xxFence() {if(!attached_)a6xx_=true;}
+     /* Polls the CP-written timestamp after invalidating the fence page. Never
+      * writes registers and never advances the ring. Timeout is not poison. */
+     NativeAdrenoRingFence wait(uint32_t fence,const NativeAdrenoRingClock *,
+--- a/NativeAdrenoRing.cpp
++++ b/NativeAdrenoRing.cpp
+@@ -20,6 +20,7 @@
+     RingFenceEvent = 0x31,    /* CACHE_CLEAN */
+     RingFenceEnable = 1u << 27,
+     RingFenceIrq = 1u << 31,
++    RingA6xxCacheFlushTs = 0x04,  /* CACHE_FLUSH_TS, adreno_pm4types.h */
+     RingBlockBytes = 32,
+     /* A7XX framing, as a7xx_submit() in the pinned a6xx_gpu.c emits it: CP_THREAD_CONTROL (0x17; THREAD bits 0..1,
+      * BR 1, BV 2, BOTH 3; SYNC_THREADS bit 31), CP_SET_MARKER (0x65; 0x101 IFPC disable, 0x100 enable), CCU_INVALIDATE_DEPTH
+@@ -128,7 +129,7 @@
+     if(AdrenoPM4Type4(RingScratch,1,&words[0])!=AdrenoPM4Success ||
+         AdrenoPM4Type7(RingFenceOpcode,4,&words[2])!=AdrenoPM4Success)return poison();
+     words[1]=seqno;
+-    words[3]=RingFenceEvent|RingFenceEnable|RingFenceIrq;
++    words[3]=a6xx_?RingA6xxCacheFlushTs|RingFenceIrq:RingFenceEvent|RingFenceEnable|RingFenceIrq;
+     /* The timestamp goes to +4 (msm_rbmemptrs.fence), where wait() reads it; +0 is the CP's RPTR shadow. */
+     const uint64_t at4=fence_iova_+4;
+     words[4]=(uint32_t)at4;words[5]=(uint32_t)(at4>>32);words[6]=seqno;

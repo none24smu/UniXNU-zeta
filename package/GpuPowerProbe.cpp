@@ -22,8 +22,10 @@
 //   8  as 7, then, after a complete cold start: the first HFI GX_BW_PERF_VOTE at the stock initial power level
 //      (`zeta-gpu-level=<n>` picks another DT level, 0 = fastest) and the OOB GPU request (set bit 30, ack bit 31) that makes the
 //      GMU power GX; RBBM_STATUS and GBIF_HALT_ACK only when GX reports on. Nothing in the GPU register space is written.
-// sheng's mode 9 (hw_init, SQE, ring, CP init, zap) follows once these have been seen on the device. The result goes to the
-// kernel log as "zeta-gpu:" lines from a thread about ten seconds after the probe starts.
+//   9  as 8, then, with GX on: the GPU's SMMU context and kernel buffers (NativeAdrenoGpuContext), the hash-pinned stock
+//      a660_sqe.fw from /chosen zeta-gpu-sqe, a6xx_start for the A660v2, the power-up register list, the ring, CP_ME_INIT, and
+//      without a zap shader the SECVID_TRUST_CNTL fallback and one CP_MEM_WRITE into a scratch page through the GPU's context.
+// The result goes to the kernel log as "zeta-gpu:" lines from a thread about ten seconds after the probe starts.
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -37,6 +39,11 @@
 #include <kern/clock.h>
 #include "NativeAdrenoGmuContext.h"
 #include "ZetaGmu.h"
+#include "ZetaA660HwInit.h"
+#include "NativeAdrenoGpuContext.h"
+#include "NativeAdrenoRing.h"
+#include "AdrenoPM4.h"
+#include <string.h>
 
 extern "C" {
 struct gpb_result native_gpu_power_result;
@@ -46,11 +53,15 @@ volatile uint32_t native_gpu_power_stage;
 extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu, size_t bytes, unsigned bank, unsigned asid,
                                                   unsigned slot, unsigned sid, void (*progress)(uint32_t),
                                                   NativeAdrenoGmuContextReport *report) __attribute__((weak));
+extern "C" IOReturn NativeAdrenoGmuContextPayloads(NativeAdrenoGmuPayload out[5]) __attribute__((weak));
+extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *, size_t, unsigned, unsigned, unsigned, unsigned, unsigned,
+    unsigned, void (*)(uint32_t), NativeAdrenoGmuContextReport *) __attribute__((weak));
+extern "C" IOReturn NativeAdrenoGpuContextBuffers(NativeAdrenoGpuBuffer out[5]) __attribute__((weak));
 
 namespace {
 unsigned mode() {
     static unsigned cached = ~0u;
-    if (cached == ~0u) {unsigned m = 0; PE_parse_boot_argn("sheng-gpu-power", &m, sizeof m); cached = m > 8 ? 8 : m;}
+    if (cached == ~0u) {unsigned m = 0; PE_parse_boot_argn("sheng-gpu-power", &m, sizeof m); cached = m > 9 ? 9 : m;}
     return cached;
 }
 void delayUs(void *, unsigned us) {IODelay(us);}
@@ -216,6 +227,251 @@ void readGmuState(uint32_t out[4]) {
     out[3] = coldRd(ZetaGmuCore, kHfiStatus);
 }
 
+// SMMU global and the GMU bank's fault state (GFSR, then FSR, FAR, FSYNR0 of context bank kGmuBank), so a GMU that stopped on a
+// translation fault reads as one. Bank b's page is (page size) << (NUMPAGENDXB + 1) + b * page, from ID1 as sheng computes it.
+void smmuFaults(uint32_t out[5]) {
+    for (unsigned i = 0; i < 5; ++i) out[i] = 0xdeadbeef;
+    const uint32_t id1 = native_gpu_gmu_context.id1;
+    if (!gSmmuMap || !id1) return;
+    const size_t page = (id1 >> 31) ? 0x10000 : 0x1000, bank = (page << (((id1 >> 28) & 7) + 1)) + kGmuBank * page;
+    if (bank + 0x70 > kSmmuWindow) return;
+    volatile uint32_t *base = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
+    out[0] = base[0x48 / 4];
+    out[1] = base[(bank + 0x58) / 4];
+    out[2] = base[(bank + 0x60) / 4];
+    out[3] = base[(bank + 0x64) / 4];
+    out[4] = base[(bank + 0x68) / 4];
+}
+
+// Mode 9: the stock A660 GPU start after the GMU has powered GX (a6xx_gpu_boot from a6xx_start on, adreno_a6xx.c), with
+// the GPU's own SMMU context (stock gfx3d_user SID 0, gfx3d_lpac SID 1; bank 0, ASID 2 and slots 0/1 as sheng has them)
+// and the kernel buffers NativeAdrenoGpuContext places below 16 MiB (the a650 family programs no UCHE GMEM base).
+constexpr uint32_t kGpuSqeIova = 0x100000;
+OSSharedPtr<OSData> gSqeFirmware;
+OSSharedPtr<IOMemoryMap> gGpuMaps[5];
+volatile uint8_t *gGpuCpu[5];
+NativeAdrenoGpuBuffer gGpuBuffers[5];
+NativeAdrenoGmuContextReport native_gpu_context;
+NativeAdrenoRing gRing;
+// stage, sqe readback mismatch, cp init submit, cp init fence, observed, mem-write submit, mem-write fence, scratch word
+uint32_t native_gpu_cp[8];
+// GPU registers below 0x10000 (the kgsl_3d0_reg_memory window); the GMU's own (dwords 0x1a800 on) through the GMU window.
+uint32_t gpuRd(uint32_t reg) {return reg < 0x10000 ? coldRd(ZetaGmuGpu, reg * 4) : 0xdeadbeef;}
+void gpuWr(uint32_t reg, uint32_t value) {if (reg < 0x10000) coldWr(ZetaGmuGpu, reg * 4, value);}
+void gpuRmw(uint32_t reg, uint32_t clear, uint32_t set) {gpuWr(reg, (gpuRd(reg) & ~clear) | set);}
+bool gmuReg(uint32_t dword) {return dword >= 0x1a800 && dword * 4 - 0x6a000 < 0x34000;}
+void gmuWr(uint32_t dword, uint32_t value) {if (gmuReg(dword)) coldWr(ZetaGmuCore, kGmuReg(dword), value);}
+uint32_t gmuRd(uint32_t dword) {return gmuReg(dword) ? coldRd(ZetaGmuCore, kGmuReg(dword)) : 0xdeadbeef;}
+void gmuRmw(uint32_t dword, uint32_t clear, uint32_t set) {gmuWr(dword, (gmuRd(dword) & ~clear) | set);}
+int ringWrite(void *, uint32_t reg, uint32_t value) {gpuWr(reg, value); return 0;}
+int ringRead(void *, uint32_t reg, uint32_t *value) {*value = gpuRd(reg); return 0;}
+int ringBarrier(void *) {__asm__ volatile("dsb sy" ::: "memory"); return 0;}
+// Ring, memptrs and lists are Normal non-cacheable on both sides (GPU PTE MAIR 0, CPU write-combine): ordering only.
+int ringPublish(void *, const volatile uint32_t *, size_t) {__asm__ volatile("dsb sy" ::: "memory"); return 0;}
+int ringAcquire(void *, volatile uint32_t *, size_t) {__asm__ volatile("dsb sy" ::: "memory"); return 0;}
+uint64_t ringNow(void *) {uint64_t us = 0; coldNow(nullptr, &us); return us;}
+int ringIdle(void *) {IODelay(20); return 0;}
+void gpuCtxProgress(uint32_t step) {
+    IOLog("zeta-gpu: gpu context step %u\n", step);
+    native_gpu_power_stage = 0x90 + step;
+}
+void cpState(const char *what) {
+    IOLog("zeta-gpu: cp %s stage %u sqe %x init %u/%u seen %u write %u/%u scratch %08x rptr %x wptr %x rbbm %08x/%08x int %08x "
+          "hwfault %08x protect %08x cp-int %08x secvid %x\n", what, native_gpu_cp[0], native_gpu_cp[1], native_gpu_cp[2],
+          native_gpu_cp[3], native_gpu_cp[4], native_gpu_cp[5], native_gpu_cp[6], native_gpu_cp[7], gpuRd(ZETA_CP_RB_RPTR),
+          gpuRd(ZETA_CP_RB_WPTR), gpuRd(ZETA_RBBM_STATUS), gpuRd(ZETA_RBBM_STATUS3), gpuRd(ZETA_RBBM_INT_0_STATUS),
+          gpuRd(ZETA_CP_HW_FAULT), gpuRd(ZETA_CP_PROTECT_STATUS), gpuRd(ZETA_CP_INTERRUPT_STATUS),
+          gpuRd(ZETA_RBBM_SECVID_TRUST_CNTL));
+}
+// a6xx_start for adreno_gpu_core_a660v2: veto_fal10, highest_bank_bit 16, prim_fifo_threshold 0x00300000, hang_detect_cycles
+// 0xcfffff, disable_tseskip, the stock DT's qcom,min-access-length 32 and qcom,ubwc-mode 4 (UBWC 4.0). Preemption and LLCC
+// slices are not set up (no context switch record; the GPU LLCC slices stay at their reset state).
+void a660Start() {
+    static const uint32_t addressModes[] = {ZETA_CP_ADDR_MODE_CNTL, ZETA_VSC_ADDR_MODE_CNTL, ZETA_GRAS_ADDR_MODE_CNTL,
+        ZETA_RB_ADDR_MODE_CNTL, ZETA_PC_ADDR_MODE_CNTL, ZETA_HLSQ_ADDR_MODE_CNTL, ZETA_VFD_ADDR_MODE_CNTL, ZETA_VPC_ADDR_MODE_CNTL,
+        ZETA_UCHE_ADDR_MODE_CNTL, ZETA_SP_ADDR_MODE_CNTL, ZETA_TPL1_ADDR_MODE_CNTL, ZETA_RBBM_SECVID_TSB_ADDR_MODE_CNTL};
+    for (uint32_t reg : addressModes) gpuWr(reg, 1);
+    for (const auto &r : ZetaA650Gbif) gpuWr(r[0], r[1]);
+    gpuWr(ZETA_RBBM_PERFCTR_GPU_BUSY_MASKED, 0xffffffff);
+    gpuWr(ZETA_UCHE_WRITE_RANGE_MAX_LO, 0xffffffc0);
+    gpuWr(ZETA_UCHE_WRITE_RANGE_MAX_LO + 1, 0x0001ffff);
+    gpuWr(ZETA_UCHE_TRAP_BASE_LO, 0xfffff000);
+    gpuWr(ZETA_UCHE_TRAP_BASE_LO + 1, 0x0001ffff);
+    gpuWr(ZETA_UCHE_WRITE_THRU_BASE_LO, 0xfffff000);
+    gpuWr(ZETA_UCHE_WRITE_THRU_BASE_LO + 1, 0x0001ffff);
+    gpuWr(ZETA_UCHE_FILTER_CNTL, 0x804);
+    gpuWr(ZETA_UCHE_CACHE_WAYS, 0x4);
+    gpuWr(ZETA_CP_ROQ_THRESHOLDS_2, 0x02000140);
+    gpuWr(ZETA_CP_ROQ_THRESHOLDS_1, 0x8040362c);
+    gpuWr(ZETA_CP_LPAC_PROG_FIFO_SIZE, 0x00000020);
+    gpuWr(ZETA_CP_MEM_POOL_SIZE, 128);
+    gpuWr(ZETA_PC_DBG_ECO_CNTL, 0x00300000);
+    gpuWr(ZETA_CP_AHB_CNTL, 0x1);
+    gpuWr(ZETA_RBBM_PERFCTR_CNTL, 0x1);
+    gmuRmw(ZETA_GMU_CX_GMU_POWER_COUNTER_SELECT_1, 0xff, 0x4);
+    // UBWC 4.0: mode 0, rgb565 predicator, AMSBC; min access 32 (mal 0); hbb 16: hbb_lo 3, hbb_hi 0; uavflagprd_inv 2.
+    gpuWr(ZETA_RB_NC_MODE_CNTL, (1u << 11) | (1u << 4) | (3u << 1));
+    gpuWr(ZETA_TPL1_NC_MODE_CNTL, 3u << 1);
+    gpuWr(ZETA_SP_NC_MODE_CNTL, (2u << 4) | (3u << 1));
+    gpuWr(ZETA_UCHE_MODE_CNTL, 3u << 21);
+    gpuWr(ZETA_RBBM_INTERFACE_HANG_INT_CNTL, (1u << 30) | 0xcfffff);
+    gpuWr(ZETA_UCHE_CLIENT_PF, 1);
+    static const uint32_t bicubic[5] = {0, 0x3fe05ff4, 0x3fa0ebee, 0x3f5193ed, 0x3f0243f0};
+    for (unsigned i = 0; i < 5; ++i) gpuWr(ZETA_TPL1_BICUBIC_WEIGHTS_TABLE_0 + i, bicubic[i]);
+    gpuRmw(ZETA_PC_DBG_ECO_CNTL, 0, 1u << 9);   // disable_tseskip
+    gmuWr(ZETA_GPU_GMU_AO_GPU_CX_BUSY_MASK, 0xff000000);
+    gmuRmw(ZETA_GMU_CX_GMU_POWER_COUNTER_SELECT_0, 0xff, 0x20);
+    gmuWr(ZETA_GMU_CX_GMU_POWER_COUNTER_ENABLE, 0x1);
+    // a6xx_protect_init.
+    gpuWr(ZETA_CP_PROTECT_CNTL, (1u << 0) | (1u << 1) | (1u << 3));
+    for (const auto &r : ZetaA660Protect) gpuWr(r[0], r[1]);
+    gpuWr(ZETA_CP_CHICKEN_DBG, 0x1);
+    gpuWr(ZETA_RBBM_GBIF_CLIENT_QOS_CNTL, 0x0);
+    gpuWr(ZETA_UCHE_CMDQ_CONFIG, 0x66906);
+    gpuWr(ZETA_CP_APRIV_CNTL, (1u << 6) | (1u << 5) | (1u << 3) | (1u << 2) | (1u << 1));   // A6XX_APRIV_DEFAULT
+    // a6xx_set_secvid only with a secure MMU; there is none here. a6xx_hwcg_set(true) for the A660.
+    gmuWr(ZETA_GPU_GMU_AO_GMU_CGC_MODE_CNTL, 0x00020000);
+    gmuWr(ZETA_GPU_GMU_AO_GMU_CGC_DELAY_CNTL, 0x00010111);
+    gmuWr(ZETA_GPU_GMU_AO_GMU_CGC_HYST_CNTL, 0x00005555);
+    gmuWr(ZETA_GMU_CX_GMU_WFI_CONFIG, 0);
+    if (gpuRd(ZETA_RBBM_CLOCK_CNTL) != 0x8aa8aa82) {
+        gmuRmw(ZETA_GPU_GMU_GX_SPTPRAC_CLOCK_CONTROL, 1, 0);
+        for (const auto &r : ZetaA660Hwcg) gpuWr(r[0], r[1]);
+        gpuRmw(ZETA_UCHE_GBIF_GX_CONFIG, 0x70000, 2);
+        gmuRmw(ZETA_GPU_GMU_GX_SPTPRAC_CLOCK_CONTROL, 0, 1);
+        gpuWr(ZETA_RBBM_CLOCK_CNTL, 0x8aa8aa82);
+    }
+}
+// a6xx_patch_pwrup_reglist for the a650 family: struct cpu_gpu_lock (flag_ucode, flag_kmd, turn, list_length u16,
+// list_offset u16), then {register, current value} pairs: the IFPC-only lists, then the IFPC + preemption list, the a650 list,
+// GBIF_CLIENT_QOS_CNTL and PERFCTR_CNTL = 1. Returns the bytes written, 0 when the buffer is too small.
+size_t a660PwrupList(volatile uint32_t *out, size_t bytes) {
+    const struct {const uint32_t *regs; size_t count;} lists[] = {
+        {ZetaA6xxIfpcPwrup, sizeof ZetaA6xxIfpcPwrup / 4}, {ZetaA650IfpcPwrup, sizeof ZetaA650IfpcPwrup / 4},
+        {ZetaA6xxPwrup, sizeof ZetaA6xxPwrup / 4}, {ZetaA650Pwrup, sizeof ZetaA650Pwrup / 4}};
+    size_t words = 4, length = 0;
+    for (const auto &l : lists) words += 2 * l.count;
+    words += 4;
+    if (words * 4 > bytes) return 0;
+    size_t at = 4;
+    for (const auto &l : lists)
+        for (size_t i = 0; i < l.count; ++i) {out[at++] = l.regs[i]; out[at++] = gpuRd(l.regs[i]); length += 2;}
+    out[at++] = ZETA_RBBM_GBIF_CLIENT_QOS_CNTL; out[at++] = gpuRd(ZETA_RBBM_GBIF_CLIENT_QOS_CNTL);
+    out[at++] = ZETA_RBBM_PERFCTR_CNTL; out[at++] = 1;
+    length += 4;
+    const uint32_t offset = static_cast<uint32_t>(2 * (sizeof ZetaA6xxIfpcPwrup + sizeof ZetaA650IfpcPwrup) / 4);
+    out[0] = 0; out[1] = 0; out[2] = 0;
+    out[3] = static_cast<uint32_t>(length) | (offset << 16);
+    __asm__ volatile("dsb sy" ::: "memory");
+    return at * 4;
+}
+void gpuStart() {
+    uint32_t *c = native_gpu_cp;
+    if (!NativeAdrenoGpuContextBringup || !NativeAdrenoGpuContextBuffers || !gSmmuMap) {IOLog("zeta-gpu: gpu start not linked\n"); return;}
+    IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
+    if (chosen) {
+        if (OSData *data = OSDynamicCast(OSData, chosen->getProperty("zeta-gpu-sqe"))) gSqeFirmware.reset(data, OSRetain);
+        chosen->release();
+    }
+    if (!gSqeFirmware) {IOLog("zeta-gpu: gpu start skipped, no /chosen zeta-gpu-sqe in the ADT\n"); return;}
+    // 1. The GPU's context bank and buffers.
+    NativeAdrenoGmuContextReport &q = native_gpu_context;
+    const IOReturn ctx = NativeAdrenoGpuContextBringup(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
+        kSmmuWindow, 0, 2, 0, 0, 1, 1, gpuCtxProgress, &q);
+    IOLog("zeta-gpu: gpu context step %u status %#x kit %u/%u program phase %u enabled %u route phase %u verified %u spans %u "
+          "ttbr0 %016llx\n", q.step, static_cast<unsigned>(ctx), q.program_status, q.route_status, q.program_phase,
+          q.program_enabled, q.route_phase, q.routes_verified, q.spans, static_cast<unsigned long long>(q.ttbr0));
+    if (ctx) return;
+    c[0] = 1;
+    if (NativeAdrenoGpuContextBuffers(gGpuBuffers)) {IOLog("zeta-gpu: gpu buffers refused\n"); return;}
+    for (unsigned i = 0; i < 5; ++i) {
+        IODeviceMemory *m = IODeviceMemory::withRange(gGpuBuffers[i].physical, gGpuBuffers[i].bytes);
+        if (m) {
+            gGpuMaps[i] = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapWriteCombineCache), OSNoRetain);
+            m->release();
+        }
+        if (!gGpuMaps[i]) {IOLog("zeta-gpu: gpu buffer %u unmapped\n", i); return;}
+        gGpuCpu[i] = reinterpret_cast<volatile uint8_t *>(gGpuMaps[i]->getVirtualAddress());
+    }
+    // 2. SQE: the hash-pinned stock a660_sqe.fw, copied without its first dword (adreno_fw_create_bo).
+    c[0] = 2;
+    const uint8_t *sqe = static_cast<const uint8_t *>(gSqeFirmware->getBytesNoCopy());
+    const size_t sqeBytes = gSqeFirmware->getLength();
+    uint8_t digest[32];
+    coldSha256(nullptr, sqe, sqeBytes, digest);
+    static const uint8_t kSqeSha256[32] = {   // a660_sqe.fw, sha256 f911a4ba...6204bb
+        0xf9, 0x11, 0xa4, 0xba, 0xdf, 0x7b, 0x56, 0x71, 0x9c, 0xb1, 0x30, 0x49, 0x2b, 0xc3, 0x9f, 0x9e,
+        0xdb, 0x85, 0x33, 0x5f, 0x54, 0xe8, 0xb4, 0x98, 0x3b, 0x5c, 0x67, 0xeb, 0x9e, 0x62, 0x04, 0xbb};
+    if (memcmp(digest, kSqeSha256, 32) || sqeBytes < 8 || sqeBytes - 4 > gGpuBuffers[0].bytes || gGpuBuffers[0].iova != kGpuSqeIova) {
+        IOLog("zeta-gpu: sqe refused, %zu bytes\n", sqeBytes);
+        return;
+    }
+    for (size_t i = 4; i < sqeBytes; ++i) gGpuCpu[0][i - 4] = sqe[i];
+    __asm__ volatile("dsb sy" ::: "memory");
+    for (size_t i = 4; i < sqeBytes; ++i) if (gGpuCpu[0][i - 4] != sqe[i]) {c[1] = static_cast<uint32_t>(i); break;}
+    if (c[1]) {cpState("sqe readback"); return;}
+    // 3. a6xx_start; the power-up list once every register is written; then the GBIF halt released.
+    c[0] = 3;
+    a660Start();
+    const size_t list = a660PwrupList(reinterpret_cast<volatile uint32_t *>(gGpuCpu[3]), gGpuBuffers[3].bytes);
+    if (!list) {IOLog("zeta-gpu: pwrup list does not fit\n"); return;}
+    gpuWr(ZETA_GBIF_HALT, 0);
+    gpuWr(ZETA_RBBM_GBIF_HALT, 0);
+    gpuWr(ZETA_RBBM_INT_0_MASK, 0);   // nothing services the GPU interrupt yet: polled
+    // 4. a6xx_rb_start: the ring (CP_RB_CNTL 0x20c, the rptr shadow at memptrs+0), then a6xx_unhalt_sqe.
+    c[0] = 4;
+    const NativeAdrenoRingIo rio{nullptr, ringWrite, ringRead, ringBarrier};
+    const NativeAdrenoRingCache cache{nullptr, ringPublish, ringAcquire};
+    gRing.useA6xxFence();
+    const IOReturn attached = gRing.attach(&rio, &cache, const_cast<uint8_t *>(gGpuCpu[1]), gGpuBuffers[1].bytes,
+        gGpuBuffers[1].iova, const_cast<uint8_t *>(gGpuCpu[2]), gGpuBuffers[2].bytes, gGpuBuffers[2].iova);
+    if (attached) {IOLog("zeta-gpu: ring attach %#x\n", static_cast<unsigned>(attached)); return;}
+    gpuWr(ZETA_CP_SQE_INSTR_BASE_LO, static_cast<uint32_t>(gGpuBuffers[0].iova));
+    gpuWr(ZETA_CP_SQE_INSTR_BASE_LO + 1, static_cast<uint32_t>(gGpuBuffers[0].iova >> 32));
+    gpuWr(ZETA_CP_SQE_CNTL, 1);
+    // 5. a6xx_send_cp_init: CP_ME_INIT (0x48), 11 payload dwords, CP_INIT_MASK 0x16f.
+    c[0] = 5;
+    uint32_t init[12] = {};
+    if (AdrenoPM4Type7(0x48, 11, &init[0]) != AdrenoPM4Success) {cpState("pm4"); return;}
+    const uint64_t listIova = gGpuBuffers[3].iova;
+    init[1] = 0x16f;                 // MAX_CONTEXT, ERROR_DETECTION, HEADER_DUMP, DEFAULT_RESET_STATE, UCODE_WORKAROUND,
+                                     // OPERATION_MODE, REGISTER_INIT_LIST_WITH_SPINLOCK
+    init[2] = 0x00000003;            // hardware contexts
+    init[3] = 0x20000000;            // error detection
+    init[4] = 0; init[5] = 0;        // header dump address, enable and size
+    init[6] = 0;                     // no ucode workarounds
+    init[7] = 0x00000002;            // operation mode
+    init[8] = static_cast<uint32_t>(listIova); init[9] = static_cast<uint32_t>(listIova >> 32); init[10] = 0;
+    uint32_t fence = 0;
+    c[2] = static_cast<uint32_t>(gRing.submit(init, 12, &fence));
+    if (c[2]) {cpState("init refused"); return;}
+    const NativeAdrenoRingClock clock{nullptr, ringNow, ringIdle};
+    c[3] = gRing.wait(fence, &clock, 2000000, &c[4]);   // adreno_ringbuffer_submit_spin(rb, NULL, 2000)
+    if (c[3]) {cpState(c[3] == NativeAdrenoRingFenceTimeout ? "init timeout" : "init fault"); return;}
+    cpState("init done");
+    // 6. Secure mode off without a zap shader (a6xx_rb_start's fallback), then CP_MEM_WRITE (0x3d) into the scratch page.
+    c[0] = 6;
+    gpuWr(ZETA_RBBM_SECVID_TRUST_CNTL, 0);
+    volatile uint32_t *scratch = reinterpret_cast<volatile uint32_t *>(gGpuCpu[4]);
+    scratch[0] = 0;
+    __asm__ volatile("dsb sy" ::: "memory");
+    uint32_t words[4] = {};
+    if (AdrenoPM4Type7(0x3d, 3, &words[0]) != AdrenoPM4Success) {cpState("pm4"); return;}
+    words[1] = static_cast<uint32_t>(gGpuBuffers[4].iova); words[2] = static_cast<uint32_t>(gGpuBuffers[4].iova >> 32);
+    words[3] = 0x5e9a660;
+    c[5] = static_cast<uint32_t>(gRing.submit(words, 4, &fence));
+    if (c[5]) {cpState("write refused"); return;}
+    c[6] = gRing.wait(fence, &clock, 200000, &c[4]);
+    c[7] = scratch[0];
+    c[0] = c[6] ? 8 : (c[7] == 0x5e9a660 ? 10 : 9);
+    // Stage 10: the GPU wrote the scratch word through its own context and signalled the fence.
+    cpState(c[0] == 10 ? "write ok" : c[6] ? "write timeout" : "write missing");
+    uint32_t f[5];
+    smmuFaults(f);
+    IOLog("zeta-gpu: smmu gfsr %08x after the gpu start\n", f[0]);
+    native_gpu_power_stage = c[0] == 10 ? 0x9a : 0x9f;
+}
+
 // Mode 8: a6xx_gmu_dcvs_set's first vote, then a6xx_gmu_oob_set(oob_gpu) as a6xx_gpu_boot does before a6xx_start.
 void gpuOn() {
     uint32_t *g = native_gpu_gx;
@@ -249,22 +505,7 @@ void gpuOn() {
     IOLog("zeta-gpu: gx vote %u/%#x perf %u bw %u oob polls %u gx %08x>%08x gdscr %08x %s rbbm %08x gbif-ack %08x\n", g[0], g[1],
           perf, bw, g[2], g[3], g[4], g[5], gx ? "on" : "off", g[6], g[7]);
     native_gpu_power_stage = gx ? 0x87 : 0x8f;
-}
-
-// SMMU global and the GMU bank's fault state (GFSR, then FSR, FAR, FSYNR0 of context bank kGmuBank), so a GMU that stopped on a
-// translation fault reads as one. Bank b's page is (page size) << (NUMPAGENDXB + 1) + b * page, from ID1 as sheng computes it.
-void smmuFaults(uint32_t out[5]) {
-    for (unsigned i = 0; i < 5; ++i) out[i] = 0xdeadbeef;
-    const uint32_t id1 = native_gpu_gmu_context.id1;
-    if (!gSmmuMap || !id1) return;
-    const size_t page = (id1 >> 31) ? 0x10000 : 0x1000, bank = (page << (((id1 >> 28) & 7) + 1)) + kGmuBank * page;
-    if (bank + 0x70 > kSmmuWindow) return;
-    volatile uint32_t *base = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
-    out[0] = base[0x48 / 4];
-    out[1] = base[(bank + 0x58) / 4];
-    out[2] = base[(bank + 0x60) / 4];
-    out[3] = base[(bank + 0x64) / 4];
-    out[4] = base[(bank + 0x68) / 4];
+    if (gx && mode() >= 9) gpuStart();
 }
 
 void gmuColdStart() {

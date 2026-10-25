@@ -77,8 +77,9 @@ BUTTON_NAMES = b'volup\0voldown\0hold\0'
 # The stock V54AP tree's /buttons home-button-type: 2 is no Home button (Face ID, swipe-up home gesture). MobileGestalt
 # reads it; absent, iOS treats the phone as a Home-button model ("Press Home to open").
 HOME_BUTTON_TYPE = 2
-# The stock vendor image's a660_gmu.bin (55256 bytes), as ZetaGmu.c pins it.
-GPU_GMU_SHA256 = '6bb9360a1601253a86ee3ae1b9b916f5f1832a72d55e9b8573567f1740c94e2b'
+# The stock vendor image's GPU firmware as GpuPowerProbe pins it: a660_gmu.bin (55256 bytes, ZetaGmu.c) and a660_sqe.fw.
+GPU_FIRMWARE = {'zeta-gpu-gmu': ('a660_gmu.bin', '6bb9360a1601253a86ee3ae1b9b916f5f1832a72d55e9b8573567f1740c94e2b'),
+                'zeta-gpu-sqe': ('a660_sqe.fw', 'f911a4badf7b56719cb130492bc39f9edb85335f54e8b4983b5c67eb9e6204bb')}
 
 
 def node(name, properties=(), children=()):
@@ -189,8 +190,8 @@ def main():
                         help='/chosen/asmb lp-sip0: the CSR flags of a kernel built with XNU_APFS_CSR (lp-sip1 stays 0). '
                              'Without it csr_config is 0, full SIP')
     parser.add_argument('--gpu-firmware', type=Path, default=None,
-                        help='a directory with the stock vendor image\'s a660_gmu.bin: /chosen zeta-gpu-gmu for GpuPowerProbe mode '
-                             '7. Proprietary; local builds only, never CI')
+                        help='a directory with the stock vendor image\'s a660_gmu.bin and a660_sqe.fw: /chosen zeta-gpu-gmu and '
+                             'zeta-gpu-sqe for GpuPowerProbe modes 7 and 9. Proprietary; local builds only, never CI')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.ipad_identity:
@@ -226,11 +227,11 @@ def main():
             for index, reg in enumerate(cpu_regs)]
     ramdisk = args.data_ramdisk or args.packed_data_ramdisk
     gpu_firmware = []
-    if args.gpu_firmware:
-        gmu = (args.gpu_firmware / 'a660_gmu.bin').read_bytes()
-        if hashlib.sha256(gmu).hexdigest() != GPU_GMU_SHA256:
-            parser.error('a660_gmu.bin is not the stock Surface Duo 2 GMU firmware')
-        gpu_firmware.append(('zeta-gpu-gmu', gmu))
+    for key, (name, digest) in GPU_FIRMWARE.items() if args.gpu_firmware else ():
+        data = (args.gpu_firmware / name).read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            parser.error(name + ' is not the stock Surface Duo 2 firmware')
+        gpu_firmware.append((key, data))
     tree = node('device-tree', [
         # hw.product/hw.machine/hw.target come from the root model/target-type (IODTPlatformExpert).
         ('model', MODEL),

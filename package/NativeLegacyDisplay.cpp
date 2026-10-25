@@ -46,6 +46,11 @@ extern "C" void zeta_touch_probe(void);
 extern "C" void sheng_gpu_power_probe(void);
 extern "C" void zeta_dsi_survey(volatile unsigned char *mdp);
 extern "C" uint64_t mach_continuous_time(void);
+// The GPU hand-off presenter (UniXNU drivers/NativeMobileDisplay/NativeGOPPresenter.cpp, sheng-fb-gpu=1).
+extern "C" IOService *native_gop_presenter_create(void);
+extern "C" void native_gop_presenter_set_source(IOService *presenter, IOService *nub);
+extern "C" bool native_gop_gpu_offer(IOService *presenter, void *display, IOMemoryDescriptor *, uint64_t stride, uint32_t width,
+    uint32_t height);
 
 namespace {
 const char kFamily[] = "com.apple.iokit.IOMobileGraphicsFamily";
@@ -121,6 +126,10 @@ struct Display {
     uint64_t vsyncInterval, vsyncNext;
     unsigned vsyncHz, vsyncSent;
     bool vsyncArmed;
+    // sheng-fb-gpu=1: the swap the GPU copy is writing, when its offer began, and one CPU copy after a failed GPU copy.
+    const void *gpuRequest;
+    uint64_t gpuBegun;
+    bool gpuBypass;
 };
 Display gDisplays[2];
 // Where a present's time goes (sheng's native_legacy_copy_timing_observed, split): mapping the surface, waiting for the
@@ -129,6 +138,11 @@ Display gDisplays[2];
 struct PresentTiming {uint64_t n, map, mapMax, wait, waitMax, copy, copyMax, copyMin, gaps, gap, gapMin, last;
                       uint64_t apertureRows, mapRows, fallbackRow;};
 PresentTiming gTiming;
+// The GPU hand-off's presents per watch: offers taken, copies reported done and failed (the CPU then copied the swap), the
+// time from the offer to the reported copy, and the gap between presents.
+struct GpuTiming {uint64_t offers, done, failed, copy, copyMax, gaps, gap, gapMin, last; int lastStatus;};
+GpuTiming gGpu;
+IOService *gHandoff;
 void timingAdd(uint64_t &sum, uint64_t &max, uint64_t ticks) {
     sum += ticks;
     if (ticks > max) max = ticks;
@@ -506,8 +520,14 @@ void snapSend() {
         gSnap.length = gSnap.sent = 0;
     }
 }
+void finishGpuSwap(IOService *self, int status);
 void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     const bool full = !(gDpu.ticks++ % 30);
+    // A GPU copy that never reports (its client died with the frame: the accelerator's hand-off connection does not abandon it)
+    // fails after a second, so the swap is copied on the CPU instead of holding the queue. The tick runs on the display's loop.
+    for (auto &display : gDisplays) {
+        if (display.gpuRequest && mach_absolute_time() - display.gpuBegun > 19200000ULL) finishGpuSwap(display.object, kIOReturnTimeout);
+    }
     dpuHealth(full);
     if (full) zeta_soc_health();
     zeta_cpufreq_thermal();
@@ -524,6 +544,15 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
         const uint64_t last = gTiming.last;
         gTiming = {};
         gTiming.last = last;
+    }
+    if (full && gGpu.offers) {
+        auto us = [](uint64_t ticks) {return ticks * 10 / 192;};
+        IOLog("zeta-display: gpu present %llu offers, %llu done, %llu failed (last %#x), copy avg %llu max %llu us, gap avg %llu "
+            "min %llu us\n", gGpu.offers, gGpu.done, gGpu.failed, gGpu.lastStatus, gGpu.done ? us(gGpu.copy / gGpu.done) : 0,
+            us(gGpu.copyMax), gGpu.gaps ? us(gGpu.gap / gGpu.gaps) : 0, us(gGpu.gapMin));
+        const uint64_t last = gGpu.last;
+        gGpu = {};
+        gGpu.last = last;
     }
     if (full && gDpu.watched < 20) {
         char when[16];
@@ -746,6 +775,25 @@ void kickOnce(IOService *self, Display *display) {
     const uint64_t stride = gBind.rowBytes(surface), allocation = gBind.allocSize(surface);
     if (!memory || !surfaceBounds(width, height, stride, allocation, memory->getLength()))
         return stall(display, request, "surface bounds");
+    // sheng-fb-gpu=1 (sheng's kickOnce): the frame is offered to the Metal plugin's GPU copy into the scanout (UniXNU
+    // NativeMetal GpuScanoutClient.h) instead of being copied here; the swap retires when the copy is reported
+    // (native_legacy_gpu_complete). A refused offer, or a failed copy, takes the CPU copy below for that swap.
+    if (gHandoff && !display->gpuBypass && bootArg("zeta-opaque") != 1) {
+        if (!prepareScanout()) return stall(display, request, "scanout busy");
+        if (native_gop_gpu_offer(gHandoff, self, memory, stride, width, height)) {
+            gGpu.offers++;
+            if (gGpu.last && (!gGpu.gapMin || begun - gGpu.last < gGpu.gapMin)) gGpu.gapMin = begun - gGpu.last;
+            if (gGpu.last) {
+                gGpu.gap += begun - gGpu.last;
+                gGpu.gaps++;
+            }
+            gGpu.last = begun;
+            display->gpuRequest = request;
+            display->gpuBegun = begun;
+            display->transferred = true;
+            return;
+        }
+    }
     // zeta-surface-flush=1: clean and invalidate the surface's lines before the copy and log swaps whose cached reads
     // were stale (none were found on the spanned Setup screen; its bands were the boot-progress banner, see spanVideo).
     IOMemoryMap *source = memory->map(kIOMapAnywhere | kIOMapReadOnly);
@@ -845,8 +893,33 @@ void kick(IOService *self) {
     do {
         display->rekick = false;
         kickOnce(self, display);
+        display->gpuBypass = false;
     } while (display->rekick && !display->transferred);
     display->kicking = false;
+}
+
+// The GPU client reported its copy (status 0) or lost it, on the display's work loop (sheng's finishGpuSwap). A finished
+// copy is scanned and retires the swap like the CPU copy; anything else copies the same swap on the CPU.
+void finishGpuSwap(IOService *self, int status) {
+    Display *display = displayFor(self);
+    const void *request = display ? display->gpuRequest : nullptr;
+    if (!request) return;
+    display->gpuRequest = nullptr;
+    if (status) {
+        gGpu.failed++;
+        gGpu.lastStatus = status;
+        display->transferred = false;
+        display->gpuBypass = true;
+        kick(self);
+        return;
+    }
+    gGpu.done++;
+    timingAdd(gGpu.copy, gGpu.copyMax, mach_absolute_time() - display->gpuBegun);
+    dpuStart();
+    if (display->presented < 4 || display->presented % 600 == 0)
+        IOLog("zeta-display: GPU presented swap %u, %u frames\n", field<uint32_t>(request, kRequestSwapID), display->presented + 1);
+    display->presented++;
+    finishTransfer(self, display, request);
 }
 
 // Display refresh tick, ported from UniXNU NativeLegacyDisplay (boot-arg sheng-vsync=<Hz>). Only the platform subclass
@@ -917,6 +990,7 @@ void dStop(IOService *self, IOService *provider) {
     if (display) {
         stopVsync(self, display);
         display->transferred = false;
+        display->gpuRequest = nullptr;
         for (auto &entry : display->validated) entry = nullptr;
         if (display->logicalPM) {self->PMstop(); display->logicalPM = false;}
         display->primary = false;
@@ -1304,6 +1378,20 @@ void native_legacy_display_late_probe(void) {
     }
     IOLog("zeta-display: nub %d/%d tree %d display %p attached %d started %d\n", nubAttached, nubStarted, treeAttached,
         display, attached, started);
+    if (started && bootArg("sheng-fb-gpu") == 1) {
+        // sheng LegacyDisplayProbe: the hand-off presenter hangs off the resources, not the display node (the original display
+        // code enumerates that node's children), and maps the scanout through the nub.
+        IOService *handoff = native_gop_presenter_create();
+        bool handoffAttached = false;
+        if (handoff) native_gop_presenter_set_source(handoff, nub);
+        if (handoff && handoff->init() && (handoffAttached = handoff->attach(parent)) && handoff->start(parent)) {
+            gHandoff = handoff;
+        } else {
+            if (handoffAttached) handoff->detach(parent);
+            OSSafeReleaseNULL(handoff);
+        }
+        IOLog("zeta-display: GPU hand-off presenter %d\n", gHandoff != nullptr);
+    }
     if (started) {
         OSSafeReleaseNULL(tree);
         OSSafeReleaseNULL(ranges);
@@ -1320,3 +1408,18 @@ void native_legacy_display_late_probe(void) {
     OSSafeReleaseNULL(memory);
     OSSafeReleaseNULL(nub);
 }
+
+// NativeGOPPresenter's completion (any thread): the swap is finished on the display's work loop, as sheng's gpuComplete.
+extern "C" void native_legacy_gpu_complete(void *object, int status) {
+    auto self = static_cast<IOService *>(object);
+    if (!self) return;
+    IOWorkLoop *loop = self->getWorkLoop();
+    auto action = [](OSObject *owner, void *value, void *, void *, void *) -> IOReturn {
+        finishGpuSwap(static_cast<IOService *>(owner), int(intptr_t(value)));
+        return kIOReturnSuccess;
+    };
+    if (loop) loop->runAction(action, self, reinterpret_cast<void *>(intptr_t(status)));
+    else finishGpuSwap(self, status);
+}
+// The presenter checks its scanout against the console's geometry; zeta scans the spanned frame.
+extern "C" void native_gop_presenter_video(PE_Video *video) {spanVideo(*video);}

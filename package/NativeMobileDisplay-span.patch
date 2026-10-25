@@ -1,0 +1,21 @@
+--- a/NativeGOPPresenter.cpp
++++ b/NativeGOPPresenter.cpp
+@@ -21,6 +21,9 @@
+ void native_gop_presenter_set_source(IOService *presenter,IOService *nub);
+ // Provided by the display driver: finishes (status 0) or fails the swap that was offered.
+ void native_legacy_gpu_complete(void *display,int status);
++// Provided by a board whose display driver scans a frame other than the firmware console's (zeta: both panels spanned into one
++// wide frame): adjusts the console's geometry to the scanout the driver really shows. Absent, the console is the scanout.
++void native_gop_presenter_video(PE_Video *video) __attribute__((weak_import));
+ }
+ class NativeGOPClient;
+ class NativeGOPPresenter;
+@@ -82,7 +85,7 @@
+ bool NativeGOPPresenter::start(IOService *provider) {
+     if(!IOService::start(provider))return false;
+     PE_Video video={};
+-    if(PE_current_console(&video) || !video.v_baseAddr || !video.v_width || !video.v_height ||
++    if(PE_current_console(&video) || (native_gop_presenter_video && (native_gop_presenter_video(&video),false)) || !video.v_baseAddr || !video.v_width || !video.v_height ||
+        video.v_width>16384 || video.v_height>16384 || video.v_depth!=32 || video.v_rotate ||
+        video.v_rowBytes<video.v_width*4 || video.v_rowBytes>UINT64_MAX/video.v_height)return false;
+     // The hand-off presenter is attached away from the display subsystem's node (the original display code enumerates that node's children),

@@ -107,6 +107,8 @@ gpupower = OUT / 'GpuPowerProbe.o'
 # NativeAdreno-tbu-alias.patch: a context's stream also routes its gfx_1 TBU alias (the stock iommus mask 0x400).
 # NativeAdreno-view-free.patch: the client's view cache (IONewZero, a typed allocation) is freed with IODelete, not IODeleteData:
 # xnu-12377's kfree panicked "found in kalloc type zone 'kalloc.type.var4.16384' but being freed to data heap" at the first close.
+# NativeAdreno-view-unmap.patch: a client that dies with BOs mapped has its views unmapped and released before releaseAll frees
+# the pages (the retained map was dropped unreleased: pmap_assert_free "First PTEP is a User CPU mapping").
 def patched(module, source):
     copy = OUT / (module + '-src')
     shutil.rmtree(copy, ignore_errors=True)
@@ -173,6 +175,11 @@ for name in failed:
     log = (OUT / 'adreno' / (Path(name).stem + '.log')).read_text(errors='replace').splitlines()
     print('native adreno not compiled: ' + name + ': ' + next((line for line in log if 'error:' in line), '(no error line)')[:300])
 compile_unit(KEY_EVENTS, events, 'NativeKeyStoreEvents')
+# The GPU hand-off presenter (sheng-fb-gpu=1): the display offers its frames to the Metal plugin's GPU copy through it.
+# NativeMobileDisplay-span.patch lets the display give it the spanned scanout's geometry (native_gop_presenter_video).
+PRESENTER_SOURCE = patched('NativeMobileDisplay', ROOT / 'drivers/NativeMobileDisplay')
+presenter = OUT / 'NativeGOPPresenter.o'
+compile_unit(PRESENTER_SOURCE / 'NativeGOPPresenter.cpp', presenter, 'NativeGOPPresenter')
 subprocess.run([shutil.which('llvm-objcopy') or 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
                 '--globalize-symbol=__GLOBAL__sub_I_NativeKeyStoreEvents.cpp', str(events), str(events_late)],
                check=True, timeout=60)
@@ -189,12 +196,13 @@ if deployment != (2, 26 << 16):
     raise SystemExit(f'NativeLegacyDisplay.o: expected an iOS 26 deployment, not {deployment}')
 archive = OUT / 'libNativeLegacyDisplay.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), *map(str, adreno_objects), str(events_late)],
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), str(presenter), *map(str, adreno_objects), str(events_late)],
                check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'source_sha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
     'probe_sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                      for path in (KEYSTORE_PROBE, KEY_EVENTS, CPUFREQ_PROBE, HID_PROBE, DSI_PANEL, TOUCH_PROBE, GPU_POWER_PROBE)},
+                      for path in (KEYSTORE_PROBE, KEY_EVENTS, CPUFREQ_PROBE, HID_PROBE, DSI_PANEL, TOUCH_PROBE, GPU_POWER_PROBE,
+                                   PRESENTER_SOURCE / 'NativeGOPPresenter.cpp')},
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

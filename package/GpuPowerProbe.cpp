@@ -67,10 +67,8 @@ extern "C" IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *
     const NativeAdrenoTimer *, const NativeAdrenoAbiDeviceInfo *, uint32_t, uint32_t) __attribute__((weak));
 extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak));
 extern "C" IOService *native_adreno_published_service() __attribute__((weak));
-// sheng's NativeMobileDisplay hands its scanout to the Metal plugin through the accelerator's connection (methods 0x7000-0x7003,
-// memory type 'SC'). zeta's scanout belongs to NativeLegacyDisplay, which has no such hand-off yet: the publish unit finds none.
-extern "C" IOReturn native_gop_handoff_call(uint32_t, task_t, const void *, size_t, void *, size_t) {return kIOReturnUnsupported;}
-extern "C" IOMemoryDescriptor *native_gop_handoff_memory(void) {return nullptr;}
+// The scanout hand-off the publish unit tunnels (methods 0x7000-0x7003, memory type 'SC') is UniXNU NativeMobileDisplay's
+// NativeGOPPresenter, built beside NativeLegacyDisplay (scripts/build-native-legacy-display.py, sheng-fb-gpu=1).
 // sheng's BootLog.c keeps the render server's exported pipeline caches in its UFS log area; zeta has no export area, so every
 // piece is refused (NativeAdrenoPublish counts it). It is weak_import there, which a static kernel link cannot leave undefined.
 extern "C" int boot_log_export_put(uint32_t, uint32_t, uint32_t, const void *, uint32_t) {return -1;}

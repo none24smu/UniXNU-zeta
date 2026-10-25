@@ -1,0 +1,78 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -5,7 +5,8 @@
+ // Every result comes from the runtime and the GPU: a refused call returns nil/NO with the runtime's reason, an encoder call the runtime
+ // refuses fails its command buffer (status Error, handlers run) instead of being dropped. A selector this frontend does not implement is
+ // reported through the missing-selector hook before the usual exception, so a hardware run names the gap.
+-// Shared events work within this process (no cross-process handle yet). Not yet implemented here: heaps, argument buffers, indirect commands, drawables/presentation.
++// Shared events work within this process (no cross-process handle yet). Not yet implemented here: heaps, argument buffers, indirect commands.
++// Drawables are presented when their command buffer completes.
+ #import <Foundation/Foundation.h>
+ #import <Metal/Metal.h>
+ #import <IOSurface/IOSurfaceRef.h>
+@@ -549,6 +550,7 @@
+ @interface NBQueue : NBObject
+ @property(nonatomic) NmbQueue *handle;
+ @property(atomic,strong) dispatch_queue_t completionQueue;   // SPI: where command buffers' handlers run (nil: the runtime's thread)
++@property(atomic) uint64_t gpuPriority,backgroundGPUPriority;   // SPI: what the setters were last given (not applied: one hardware queue)
+ @end
+ @interface NBCommandBuffer : NBObject {
+ @public
+@@ -569,6 +571,7 @@
+ @property(nonatomic,strong) dispatch_group_t handlers;
+ @property(nonatomic,strong) dispatch_group_t schedulingHandlers;
+ @property(nonatomic) BOOL schedulingDelivered;
++@property(nonatomic) MTLCommandBufferErrorOption errorOptions;   // kept for the caller; the runtime reports no encoder execution status
+ - (void)refuse:(NSString *)what;
+ @end
+ @interface NBEncoder : NBObject
+@@ -926,6 +929,18 @@
+ }
+ - (void)addScheduledHandler:(MTLCommandBufferHandler)block {if(block)@synchronized(self){[_scheduledHandlers addObject:[block copy]];}}
+ - (void)addCompletedHandler:(MTLCommandBufferHandler)block {if(block)@synchronized(self){[_completedHandlers addObject:[block copy]];}}
++// Presentation (CAMetalLayer, MTKView: a process's own Metal view, such as Setup's hello). Metal presents a drawable once its command buffer
++// is scheduled, because Apple's compositor waits on the GPU's writes to the drawable's surface; here nothing makes the render server's
++// import wait for another process's work, so the drawable is presented when its command buffer has completed.
++- (void)presentDrawable:(id<MTLDrawable>)drawable {
++ if(drawable)[self addCompletedHandler:^(id<MTLCommandBuffer> done){(void)done;[drawable present];}];
++}
++- (void)presentDrawable:(id<MTLDrawable>)drawable atTime:(CFTimeInterval)time {
++ if(drawable)[self addCompletedHandler:^(id<MTLCommandBuffer> done){(void)done;[drawable presentAtTime:time];}];
++}
++- (void)presentDrawable:(id<MTLDrawable>)drawable afterMinimumDuration:(CFTimeInterval)duration {
++ if(drawable)[self addCompletedHandler:^(id<MTLCommandBuffer> done){(void)done;[drawable presentAfterMinimumDuration:duration];}];
++}
+ - (void)enqueue {}
+ - (void)event:(id<MTLEvent>)event value:(uint64_t)value signal:(bool)signal {
+  if(![(id)event isKindOfClass:[NBEvent class]]){[self refuse:@"foreign event"];return;}
+@@ -1046,8 +1061,28 @@
+ - (void)setSubmissionQueue:(dispatch_queue_t)queue {(void)queue;}   // submission happens on the caller's thread here
+ // setCompletionQueue: is the property's setter.
+ // GPU priorities are not applied (one hardware queue): reported as not applied.
+-- (BOOL)setGPUPriority:(NSUInteger)priority {(void)priority;return NO;}
+-- (BOOL)setBackgroundGPUPriority:(NSUInteger)priority {(void)priority;return NO;}
++- (BOOL)setGPUPriority:(NSUInteger)priority {self.gpuPriority=priority;return NO;}
++- (BOOL)setBackgroundGPUPriority:(NSUInteger)priority {self.backgroundGPUPriority=priority;return NO;}
++// iOS 26 IOGPUMetalCommandQueue SPI: RenderBox reads both priorities after making its queue, to give them back later.
++- (BOOL)setGPUPriority:(uint64_t)priority offset:(uint16_t)offset {(void)offset;self.gpuPriority=priority;return NO;}
++- (BOOL)setBackgroundGPUPriority:(uint64_t)priority offset:(uint16_t)offset {(void)offset;self.backgroundGPUPriority=priority;return NO;}
++- (BOOL)_setGPUPriority:(uint64_t)priority backgroundPriority:(uint64_t)background {
++ self.gpuPriority=priority;self.backgroundGPUPriority=background;return NO;
++}
++- (uint64_t)getGPUPriority {return self.gpuPriority;}
++- (uint64_t)getBackgroundGPUPriority {return self.backgroundGPUPriority;}
++- (BOOL)supportsBackgroundAppRole {return NO;}
++// Command buffers complete in submission order on the one hardware ring: an empty one committed last completes after all the others.
++- (void)finish {
++ id<MTLCommandBuffer> last=[self commandBuffer];
++ [last commit];[last waitUntilCompleted];
++}
++- (void)insertDebugCaptureBoundary {}
++// Residency sets name memory to keep resident. Every allocation of this runtime stays resident while it lives, so there is nothing to add.
++- (void)addResidencySet:(id)set {(void)set;}
++- (void)addResidencySets:(const id __unsafe_unretained *)sets count:(NSUInteger)count {(void)sets;(void)count;}
++- (void)removeResidencySet:(id)set {(void)set;}
++- (void)removeResidencySets:(const id __unsafe_unretained *)sets count:(NSUInteger)count {(void)sets;(void)count;}
+ - (id<MTLCommandBuffer>)commandBufferWithDescriptor:(MTLCommandBufferDescriptor *)d {(void)d;return [self commandBuffer];}
+ @end
+ 

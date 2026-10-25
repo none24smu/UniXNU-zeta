@@ -1,0 +1,19 @@
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -265,8 +265,14 @@
+         if(views_)for(size_t i=0;i<MaxViews;++i) {View &v=views_[i];if(v.descriptor && (!token || v.token==token)) {view=v.descriptor;v.descriptor=nullptr;v.token=0;break;}}
+         IOLockUnlock(g.lock);
+         if(!view)return;
+-        /* The returned reference is the last one outside the descriptor's own list: dropping it frees the map, which unmaps the user range. */
+-        while(removeMappingForDescriptor(view))native_adreno_metal_diag.forced_unmaps=native_adreno_metal_diag.forced_unmaps+1;
++        /* removeMappingForDescriptor hands back the map retained. Unmapping first takes the user range down even while another reference
++         * lives; the release then frees the map. Dropping it unreleased left the PTEs of a client that died with its BOs mapped, and
++         * releaseAll freed those pages under them (pmap_assert_free: "First PTEP is a User CPU mapping" when backboardd aborted). */
++        while(IOMemoryMap *map=removeMappingForDescriptor(view)) {
++            map->unmap();
++            map->release();
++            native_adreno_metal_diag.forced_unmaps=native_adreno_metal_diag.forced_unmaps+1;
++        }
+         view->release();
+     }
+ }

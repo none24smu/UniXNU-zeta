@@ -1,0 +1,12 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -781,6 +781,9 @@
+ // the command buffer.
+ - (uint64_t)protectionOptions {return 0;}
+ - (void)setProtectionOptions:(uint64_t)options {if(options)[self refuse:[NSString stringWithFormat:@"protection options 0x%llx",options]];}
++// iOS 26 QuartzCore names the client tasks a render-server command buffer works for (memory and GPU-time attribution). The runtime
++// has no per-task accounting (the kernel driver attributes by the submitting task), so the list is accepted and not kept.
++- (void)setResponsibleTaskIDs:(const unsigned int *)ids count:(NSUInteger)count {(void)ids;(void)count;}
+ - (void)refuse:(NSString *)what {
+  if(!self.encodeFailure){self.encodeFailure=what;NBLOG(@"native-metal: command buffer refused: %@",what);}
+ }

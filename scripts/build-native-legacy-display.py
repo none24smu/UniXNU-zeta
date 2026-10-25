@@ -109,6 +109,8 @@ gpupower = OUT / 'GpuPowerProbe.o'
 # xnu-12377's kfree panicked "found in kalloc type zone 'kalloc.type.var4.16384' but being freed to data heap" at the first close.
 # NativeAdreno-view-unmap.patch: a client that dies with BOs mapped has its views unmapped and released before releaseAll frees
 # the pages (the retained map was dropped unreleased: pmap_assert_free "First PTEP is a User CPU mapping").
+# NativeAdreno-scope-fresh.patch: a new connection's scope does not check queue range 0, the render server's, as if it were its own:
+# every open while backboardd had work in flight was refused (sb5-v2: the respawned SpringBoard's no-device Vulkan(-3)).
 def patched(module, source):
     copy = OUT / (module + '-src')
     shutil.rmtree(copy, ignore_errors=True)

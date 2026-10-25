@@ -1,0 +1,35 @@
+--- a/NativeAdrenoUserClient.cpp
++++ b/NativeAdrenoUserClient.cpp
+@@ -74,9 +74,9 @@
+     if(queue_base%NativeAdrenoAbiMaxQueues || queue_base>UINT32_MAX-NativeAdrenoAbiMaxQueues || (window_start&4095) || (window_bytes&4095) ||
+         (window_bytes && (window_start+window_bytes<window_start || window_start+window_bytes>(UINT64_C(1)<<input_bits_))))
+         return kIOReturnBadArgument;
+-    if(liveObjects() || submit_->rangeOutstanding(queue_base_,NativeAdrenoAbiMaxQueues) ||
++    if(liveObjects() || (scoped_ && submit_->rangeOutstanding(queue_base_,NativeAdrenoAbiMaxQueues)) ||
+         submit_->rangeOutstanding(queue_base,NativeAdrenoAbiMaxQueues))return kIOReturnBusy;
+-    queue_base_=queue_base;window_start_=window_start;window_bytes_=window_bytes;window_peak_=0;
++    queue_base_=queue_base;window_start_=window_start;window_bytes_=window_bytes;window_peak_=0;scoped_=true;
+     return kIOReturnSuccess;
+ }
+ IOReturn NativeAdrenoUserClient::close()
+@@ -85,7 +85,7 @@
+     if(liveObjects() || submit_->rangeOutstanding(queue_base_,NativeAdrenoAbiMaxQueues))return kIOReturnBusy;
+     for(size_t i=1;i<NativeAdrenoAbiMaxQueues;++i)if(queues_[i].active)return kIOReturnBusy;
+     IODeleteData(entries_,Entry,entry_count_);entry_count_=0;
+-    queue_base_=0;window_start_=window_bytes_=window_peak_=0;
++    queue_base_=0;window_start_=window_bytes_=window_peak_=0;scoped_=false;
+     open_=false;for(auto &queue:queues_)queue=Queue{};vm_=nullptr;submit_=nullptr;ring_=nullptr;timer_=nullptr;status_=nullptr;info_=nullptr;
+     return kIOReturnSuccess;
+ }
+--- a/NativeAdrenoUserClient.h
++++ b/NativeAdrenoUserClient.h
+@@ -43,6 +43,9 @@
+     /* Scope on the shared ring and GPU space: this client's queues are the submit object's queues [queue_base_, +MaxQueues), and with a
+      * window (window_bytes_ nonzero) every mapping must lie inside [window_start_, +window_bytes_), which GetDeviceInfo reports as the VA. */
+     uint32_t queue_base_=0;
++    /* setScope has given this client its range. Before that queue_base_ 0 names the render server's range, not this client's: a new
++     * connection must not wait on (or be refused for) the render server's work in flight. */
++    bool scoped_=false;
+     uint64_t window_start_=0,window_bytes_=0,window_peak_=0;
+     uint64_t next_handle_=1;
+     bool open_=false;

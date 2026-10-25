@@ -1,0 +1,72 @@
+--- a/ExceptionDiag.h
++++ b/ExceptionDiag.h
+@@ -5,29 +5,57 @@
+ // with the exception's name and reason, into a malloc'd C string that the kernel's abort-reason scan finds in the dying process's heap
+ // (kits/sheng/BootFaultProbe.c, "SHENGTHROW ") and the log prints as the THROW row. The original handler (the app's own, or Foundation's) runs
+ // after it, unchanged; a process that never throws is untouched.
++// An exception that never reaches that handler (SpringBoard, sb3-v1: QuartzCore caught one in its transaction commit and rethrew it out of
++// a noexcept frame, so libc++abi terminated with "uncaught exception of type NSException" alone) is kept at its throw: the exception
++// preprocessor records the latest throw the same way, its frames from the thrower's stack, and the uncaught handler's record replaces it.
+ #pragma once
+ #import <Foundation/Foundation.h>
++#include <execinfo.h>
++#include <objc/objc-exception.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+ namespace exceptiondiag {
+ 
+ static NSUncaughtExceptionHandler *gPrevious;
++static objc_exception_preprocessor gPreviousPreprocessor;
+ static char *gText;   // kept referenced: the text must stay in the heap until the process is gone
+ 
+-static void handler(NSException *exception) {
++// The record of `exception` with up to 20 return addresses, replacing the previous one.
++static void record(NSException *exception, const uint64_t *frames, unsigned count) {
+     @autoreleasepool {
+         NSMutableString *text = [NSMutableString stringWithFormat:@"SHENGTHROW %@ | ", exception.name];
+         NSString *reason = exception.reason ?: @"";
+         [text appendString:reason.length > 96 ? [reason substringToIndex:96] : reason];
+         [text appendString:@" |"];
+-        NSArray<NSNumber *> *frames = exception.callStackReturnAddresses;
+-        for (NSUInteger i = 0; i < frames.count && i < 20; ++i) [text appendFormat:@" %llx", (unsigned long long)frames[i].unsignedLongLongValue];
++        for (unsigned i = 0; i < count && i < 20; ++i) [text appendFormat:@" %llx", (unsigned long long)frames[i]];
+         for (NSUInteger i = 0; i < text.length; ++i) if ([text characterAtIndex:i] < 32 || [text characterAtIndex:i] > 126) [text replaceCharactersInRange:NSMakeRange(i, 1) withString:@"?"];
+-        if (const char *utf8 = text.UTF8String) gText = strdup(utf8);
++        if (const char *utf8 = text.UTF8String) {
++            char *old = gText;
++            gText = strdup(utf8);
++            free(old);
++        }
+     }
++}
++static void handler(NSException *exception) {
++    uint64_t frames[20];
++    unsigned count = 0;
++    for (NSNumber *frame in exception.callStackReturnAddresses) if (count < 20) frames[count++] = frame.unsignedLongLongValue;
++    record(exception, frames, count);
+     if (gPrevious) gPrevious(exception);
+ }
++// Every Objective-C throw, before the unwinder: the thrower's frames past this function and objc_exception_throw.
++static id preprocess(id object) {
++    if ([object isKindOfClass:[NSException class]]) {
++        void *stack[24];
++        const int depth = backtrace(stack, 24);
++        uint64_t frames[20];
++        unsigned count = 0;
++        for (int i = 2; i < depth && count < 20; ++i) frames[count++] = (uint64_t)(uintptr_t)stack[i];
++        record((NSException *)object, frames, count);
++    }
++    return gPreviousPreprocessor ? gPreviousPreprocessor(object) : object;
++}
+ // Every process that loads the plugin, once: the handler is installed in front of whatever the process already had.
+ static void start() {
+     static bool started;
+@@ -35,6 +63,7 @@
+     started = true;
+     gPrevious = NSGetUncaughtExceptionHandler();
+     NSSetUncaughtExceptionHandler(handler);
++    gPreviousPreprocessor = objc_setExceptionPreprocessor(preprocess);
+ }
+ 
+ }  // namespace exceptiondiag

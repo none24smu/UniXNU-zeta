@@ -26,7 +26,7 @@
                                                         reflection:(MTLAutoreleasedComputePipelineReflection *)reflection error:(NSError **)error {
   if(reflection)*reflection=nil;
 - NmbComputePipelineDescriptor p={};if(!computeDescriptor(d,&p,error))return nil;
-+ NSError *refusal=nil;if(!error)error=&refusal;
++ __autoreleasing NSError *refusal=nil;if(!error)error=&refusal;
 + NmbComputePipelineDescriptor p={};if(!computeDescriptor(d,&p,error)){noteRefusal(@"compute descriptor",d.computeFunction.name,error);return nil;}
   std::vector<NmbBinaryArchive *> archives;
 - if(!pipelineArchives(d.binaryArchives,archives,error))return nil;
@@ -39,7 +39,7 @@
   if(reflection)*reflection=nil;
   auto *p=new NmbRenderPipelineDescriptor();
 - if(!renderDescriptor(d,p,error)){delete p;return nil;}
-+ NSError *refusal=nil;if(!error)error=&refusal;
++ __autoreleasing NSError *refusal=nil;if(!error)error=&refusal;
 + if(!renderDescriptor(d,p,error)){noteRefusal(@"render descriptor",d.fragmentFunction.name?:d.vertexFunction.name,error);delete p;return nil;}
   std::vector<NmbBinaryArchive *> archives;
 - if(!pipelineArchives(d.binaryArchives,archives,error)){delete p;return nil;}

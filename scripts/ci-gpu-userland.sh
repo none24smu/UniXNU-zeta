@@ -63,6 +63,14 @@ rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --t
 cd "$U"
 python3 scripts/build-turnip-darwin.py --target host
 python3 scripts/build-turnip-darwin.py --target ios
+# The host simulation (gen-turnip-replay.py records Turnip's first submission there). Its last step runs
+# check-quartzcore-turnip-cache-host.py, which only sheng's device repository has (it needs the original QuartzCore inputs);
+# every check before it must pass, and the smoke client it builds must exist.
+if ! python3 scripts/check-turnip-darwin-host.py; then
+  test -x build/turnip-darwin-host/plugin_smoke
+  test -f build/turnip-darwin-host/libhostiokit.dylib
+  test ! -f scripts/check-quartzcore-turnip-cache-host.py
+fi
 python3 scripts/build-adreno-metal-plugin.py
 
 cp -R build/adreno-metal-plugin/. "$OUT/"

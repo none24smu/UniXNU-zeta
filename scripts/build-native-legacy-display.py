@@ -104,6 +104,7 @@ gpupower = OUT / 'GpuPowerProbe.o'
 # The board's patches to the upstream submodules (kits/zeta/<module>-*.patch, in name order) apply to a copy: the submodules
 # are not ours to change. NativeAdreno-16k-vm.patch: xnu-12377 keeps 16 KiB VM pages over the 4 KiB granule.
 # ArmSmmu4K-fault-slot.patch: the Adreno SMMU's free stream slots fault with non-zero attribute fields.
+# NativeAdreno-tbu-alias.patch: a context's stream also routes its gfx_1 TBU alias (the stock iommus mask 0x400).
 def patched(module, source):
     copy = OUT / (module + '-src')
     shutil.rmtree(copy, ignore_errors=True)

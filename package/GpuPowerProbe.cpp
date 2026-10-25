@@ -108,7 +108,9 @@ void publish(const gpb_result &r) {
     IOLog("zeta-gpu: smmu scr0 %08x id0 %08x id1 %08x id2 %08x gfsr %08x smr valid %u first %u %08x s2cr %08x rbbm %08x\n",
           r.scr0, r.id0, r.id1, r.id2, r.gfsr, r.smr_valid, r.smr_first, r.smr_first_val, r.s2cr_first_val, r.rbbm_status);
 }
-constexpr unsigned kGmuBank = 1, kGmuAsid = 1, kGmuSlot = 2, kGmuSid = 5;
+// The stock iommus <&kgsl_smmu 5 0x400>: the gfx_1 TBU (stream-id-range 0x400) sends the GMU's stream as 0x405, so it takes a
+// second exact SMR (slot 3) on the same bank.
+constexpr unsigned kGmuBank = 1, kGmuAsid = 1, kGmuSlot = NATIVE_ADRENO_ROUTE(2, 3), kGmuSid = NATIVE_ADRENO_STREAM(5, 0x400);
 constexpr uint64_t kSmmuWindow = 0x20000;   // ID1 0x30000007: 4 KiB pages, 16 per half
 OSSharedPtr<IOMemoryMap> gSmmuMap;
 void gmuProgress(uint32_t step) {
@@ -210,11 +212,13 @@ int coldNow(void *, uint64_t *us) {
 }
 int coldWait(void *, unsigned us) {IODelay(us); return 0;}
 void releaseProbe(unsigned at);
+void releaseTrace();
 // Before each cold-start step; the pause lets the USB console send the line before a bus hang can stop the core. Steps 4.11-4.13
 // follow the CM3 release and read, in order, GPUCC (outside CX), the SMMU and then the GMU itself, so a reset names the first
 // block that no longer answers.
 void coldStep(void *, unsigned phase, unsigned at) {
-    if (phase == 4 && at >= 0x11) releaseProbe(at);
+    if (phase == 4 && at == 0x10) releaseTrace();
+    else if (phase == 4 && at >= 0x11) releaseProbe(at);
     else IOLog("zeta-gpu: cold step %u.%x\n", phase, at);
     native_gpu_power_stage = 0x70 + phase;
     IOSleep(30);
@@ -256,6 +260,73 @@ void smmuFaults(uint32_t out[5]) {
     out[4] = base[(bank + 0x68) / 4];
 }
 
+// The CM3 start traced into the reserved pil_gpu_region page (stock DT pil_gpu_region@8b51a000, also reserved in the zeta UEFI
+// memory map): a reset that stops the core before the USB console drains still leaves the trace in DRAM for the next boot, which
+// logs it before the zap shader takes the region. Words: magic, boot, entries, samples, then six words per change of the
+// firmware's DTCM breadcrumb (0x10007fdc, (previous << 8) | step), FW_INIT_RESULT, AO and CM3 status or the SMMU GFSR.
+constexpr uint64_t kTracePhys = 0x8b51a000;
+constexpr uint32_t kTraceBytes = 0x2000, kTraceMagic = 0x5a475452, kTraceHead = 4, kTraceEntry = 6;
+constexpr uint32_t kTraceEntries = (kTraceBytes / 4 - kTraceHead) / kTraceEntry;
+OSSharedPtr<IOMemoryMap> gTraceMap;
+volatile uint32_t *traceWords() {
+    if (!gTraceMap) {
+        IODeviceMemory *m = IODeviceMemory::withRange(kTracePhys, kTraceBytes);
+        if (m) {
+            gTraceMap = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
+            m->release();
+        }
+    }
+    return gTraceMap ? reinterpret_cast<volatile uint32_t *>(gTraceMap->getVirtualAddress()) : nullptr;
+}
+// The previous boot's trace, if one is there; then the magic is cleared so a later boot never shows it twice.
+uint32_t gTraceBoot;
+void lastTrace() {
+    volatile uint32_t *t = traceWords();
+    if (!t) {IOLog("zeta-gpu: trace page not mapped\n"); return;}
+    if (t[0] != kTraceMagic) {IOLog("zeta-gpu: no earlier trace (%08x)\n", t[0]); return;}
+    gTraceBoot = t[1];
+    const uint32_t n = t[2] < kTraceEntries ? t[2] : kTraceEntries;
+    IOLog("zeta-gpu: earlier trace boot %u entries %u samples %u\n", t[1], t[2], t[3]);
+    for (uint32_t i = 0; i < n; ++i) {
+        volatile uint32_t *e = t + kTraceHead + i * kTraceEntry;
+        IOLog("zeta-gpu: trace %u t %u us crumb %08x init %08x ao %08x g2h %08x gfsr %08x\n", i, e[0], e[1], e[2], e[3], e[4],
+              e[5]);
+        if (!(i & 15)) IOSleep(20);
+    }
+    t[0] = 0;
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+void releaseTrace() {
+    volatile uint32_t *t = traceWords();
+    if (!t) {IOLog("zeta-gpu: cold step 4.10 (no trace page)\n"); IOSleep(30); return;}
+    t[1] = gTraceBoot + 1; t[2] = 0; t[3] = 0; t[0] = kTraceMagic;
+    __asm__ volatile("dsb sy" ::: "memory");
+    uint64_t start = 0, now = 0, done = 0;
+    coldNow(nullptr, &start);
+    uint32_t last[5] = {~0u, ~0u, ~0u, ~0u, ~0u}, entries = 0, samples = 0;
+    for (now = start; now - start < 200000 && (!done || now - done < 5000); coldNow(nullptr, &now)) {
+        uint32_t f[5];
+        smmuFaults(f);
+        const uint32_t v[5] = {coldRd(ZetaGmuCore, kGmuReg(0x1d3f7)), coldRd(ZetaGmuCore, kGmuReg(0x1f81c)),
+                               coldRd(ZetaGmuCore, kGmuReg(0x23b03)), coldRd(ZetaGmuCore, kG2hInfo), f[0]};
+        ++samples;
+        if (memcmp(v, last, sizeof v) && entries < kTraceEntries) {
+            volatile uint32_t *e = t + kTraceHead + entries * kTraceEntry;
+            e[0] = static_cast<uint32_t>(now - start);
+            for (unsigned i = 0; i < 5; ++i) e[1 + i] = v[i];
+            t[2] = ++entries;
+            memcpy(last, v, sizeof v);
+            __asm__ volatile("dsb sy" ::: "memory");
+        }
+        if (!(samples & 63)) {t[3] = samples; __asm__ volatile("dsb sy" ::: "memory");}
+        if (!done && ((v[1] & 0x1ff) == 0x100 || v[1] == 0xbabeface)) done = now;
+    }
+    t[3] = samples;
+    __asm__ volatile("dsb sy" ::: "memory");
+    IOLog("zeta-gpu: cold step 4.10 traced %u samples %u entries %llu us, last crumb %08x init %08x ao %08x g2h %08x gfsr %08x\n",
+          samples, entries, static_cast<unsigned long long>(now - start), last[0], last[1], last[2], last[3], last[4]);
+    IOSleep(30);
+}
 void releaseProbe(unsigned at) {
     uint32_t v[5] = {0, 0, 0, 0, 0};
     if (at == 0x11) {
@@ -273,7 +344,8 @@ void releaseProbe(unsigned at) {
 }
 
 // Mode 9: the stock A660 GPU start after the GMU has powered GX (a6xx_gpu_boot from a6xx_start on, adreno_a6xx.c), with
-// the GPU's own SMMU context (stock gfx3d_user SID 0, gfx3d_lpac SID 1; bank 0, ASID 2 and slots 0/1 as sheng has them)
+// the GPU's own SMMU context (stock gfx3d_user SID 0, gfx3d_lpac SID 1, each with mask 0x400: bank 0, ASID 2, slots 0/1 as sheng
+// has them and 4/5 for the gfx_1 TBU streams 0x400/0x401)
 // and the kernel buffers NativeAdrenoGpuContext places below 16 MiB (the a650 family programs no UCHE GMEM base).
 constexpr uint32_t kGpuSqeIova = 0x100000;
 OSSharedPtr<OSData> gSqeFirmware;
@@ -539,7 +611,8 @@ void gpuStart() {
     // 1. The GPU's context bank and buffers.
     NativeAdrenoGmuContextReport &q = native_gpu_context;
     const IOReturn ctx = NativeAdrenoGpuContextBringup(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
-        kSmmuWindow, 0, 2, 0, 0, 1, 1, gpuCtxProgress, &q);
+        kSmmuWindow, 0, 2, NATIVE_ADRENO_ROUTE(0, 4), NATIVE_ADRENO_STREAM(0, 0x400), NATIVE_ADRENO_ROUTE(1, 5),
+        NATIVE_ADRENO_STREAM(1, 0x400), gpuCtxProgress, &q);
     IOLog("zeta-gpu: gpu context step %u status %#x kit %u/%u program phase %u enabled %u route phase %u verified %u spans %u "
           "ttbr0 %016llx\n", q.step, static_cast<unsigned>(ctx), q.program_status, q.route_status, q.program_phase,
           q.program_enabled, q.route_phase, q.routes_verified, q.spans, static_cast<unsigned long long>(q.ttbr0));
@@ -681,6 +754,7 @@ void gmuColdStart() {
         chosen->release();
     }
     if (!gGmuFirmware) {IOLog("zeta-gpu: cold start skipped, no /chosen zeta-gpu-gmu in the ADT\n"); return;}
+    lastTrace();
     if (!NativeAdrenoGmuContextPayloads) {IOLog("zeta-gpu: cold start: payloads not linked\n"); return;}
     NativeAdrenoGmuPayload payloads[5];
     const IOReturn got = NativeAdrenoGmuContextPayloads(payloads);

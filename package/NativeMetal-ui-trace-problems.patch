@@ -1,0 +1,22 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -57,11 +57,19 @@
+ static std::mutex gCommitLock;
+ static std::mutex gProblemLock;
+ static char gLastProblems[2][200];
++// The latest problem, also as a malloc'd C string after "SHENGPROBLEM ": a caller that aborts on a refusal without throwing (backboardd's
++// abort_with_reason "Metal failed to build compute pipeline") dies before the telemetry's next report, and the kernel's abort-reason scan finds
++// this in its heap instead (an exception record outranks it). Kept referenced until it is replaced.
++static char *gProblemText;
+ static void noteProblem(NSString *what) {
+  gProblems++;
+  std::lock_guard<std::mutex> lock(gProblemLock);
+  memcpy(gLastProblems[1],gLastProblems[0],sizeof gLastProblems[0]);
+  strlcpy(gLastProblems[0],what.UTF8String?:"?",sizeof gLastProblems[0]);
++ char record[240];
++ snprintf(record,sizeof record,"SHENGPROBLEM %llu | %s",(unsigned long long)gProblems.load(),gLastProblems[0]);
++ for(char *c=record;*c;c++)if(*c<32 || *c>126)*c='?';
++ char *old=gProblemText;gProblemText=strdup(record);free(old);
+ }
+ #define NBLOG(...) do{NSString *nbText=[NSString stringWithFormat:__VA_ARGS__];NSLog(@"%@",nbText);noteProblem(nbText);}while(0)
+ // The pixel formats textures were asked for (first eight distinct), with how many were refused: native_bridge_metal_formats.

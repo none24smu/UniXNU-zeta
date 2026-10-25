@@ -105,6 +105,8 @@ gpupower = OUT / 'GpuPowerProbe.o'
 # are not ours to change. NativeAdreno-16k-vm.patch: xnu-12377 keeps 16 KiB VM pages over the 4 KiB granule.
 # ArmSmmu4K-fault-slot.patch: the Adreno SMMU's free stream slots fault with non-zero attribute fields.
 # NativeAdreno-tbu-alias.patch: a context's stream also routes its gfx_1 TBU alias (the stock iommus mask 0x400).
+# NativeAdreno-view-free.patch: the client's view cache (IONewZero, a typed allocation) is freed with IODelete, not IODeleteData:
+# xnu-12377's kfree panicked "found in kalloc type zone 'kalloc.type.var4.16384' but being freed to data heap" at the first close.
 def patched(module, source):
     copy = OUT / (module + '-src')
     shutil.rmtree(copy, ignore_errors=True)

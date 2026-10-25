@@ -1,0 +1,11 @@
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -299,7 +299,7 @@
+ void AGXDeviceUserClient::free()
+ {
+     dropViews(0);
+-    if(views_) {IODeleteData(views_,View,MaxViews);views_=nullptr;}
++    if(views_) {IODelete(views_,View,MaxViews);views_=nullptr;}   /* IONewZero: a typed (pointer-holding) allocation, not data */
+     /* Still live only when a teardown failed: its objects stay referenced by the VM and the ring, so the core is kept, not freed. */
+     if(core_ && !live_) {delete core_;core_=nullptr;}
+     IOUserClient::free();

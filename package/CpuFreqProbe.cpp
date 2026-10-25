@@ -239,6 +239,75 @@ extern "C" void zeta_cpufreq_thermal(void) {
     IOLockUnlock(gLock);
 }
 
+// zeta-soc bit 16: the PMIC's own record of the last power-off and power-on, logged once at the probe, read-only. A reset that
+// loses DRAM (the heartbeat in the CVP carve-out never survived one) still leaves it in the PMK8350: the PBS's PON event FIFO in
+// SDAM5 (stock DT pmic-pon-log, nvmem pmk8350_sdam_5 = sdam@7400 on SID 0, decoded by the stock kernel's pmic_pon_log) and the
+// PON_PBS (0x800) and PON_HLOS (0x1300) blocks. Raw bytes only; the host decodes them. The SPMI read is the Duo 2 kernel's
+// spmi-pmic-arb.c v5 path (stock DT qcom,spmi@c440000, ee 0): the APID map at core 0x900 + 4 * apid (PPID in bits 19:8), the
+// EE 0 observer channel at obsrvr 0xe600000 + 0x80 * apid, CMD 0x00 = opcode EXT_READL (1) << 27 | (addr & 0xff) << 4 | count - 1,
+// STATUS 0x08 bit 0 done (bits 1-3 failure, denied, dropped), RDATA0 0x18 and RDATA1 0x1c.
+namespace {
+constexpr uint64_t kSpmiCore = 0x0c440000, kSpmiObserver = 0x0e600000;
+constexpr uint32_t kSpmiCoreSize = 0x1100, kSpmiApidMap = 0x900;
+Window gSpmiCore, gSpmiObs;
+
+int spmiApid(uint16_t ppid) {
+    for (uint32_t i = 0; kSpmiApidMap + 4 * i < kSpmiCoreSize; ++i) {
+        const uint32_t reg = rd32(gSpmiCore.va, kSpmiApidMap + 4 * i);
+        if (reg && ((reg >> 8) & 0xfff) == ppid) return (int)i;
+    }
+    return -1;
+}
+// count bytes (1..8) from sid:addr; returns the status word (bit 0 alone on success).
+uint32_t spmiRead(int apid, uint16_t addr, uint8_t *out, unsigned count) {
+    const uintptr_t ch = gSpmiObs.va + 0x80 * (uint32_t)apid;
+    wr32(ch, 0x00, (1U << 27) | ((addr & 0xffU) << 4) | ((count - 1) & 7));
+    uint32_t status = 0;
+    for (unsigned t = 0; t < 1000 && !(status & 1); ++t) {
+        status = rd32(ch, 0x08);
+        if (!(status & 1)) IODelay(1);
+    }
+    if (status != 1) return status ? status : 0x100;
+    const uint32_t d0 = rd32(ch, 0x18), d1 = rd32(ch, 0x1c);
+    for (unsigned i = 0; i < count; ++i) out[i] = (uint8_t)((i < 4 ? d0 >> (8 * i) : d1 >> (8 * (i - 4))) & 0xff);
+    return status;
+}
+void pmicDump(uint16_t ppid, uint8_t from, unsigned bytes) {
+    const int apid = spmiApid(ppid);
+    if (apid < 0) {IOLog("zeta-pmic: %03x no apid\n", ppid); return;}
+    for (unsigned at = from; at < from + bytes; at += 32) {
+        char line[128];
+        unsigned n = (unsigned)snprintf(line, sizeof(line), "zeta-pmic: %03x:%02x", ppid, at);
+        for (unsigned part = 0; part < 32; part += 8) {
+            uint8_t b[8] = {};
+            const uint32_t status = spmiRead(apid, (uint16_t)(ppid << 8 | (at + part)), b, 8);
+            if (status != 1) {IOLog("%s status %#x at %02x\n", line, status, at + part); return;}
+            for (unsigned i = 0; i < 8; ++i) n += (unsigned)snprintf(line + n, sizeof(line) - n, " %02x", b[i]);
+        }
+        IOLog("%s\n", line);
+    }
+}
+void pmicReport() {
+    IOLog("zeta-pmic: mapping arbiter\n");
+    IODeviceMemory *core = IODeviceMemory::withRange(kSpmiCore, kSpmiCoreSize);
+    gSpmiCore.map = core ? core->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (core) core->release();
+    gSpmiCore.va = gSpmiCore.map ? static_cast<uintptr_t>(gSpmiCore.map->getVirtualAddress()) : 0;
+    IODeviceMemory *obs = IODeviceMemory::withRange(kSpmiObserver, 0x10000);
+    gSpmiObs.map = obs ? obs->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (obs) obs->release();
+    gSpmiObs.va = gSpmiObs.map ? static_cast<uintptr_t>(gSpmiObs.map->getVirtualAddress()) : 0;
+    if (!gSpmiCore.va || !gSpmiObs.va) {IOLog("zeta-pmic: arbiter not mapped\n"); return;}
+    const uint32_t version = rd32(gSpmiCore.va, 0x0);
+    IOLog("zeta-pmic: arbiter version %08x\n", version);
+    if ((version >> 28) != 5) return;   // the layout above is v5 only
+    pmicDump(0x074, 0x00, 0x100);       // SDAM5: PON event FIFO
+    pmicDump(0x008, 0x00, 0x100);       // PON_PBS
+    pmicDump(0x013, 0x00, 0x20);        // PON_HLOS: type, status, reasons
+    pmicDump(0x013, 0xc0, 0x20);
+}
+}
+
 extern "C" void sheng_cpufreq_probe(void) {
     unsigned mode = 0, capMHz = 0, soc = 0;
     PE_parse_boot_argn("sheng-cpufreq", &mode, sizeof(mode));
@@ -257,6 +326,7 @@ extern "C" void sheng_cpufreq_probe(void) {
         gSoc = true;
         IOLog("zeta-soc: mask %#x mapped\n", soc);
         zeta_soc_health();
+        if (soc & 16) pmicReport();
     }
     if (!mode || gLock) return;
     gLock = IOLockAlloc();

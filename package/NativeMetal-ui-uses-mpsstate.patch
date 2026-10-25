@@ -61,7 +61,7 @@
 + return MTLSizeMake(s[0],s[1],s[2]);
 +}
 +- (BOOL)supportIndirectCommandBuffers {return NO;}
-+- (MTLShaderValidation)shaderValidation {return MTLShaderValidationDefault;}
++- (NSInteger)shaderValidation {return 0; /* MTLShaderValidationDefault: the enum is iOS 18 and the plugin targets iOS 17 */}
  NB_NO_RESOURCE_ID
  @end
  @interface NBRenderPipeline : NBObject

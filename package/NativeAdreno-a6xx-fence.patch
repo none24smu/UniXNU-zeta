@@ -9,27 +9,46 @@
      IOReturn poison();
      IOReturn readRptr(uint32_t *);
      IOReturn emitPrologue(uint32_t at,bool reset,uint32_t *end);
-@@ -82,6 +82,9 @@
+@@ -82,6 +82,11 @@
      /* The next framed submission starts with the A7XX context entry of a6xx_set_pagetable() (BR/BV counters, on-chip
       * timestamps and resource table cleared between thread syncs); a new user client requests it, as Linux does per context. */
      void requestContextReset() {reset_pending_=true;}
-+    /* A6XX timestamps (zeta, Adreno 660): the plain submit() fence becomes the stock KGSL one, CP_EVENT_WRITE with
-+     * CACHE_FLUSH_TS and the interrupt bit (adreno_ringbuffer.c), without the A7XX WRITE_ENABLED field. Before attach. */
++    /* A6XX framing (zeta, Adreno 660), before attach. The plain submit() fence becomes the stock KGSL one, CP_EVENT_WRITE
++     * with CACHE_FLUSH_TS and the interrupt bit (adreno_ringbuffer.c), without the A7XX WRITE_ENABLED field. submitFramed()
++     * frames user buffers as drm/msm a6xx_submit() does: CCU depth and color invalidates before them, that same fence after,
++     * no thread control or context entry (one page table, no BV thread). */
 +    void useA6xxFence() {if(!attached_)a6xx_=true;}
      /* Polls the CP-written timestamp after invalidating the fence page. Never
       * writes registers and never advances the ring. Timeout is not poison. */
      NativeAdrenoRingFence wait(uint32_t fence,const NativeAdrenoRingClock *,
 --- a/NativeAdrenoRing.cpp
 +++ b/NativeAdrenoRing.cpp
-@@ -20,6 +20,7 @@
+@@ -20,6 +20,8 @@
      RingFenceEvent = 0x31,    /* CACHE_CLEAN */
      RingFenceEnable = 1u << 27,
      RingFenceIrq = 1u << 31,
 +    RingA6xxCacheFlushTs = 0x04,  /* CACHE_FLUSH_TS, adreno_pm4types.h */
++    RingA6xxPrologueWords = 4,    /* a6xx_submit(): CP_EVENT_WRITE PC_CCU_INVALIDATE_DEPTH, then _COLOR */
      RingBlockBytes = 32,
      /* A7XX framing, as a7xx_submit() in the pinned a6xx_gpu.c emits it: CP_THREAD_CONTROL (0x17; THREAD bits 0..1,
       * BR 1, BV 2, BOTH 3; SYNC_THREADS bit 31), CP_SET_MARKER (0x65; 0x101 IFPC disable, 0x100 enable), CCU_INVALIDATE_DEPTH
-@@ -128,7 +129,7 @@
+@@ -91,6 +93,15 @@
+ IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
+ {
+     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
++    if(a6xx_) {
++        uint32_t words[RingA6xxPrologueWords];
++        const uint32_t depth=RingCcuInvalidateDepth,color=RingCcuInvalidateColor;
++        size_t n=packet(words,0,RingFenceOpcode,&depth,1);
++        if(n)n=packet(words,n,RingFenceOpcode,&color,1);
++        if(n!=RingA6xxPrologueWords)return poison();
++        for(uint32_t i=0;i<RingA6xxPrologueWords;++i)ring_[(at+i)&mask]=words[i];
++        *end=(at+RingA6xxPrologueWords)&mask;return kIOReturnSuccess;
++    }
+     uint32_t words[RingPrologueWords+RingResetWords]={0};
+     const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,both=RingThreadBoth,marker=0x101;
+     const uint32_t count=RingPrologueWords+(reset?RingResetWords:0);
+@@ -128,7 +139,7 @@
      if(AdrenoPM4Type4(RingScratch,1,&words[0])!=AdrenoPM4Success ||
          AdrenoPM4Type7(RingFenceOpcode,4,&words[2])!=AdrenoPM4Success)return poison();
      words[1]=seqno;
@@ -38,3 +57,62 @@
      /* The timestamp goes to +4 (msm_rbmemptrs.fence), where wait() reads it; +0 is the CP's RPTR shadow. */
      const uint64_t at4=fence_iova_+4;
      words[4]=(uint32_t)at4;words[5]=(uint32_t)(at4>>32);words[6]=seqno;
+@@ -213,8 +224,9 @@
+     if(!attached_ || poisoned_)return kIOReturnNotReady;
+     if(!words || !word_count || word_count>SIZE_MAX/sizeof(uint32_t))return kIOReturnBadArgument;
+     const uint32_t size_words=(uint32_t)(ring_bytes_/4),mask=size_words-1;
+-    const bool reset=framed && reset_pending_;
+-    const uint32_t extra=framed?RingPrologueWords+(reset?RingResetWords:0)+RingFramedFenceWords:RingFenceWords;
++    const bool reset=framed && reset_pending_ && !a6xx_;
++    const uint32_t extra=!framed?RingFenceWords:a6xx_?RingA6xxPrologueWords+RingFenceWords:
++        RingPrologueWords+(reset?RingResetWords:0)+RingFramedFenceWords;
+     if(word_count>size_words-extra-8)return kIOReturnNoResources;
+     uint32_t rptr=0;IOReturn status=readRptr(&rptr);
+     if(status)return status;
+@@ -228,7 +240,7 @@
+     for(size_t i=0;i<word_count;++i)ring_[(at+i)&mask]=words[i];
+     at=(at+(uint32_t)word_count)&mask;
+     uint32_t end=0;
+-    status=framed?emitFramedFence(at,seqno_+1,&end):emitFence(at,seqno_+1,&end);
++    status=framed && !a6xx_?emitFramedFence(at,seqno_+1,&end):emitFence(at,seqno_+1,&end);
+     if(status)return status;
+     /* Whole-ring publication is deliberate: a submission may wrap, and one
+      * clean of the owned pool is cheaper than a split range proof. */
+--- a/tests/test_ring.cpp
++++ b/tests/test_ring.cpp
+@@ -104,6 +104,26 @@
+         CHECK(r.wait(2,&clock_,5000,&observed)==NativeAdrenoRingFenceArgument);
+         CHECK(r.detach()==kIOReturnSuccess);
+     }
++    /* A6XX framing (useA6xxFence): drm/msm a6xx_submit()'s CCU depth/color invalidates, the user words, then CP_SCRATCH(2) and the
++     * CACHE_FLUSH_TS fence with the interrupt bit; a requested context reset adds nothing (no BV thread, one page table). */
++    {
++        reset();NativeAdrenoRing r;r.useA6xxFence();CHECK(attach(r)==kIOReturnSuccess);
++        const uint32_t words[2]={0x11111111,0x22222222};
++        uint32_t end=0;
++        r.requestContextReset();
++        CHECK(r.submitFramed(words,2,&end)==kIOReturnSuccess && end==1);
++        auto op=[](uint32_t header) {return (header>>28)==7u?(header>>16)&0x7fu:0xffu;};
++        CHECK(op(ring[0])==0x46 && ring[1]==0x18 && op(ring[2])==0x46 && ring[3]==0x19);
++        CHECK(ring[4]==words[0] && ring[5]==words[1]);
++        CHECK((ring[6]>>8&0x3ffffu)==0x885 && (ring[6]&0x3fu)==1 && ring[7]==1);
++        CHECK(op(ring[8])==0x46 && ring[9]==(0x04u|(1u<<31)) && ring[10]==0x108004 && ring[11]==0 && ring[12]==1);
++        CHECK(peer.writes.back().first==0x0807 && peer.writes.back().second==13);
++        CHECK(r.submit(words,1,&end)==kIOReturnSuccess && end==2);   /* plain: words, then the same fence */
++        CHECK(ring[13]==words[0] && op(ring[16])==0x46 && ring[17]==(0x04u|(1u<<31)) && ring[20]==2);
++        CHECK(peer.writes.back().second==21);
++        fence[1]=2;uint32_t observed=0;
++        CHECK(r.wait(2,&clock_,5000,&observed)==NativeAdrenoRingFenceComplete && observed==2 && r.detach()==kIOReturnSuccess);
++    }
+     /* A requested context reset puts a6xx_set_pagetable()'s A7XX context entry into the next framed prologue, once. */
+     {
+         reset();NativeAdrenoRing r;CHECK(attach(r)==kIOReturnSuccess);
+@@ -211,7 +231,7 @@
+         peer.fail_acquire=peer.acquire+1;
+         uint32_t observed=0;
+         CHECK(r.wait(1,&clock_,10,&observed)==NativeAdrenoRingFencePoisoned && r.poisoned());++cases;
+-        std::printf("PASS: 1 exact ring programming and submission, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
++        std::printf("PASS: 1 exact ring programming and submission, 1 A6XX framed and plain submission, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
+             cases);
+     }
+ }

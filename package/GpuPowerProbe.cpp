@@ -46,6 +46,8 @@
 #include "NativeAdrenoRing.h"
 #include "AdrenoPM4.h"
 #include "NativeAdrenoMemory.h"
+#include "NativeAdrenoUserClient.h"
+#include <IOKit/IOUserClient.h>
 #include <string.h>
 
 extern "C" {
@@ -60,6 +62,15 @@ extern "C" IOReturn NativeAdrenoGmuContextPayloads(NativeAdrenoGmuPayload out[5]
 extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *, size_t, unsigned, unsigned, unsigned, unsigned, unsigned,
     unsigned, void (*)(uint32_t), NativeAdrenoGmuContextReport *) __attribute__((weak));
 extern "C" IOReturn NativeAdrenoGpuContextBuffers(NativeAdrenoGpuBuffer out[5]) __attribute__((weak));
+// The accelerator surface (NativeAdrenoPublish.cpp): one IOService over the running GPU, a user-client core per connection.
+extern "C" IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *, NativeAdrenoRing *, const NativeAdrenoRingClock *,
+    const NativeAdrenoTimer *, const NativeAdrenoAbiDeviceInfo *, uint32_t, uint32_t) __attribute__((weak));
+extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak));
+extern "C" IOService *native_adreno_published_service() __attribute__((weak));
+// sheng's NativeMobileDisplay hands its scanout to the Metal plugin through the accelerator's connection (methods 0x7000-0x7003,
+// memory type 'SC'). zeta's scanout belongs to NativeLegacyDisplay, which has no such hand-off yet: the publish unit finds none.
+extern "C" IOReturn native_gop_handoff_call(uint32_t, task_t, const void *, size_t, void *, size_t) {return kIOReturnUnsupported;}
+extern "C" IOMemoryDescriptor *native_gop_handoff_memory(void) {return nullptr;}
 
 namespace {
 unsigned mode() {
@@ -599,6 +610,7 @@ bool zapAndSecure() {
     zapState(z[4] ? "secure-mode timeout" : "done");
     return !z[4];
 }
+void publishGpu();
 void gpuStart() {
     uint32_t *c = native_gpu_cp;
     if (!NativeAdrenoGpuContextBringup || !NativeAdrenoGpuContextBuffers || !gSmmuMap) {IOLog("zeta-gpu: gpu start not linked\n"); return;}
@@ -708,6 +720,138 @@ void gpuStart() {
     smmuFaults(f);
     IOLog("zeta-gpu: smmu gfsr %08x after the gpu start\n", f[0]);
     native_gpu_power_stage = c[0] == 10 ? 0x9a : 0x9f;
+    unsigned publish = 1;
+    PE_parse_boot_argn("zeta-gpu-publish", &publish, sizeof publish);
+    if (c[0] == 10 && publish) publishGpu();
+}
+
+// After the GPU start: sheng's publishAndWrapperTest over the A660. The submit object and the timer attach to the GPU context's VM
+// and the ring, the accelerator service is published, and one kernel-side connection runs the user-client path a Metal process
+// takes: device info, two BOs mapped at client addresses, a CPU view of each through clientMemoryForType, three CP_MEM_WRITEs
+// in a framed submission (drm/msm a6xx_submit framing, NativeAdreno-a6xx-fence.patch), the fence wait and clientClose. The
+// coherence proof is not run: user BOs keep per-submission cache maintenance.
+NativeAdrenoSubmit gSubmit;
+NativeAdrenoTimer gTimer;
+// Constant facts for the Vulkan driver: chip id 0x06060001 (A660, lahaina-v2-gpu.dtsi), gmem 1.5 MiB (adreno_gpu_core_a660v2),
+// no UCHE GMEM window (the a650 family programs none), the UCHE trap base a660Start programs, highest bank bit 16 and UBWC 4.0 with
+// swizzle levels 2+3 and the eight-channel macrotile (drm/msm a6xx_calc_ubwc_config for a660). The VA window is sheng's.
+const NativeAdrenoAbiDeviceInfo gDeviceInfo = {0x06060001u, 0x180000u, 0, 0x1fffffffff000ull, 0x20000000ull, 0x60000000ull, 16, 6, 1,
+                                               4, NativeAdrenoDeviceClientIova, 0};
+int timerRead(void *, uint32_t reg, uint32_t *value) {*value = gpuRd(reg); return 0;}
+const NativeAdrenoTimeIo gTimerIo{nullptr, timerRead};
+IOReturn wcall(IOUserClient *uc, uint32_t method, const void *in, void *out) {
+    IOExternalMethodArguments a{};
+    a.version = kIOExternalMethodArgumentsCurrentVersion;
+    a.selector = method;
+    const size_t is = NativeAdrenoUserClient::inputSize(method), os = NativeAdrenoUserClient::outputSize(method);
+    a.structureInput = is ? in : nullptr;
+    a.structureInputSize = uint32_t(is);
+    a.structureOutput = os ? out : nullptr;
+    a.structureOutputSize = uint32_t(os);
+    return uc->externalMethod(method, &a, nullptr, nullptr, nullptr);
+}
+// One connection, as sheng's wrapperRound: returns the matching dwords of 4 (three written, one untouched) or -1.
+int clientRound(IOService *svc, int &ok, int &n, IOReturn &err, int &errAt, uint32_t &memStatus) {
+    auto step = [&](IOReturn s) {
+        const int idx = n++;
+        if (!s) ++ok;
+        else if (!err) {err = s; errAt = idx;}
+        return !s;
+    };
+    IOUserClient *uc = nullptr;
+    if (!step(svc->newUserClient(kernel_task, nullptr, 0, nullptr, &uc)) || !uc) return -1;
+    NativeAdrenoAbiParams params{};
+    step(wcall(uc, NativeAdrenoMethodQuery, nullptr, &params));
+    NativeAdrenoAbiDeviceInfo info{};
+    step(wcall(uc, NativeAdrenoMethodGetDeviceInfo, nullptr, &info));
+    step(info.chip_id == gDeviceInfo.chip_id && info.gmem_bytes == gDeviceInfo.gmem_bytes ? 0 : kIOReturnError);
+    NativeAdrenoAbiBoAlloc alloc{4096, 12, 0};
+    NativeAdrenoAbiBoAllocReply ib{}, tgt{};
+    int matched = -1;
+    IOMemoryDescriptor *desc[2] = {};
+    IOMemoryMap *maps[2] = {};
+    if (step(wcall(uc, NativeAdrenoMethodBoAlloc, &alloc, &ib)) && step(wcall(uc, NativeAdrenoMethodBoAlloc, &alloc, &tgt))) {
+        const uint64_t ibIova = 0x10004000, tgtIova = 0x10005000;
+        NativeAdrenoAbiBoMap mapIb{ib.handle, ibIova, 1, 0, 2, 0}, mapTgt{tgt.handle, tgtIova, 3, 0, 2, 0};
+        NativeAdrenoAbiBoMapReply r{};
+        NativeAdrenoAbiBoCpuMap cmIb{ib.handle}, cmTgt{tgt.handle};
+        NativeAdrenoAbiBoCpuMapReply crIb{}, crTgt{};
+        if (step(wcall(uc, NativeAdrenoMethodBoMap, &mapIb, &r)) && step(wcall(uc, NativeAdrenoMethodBoMap, &mapTgt, &r)) &&
+            step(wcall(uc, NativeAdrenoMethodBoCpuMap, &cmIb, &crIb)) && step(wcall(uc, NativeAdrenoMethodBoCpuMap, &cmTgt, &crTgt))) {
+            IOOptionBits opt[2] = {};
+            const uint32_t tokens[2] = {crIb.token, crTgt.token};
+            bool mapped = true;
+            for (int i = 0; i < 2; ++i) {
+                const IOReturn s = uc->clientMemoryForType(tokens[i], &opt[i], &desc[i]);
+                if (!memStatus) memStatus = uint32_t(s);
+                if (s || !desc[i]) {mapped = false; continue;}
+                maps[i] = desc[i]->createMappingInTask(kernel_task, 0, opt[i]);
+                if (!maps[i]) {mapped = false; if (!memStatus) memStatus = 0xbad;}
+            }
+            step(mapped ? 0 : kIOReturnNoMemory);
+            if (mapped) {
+                volatile uint32_t *iw = reinterpret_cast<volatile uint32_t *>(maps[0]->getVirtualAddress());
+                volatile uint32_t *tw = reinterpret_cast<volatile uint32_t *>(maps[1]->getVirtualAddress());
+                for (unsigned i = 0; i < 1024; ++i) tw[i] = 0xdeadbeef;
+                const uint32_t values[3] = {0x0badc0deu, 0xfeed0001u, 0x600d0003u};
+                uint32_t words[12];
+                bool built = true;
+                for (unsigned i = 0; i < 3; ++i) {
+                    built = built && AdrenoPM4Type7(0x3d, 3, &words[i * 4]) == AdrenoPM4Success;
+                    words[i * 4 + 1] = uint32_t(tgtIova + i * 4); words[i * 4 + 2] = uint32_t(tgtIova >> 32);
+                    words[i * 4 + 3] = values[i];
+                }
+                for (unsigned i = 0; i < 12; ++i) iw[i] = words[i];
+                __asm__ volatile("dsb sy" ::: "memory");
+                NativeAdrenoAbiSubmit submit{};
+                submit.buffer_count = 1;
+                submit.buffers[0] = {ib.handle, ibIova, sizeof words};
+                NativeAdrenoAbiSubmitReply sr{};
+                if (step(built ? 0 : kIOReturnInternalError) && step(wcall(uc, NativeAdrenoMethodSubmit, &submit, &sr))) {
+                    NativeAdrenoAbiWaitFence wait{sr.fence, 200000000ull};
+                    if (step(wcall(uc, NativeAdrenoMethodWaitFence, &wait, nullptr))) {
+                        __asm__ volatile("dsb sy" ::: "memory");
+                        matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]) + (tw[3] == 0xdeadbeef);
+                    }
+                }
+                NativeAdrenoAbiTimestamp ts{};
+                step(wcall(uc, NativeAdrenoMethodGetTimestamp, nullptr, &ts));
+            }
+        }
+    }
+    for (auto *m : maps) if (m) m->release();
+    for (auto *d : desc) if (d) d->release();
+    step(uc->clientClose());   // drains the CP, unmaps and frees everything the connection made
+    uc->release();
+    return matched;
+}
+void publishGpu() {
+    if (!native_adreno_publish || !native_adreno_published_service || !native_adreno_publish_stats) {
+        IOLog("zeta-gpu: publish not linked\n");
+        return;
+    }
+    NativeAdrenoVm *vm = NativeAdrenoGpuContextVm();
+    if (!vm) {IOLog("zeta-gpu: publish: no GPU VM\n"); return;}
+    const NativeAdrenoRingClock clock{nullptr, ringNow, ringIdle};
+    const IOReturn attached = gSubmit.attach(vm, &gRing);
+    const IOReturn timer = gTimer.attach(&gTimerIo, NativeAdrenoTimeCp);
+    const IOReturn published = attached ? attached :
+        native_adreno_publish(vm, &gSubmit, &gRing, &clock, timer ? nullptr : &gTimer, &gDeviceInfo, 31, 40);
+    IOService *svc = published ? nullptr : native_adreno_published_service();
+    int ok = 0, n = 0, errAt = -1, v1 = -1, v2 = -1;
+    IOReturn err = 0;
+    uint32_t memStatus = 0, closed = 0;
+    if (svc) {
+        v1 = clientRound(svc, ok, n, err, errAt, memStatus);
+        v2 = clientRound(svc, ok, n, err, errAt, memStatus);   // the slot recycles after clientClose
+    }
+    const uint32_t opened = native_adreno_publish_stats(&closed);
+    uint32_t f[5];
+    smmuFaults(f);
+    IOLog("zeta-gpu: publish submit %#x timer %#x service %#x steps %d/%d first error %#x at %d rounds %d/%d memory %#x opened %u "
+          "closed %u gfsr %08x\n", static_cast<unsigned>(attached), static_cast<unsigned>(timer), static_cast<unsigned>(published), ok, n,
+          static_cast<unsigned>(err), errAt, v1, v2, memStatus, opened, closed, f[0]);
+    native_gpu_power_stage = v1 == 4 && v2 == 4 ? 0xa4 : 0xaf;
 }
 
 // Mode 8: a6xx_gmu_dcvs_set's first vote, then a6xx_gmu_oob_set(oob_gpu) as a6xx_gpu_boot does before a6xx_start.

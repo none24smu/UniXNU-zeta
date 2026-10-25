@@ -164,6 +164,12 @@ if '_NativeAdrenoGmuContextBringup' not in definitions or definitions['_NativeAd
     raise SystemExit('NativeAdrenoGmuContextBringup is not available; units that failed to compile: ' + json.dumps(logs, indent=2))
 adreno_objects = [compiled[name] for name in selected]
 (OUT / 'adreno-closure.json').write_text(json.dumps({'selected': selected, 'not_compiled': failed}, indent=2) + '\n')
+# Units that do not compile are only dropped from the closure; their first error goes to the build log, so a missing surface
+# (the probe sees a null weak symbol) shows why.
+print('native adreno closure: ' + ' '.join(selected))
+for name in failed:
+    log = (OUT / 'adreno' / (Path(name).stem + '.log')).read_text(errors='replace').splitlines()
+    print('native adreno not compiled: ' + name + ': ' + next((line for line in log if 'error:' in line), '(no error line)')[:300])
 compile_unit(KEY_EVENTS, events, 'NativeKeyStoreEvents')
 subprocess.run([shutil.which('llvm-objcopy') or 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
                 '--globalize-symbol=__GLOBAL__sub_I_NativeKeyStoreEvents.cpp', str(events), str(events_late)],

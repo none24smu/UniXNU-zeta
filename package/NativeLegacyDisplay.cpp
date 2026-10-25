@@ -40,6 +40,7 @@ extern "C" void native_legacy_display_late_probe(void);
 extern "C" void native_keystore_probe(void);
 extern "C" void sheng_cpufreq_probe(void);
 extern "C" void zeta_soc_health(void);
+extern "C" void zeta_cpufreq_thermal(void);
 extern "C" void zeta_hid_input_probe(void);
 extern "C" void zeta_touch_probe(void);
 extern "C" void sheng_gpu_power_probe(void);
@@ -509,6 +510,7 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     const bool full = !(gDpu.ticks++ % 30);
     dpuHealth(full);
     if (full) zeta_soc_health();
+    zeta_cpufreq_thermal();
     if (full && gTiming.n) {
         // Microseconds from 19.2 MHz ticks.
         auto us = [](uint64_t ticks) {return ticks * 10 / 192;};

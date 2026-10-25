@@ -150,6 +150,8 @@ constexpr unsigned kTsensSensors[2] = {16, 15};
 constexpr uint64_t kWatchdog = 0x17c10000;
 Window gTsens[2], gWdt, gSocDomain[3];
 bool gSoc;
+unsigned gThermalC, gThermalSteps;
+int gThermalLevel[3] = {-1, -1, -1};
 }
 
 extern "C" void zeta_soc_health(void) {
@@ -177,7 +179,64 @@ extern "C" void zeta_soc_health(void) {
         if (gSocDomain[d].va)
             n += (unsigned)snprintf(line + n, sizeof(line) - n, " d%u %u MHz", d,
                                     (rd32(gSocDomain[d].va, kRegDomainState) & 0xff) * kXoKHz / 1000);
+    if (gThermalC && n < sizeof(line))
+        n += (unsigned)snprintf(line + n, sizeof(line) - n, " thermal %u C levels %d/%d/%d steps %u", gThermalC, gThermalLevel[0],
+                                gThermalLevel[1], gThermalLevel[2], gThermalSteps);
     IOLog("%s\n", line);
+}
+
+// zeta-thermal=<C>: a step governor for the mode 3 votes, the policy the iOS userland does not run here (no thermal daemon;
+// stock lahaina-thermal.dtsi only trips the CPUs' passive limit at 108 C, and Android's thermal engine keeps the skin far below
+// that). Every display watch tick (500 ms) the hottest TSENS sensor of both controllers decides: above C + 5 every domain steps
+// one LUT row down, not below 1 GHz; below C - 5 it steps one row back up, never above the level mode 3 voted (the cap).
+// gpu12-v2 at the 2.4 GHz cap, ungoverned, reached 93.6 C in 171 s.
+namespace {
+int hottestDeci() {
+    int hottest = -10000;
+    for (unsigned t = 0; t < 2; ++t) {
+        if (!gTsens[t].va) continue;
+        for (unsigned sensor = 0; sensor < kTsensSensors[t]; ++sensor) {
+            const uint32_t status = rd32(gTsens[t].va, 0xa0 + 4 * sensor);
+            if (!(status & (1U << 21))) continue;
+            const int deci = (int)((int32_t)(status << 20) >> 20);
+            if (deci > hottest) hottest = deci;
+        }
+    }
+    return hottest;
+}
+int floorLevel(uintptr_t va) {
+    for (unsigned i = 0; i < kLutEntries; ++i)
+        if (lutKHz(rd32(va, kRegFreqLut + i * 4)) >= 1000000) return (int)i;
+    return 0;
+}
+void setLevel(unsigned d, int level) {
+    Window &w = gDomain[d];
+    wr32(w.va, kRegPerfState, (uint32_t)level);
+    if (rd32(w.va, kRegDcvsCtrl) & 1)
+        for (unsigned c = 1; c < kDomainCpus[d]; ++c) wr32(w.va, kRegPerfState + c * 4, (uint32_t)level);
+}
+}
+
+extern "C" void zeta_cpufreq_thermal(void) {
+    if (!gThermalC || !gLock) return;
+    const int deci = hottestDeci();
+    if (deci <= -10000) return;
+    IOLockLock(gLock);
+    for (unsigned d = 0; d < 3; ++d) {
+        Window &w = gDomain[d];
+        if (!w.va || w.voted < 0) continue;
+        int &level = gThermalLevel[d];
+        if (level < 0) level = w.voted;
+        int next = level;
+        if (deci > (int)(gThermalC + 5) * 10 && level > floorLevel(w.va)) next = level - 1;
+        else if (deci < (int)(gThermalC - 5) * 10 && level < w.voted) next = level + 1;
+        if (next != level) {
+            setLevel(d, next);
+            level = next;
+            gThermalSteps++;
+        }
+    }
+    IOLockUnlock(gLock);
 }
 
 extern "C" void sheng_cpufreq_probe(void) {
@@ -185,6 +244,12 @@ extern "C" void sheng_cpufreq_probe(void) {
     PE_parse_boot_argn("sheng-cpufreq", &mode, sizeof(mode));
     PE_parse_boot_argn("sheng-cpufreq-cap", &capMHz, sizeof(capMHz));
     PE_parse_boot_argn("zeta-soc", &soc, sizeof(soc));
+    unsigned thermal = 0;
+    PE_parse_boot_argn("zeta-thermal", &thermal, sizeof(thermal));
+    if (thermal >= 50 && thermal <= 100) {
+        gThermalC = thermal;
+        soc |= 1;   // the governor reads tsens0 (and tsens1 when mapped)
+    }
     if (soc && !gSoc) {
         for (unsigned t = 0; t < 2; ++t) if (soc & (1U << t)) mapWindow(gTsens[t], kTsensTm[t]);
         if (soc & 4) mapWindow(gWdt, kWatchdog);

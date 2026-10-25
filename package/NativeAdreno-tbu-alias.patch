@@ -1,6 +1,56 @@
+diff --git a/NativeAdrenoGmuContext.cpp b/NativeAdrenoGmuContext.cpp
+index eb41fd9..33dc5e0 100644
+--- a/NativeAdrenoGmuContext.cpp
++++ b/NativeAdrenoGmuContext.cpp
+@@ -16,12 +16,14 @@ static void readBack(const ArmSmmu4KIo *io,const ArmSmmu4KProgramResult *program
+     io->read64(io->cookie,size_t(program->context_offset)+0x20,&r->ttbr0);
+ }
+ IOReturn NativeAdrenoGmuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,
+-    unsigned slot,uint16_t sid,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
++    const ArmSmmu4KStream *routes,unsigned count,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
+ {
+     if(!report)return kIOReturnBadArgument;
+     *report={};
+     if(used_)return kIOReturnBusy;
+-    if(!io || bank>63 || !asid || asid>0xffff || slot>127)return kIOReturnBadArgument;
++    if(!io || bank>63 || !asid || asid>0xffff || !routes || !count || count>2)return kIOReturnBadArgument;
++    for(unsigned i=0;i<count;++i)if(routes[i].slot>127)return kIOReturnBadArgument;
++    const unsigned slot=routes[0].slot;
+     used_=true;
+     IOReturn status=kIOReturnSuccess;
+     auto step=[&](Step s) {report->step=s;if(progress)progress(s);};
+@@ -63,8 +65,7 @@ IOReturn NativeAdrenoGmuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,uns
+     }
+     if(!status) {
+         step(Attach);
+-        const ArmSmmu4KStream route{slot,sid};
+-        status=smmu_.attach(&route,1);
++        status=smmu_.attach(routes,count);
+         const ArmSmmu4KStreamResult *s=smmu_.streamResult();
+         report->route_status=smmu_.attachStatus();
+         report->route_phase=s->phase;report->route_writes=s->writes;report->routes_verified=s->streams_verified;
+@@ -96,12 +97,14 @@ extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu,size_t
+     static ArmSmmu4KMmio mmio;
+     static ArmSmmu4KIo io;
+     NativeAdrenoGmuContext *&context=board_context;
+-    if(!report || context || !smmu || !bytes || sid>0xffff)return kIOReturnBadArgument;
++    ArmSmmu4KStream routes[2];
++    const unsigned count=NativeAdrenoRoutes(slot,sid,routes);
++    if(!report || context || !smmu || !bytes || !count)return kIOReturnBadArgument;
+     mmio={reinterpret_cast<volatile unsigned char *>(smmu),bytes};
+     if(ArmSmmu4KBindMmio(&mmio,&io)!=ArmSmmu4KSuccess)return kIOReturnBadArgument;
+     context=new NativeAdrenoGmuContext;
+     if(!context)return kIOReturnNoMemory;
+-    return context->bringUp(&io,bank,asid,slot,uint16_t(sid),progress,report);
++    return context->bringUp(&io,bank,asid,routes,count,progress,report);
+ }
+ extern "C" IOReturn NativeAdrenoGmuContextPayloads(NativeAdrenoGmuPayload out[5])
+ {
+diff --git a/NativeAdrenoGmuContext.h b/NativeAdrenoGmuContext.h
+index b6e4b12..a39033b 100644
 --- a/NativeAdrenoGmuContext.h
 +++ b/NativeAdrenoGmuContext.h
-@@ -41,14 +41,22 @@
+@@ -41,14 +41,32 @@ public:
      NativeAdrenoGmuContext(const NativeAdrenoGmuContext &)=delete;
      NativeAdrenoGmuContext &operator=(const NativeAdrenoGmuContext &)=delete;
      /* One attempt per object. progress (may be null) is called before each step. */
@@ -21,18 +71,9 @@
 + * mask bit only, as the Qualcomm Adreno SMMU's gfx_1 TBU adds 0x400 to every stream id). */
 +#define NATIVE_ADRENO_ROUTE(slot,alias_slot) ((slot)|((alias_slot)+1u)<<8)
 +#define NATIVE_ADRENO_STREAM(sid,mask) ((sid)|(mask)<<16)
-+/* Splits an entry's (slot, sid) into its exact routes; 0 on a malformed pair. */
-+unsigned NativeAdrenoRoutes(unsigned slot,unsigned sid,ArmSmmu4KStream out[2]);
- extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu,size_t bytes,
-     unsigned bank,unsigned asid,unsigned slot,unsigned sid,void (*progress)(uint32_t),
-     NativeAdrenoGmuContextReport *report);
---- a/NativeAdrenoGmuContext.cpp
-+++ b/NativeAdrenoGmuContext.cpp
-@@ -15,13 +15,25 @@
-     io->read32(io->cookie,size_t(program->context_offset),&r->sctlr);
-     io->read64(io->cookie,size_t(program->context_offset)+0x20,&r->ttbr0);
- }
-+unsigned NativeAdrenoRoutes(unsigned slot,unsigned sid,ArmSmmu4KStream out[2])
++/* Splits an entry's (slot, sid) into its exact routes; 0 on a malformed pair. Inline: the GPU context uses it too, and
++ * the host simulation links that context without this one. */
++inline unsigned NativeAdrenoRoutes(unsigned slot,unsigned sid,ArmSmmu4KStream out[2])
 +{
 +    const unsigned primary=slot&0xff,alias=slot>>8,id=sid&0xffff,mask=sid>>16;
 +    if(primary>127 || alias>128 || id>0x7fff || mask>0x7fff || !alias!=!mask)return 0;
@@ -42,70 +83,14 @@
 +    out[1]={alias-1,uint16_t(id|mask)};
 +    return 2;
 +}
- IOReturn NativeAdrenoGmuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,
--    unsigned slot,uint16_t sid,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
-+    const ArmSmmu4KStream *routes,unsigned count,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
- {
-     if(!report)return kIOReturnBadArgument;
-     *report={};
-     if(used_)return kIOReturnBusy;
--    if(!io || bank>63 || !asid || asid>0xffff || slot>127)return kIOReturnBadArgument;
-+    if(!io || bank>63 || !asid || asid>0xffff || !routes || !count || count>2)return kIOReturnBadArgument;
-+    for(unsigned i=0;i<count;++i)if(routes[i].slot>127)return kIOReturnBadArgument;
-+    const unsigned slot=routes[0].slot;
-     used_=true;
-     IOReturn status=kIOReturnSuccess;
-     auto step=[&](Step s) {report->step=s;if(progress)progress(s);};
-@@ -63,8 +75,7 @@
-     }
-     if(!status) {
-         step(Attach);
--        const ArmSmmu4KStream route{slot,sid};
--        status=smmu_.attach(&route,1);
-+        status=smmu_.attach(routes,count);
-         const ArmSmmu4KStreamResult *s=smmu_.streamResult();
-         report->route_status=smmu_.attachStatus();
-         report->route_phase=s->phase;report->route_writes=s->writes;report->routes_verified=s->streams_verified;
-@@ -96,12 +107,14 @@
-     static ArmSmmu4KMmio mmio;
-     static ArmSmmu4KIo io;
-     NativeAdrenoGmuContext *&context=board_context;
--    if(!report || context || !smmu || !bytes || sid>0xffff)return kIOReturnBadArgument;
-+    ArmSmmu4KStream routes[2];
-+    const unsigned count=NativeAdrenoRoutes(slot,sid,routes);
-+    if(!report || context || !smmu || !bytes || !count)return kIOReturnBadArgument;
-     mmio={reinterpret_cast<volatile unsigned char *>(smmu),bytes};
-     if(ArmSmmu4KBindMmio(&mmio,&io)!=ArmSmmu4KSuccess)return kIOReturnBadArgument;
-     context=new NativeAdrenoGmuContext;
-     if(!context)return kIOReturnNoMemory;
--    return context->bringUp(&io,bank,asid,slot,uint16_t(sid),progress,report);
-+    return context->bringUp(&io,bank,asid,routes,count,progress,report);
- }
- extern "C" IOReturn NativeAdrenoGmuContextPayloads(NativeAdrenoGmuPayload out[5])
- {
---- a/NativeAdrenoGpuContext.h
-+++ b/NativeAdrenoGpuContext.h
-@@ -33,13 +33,14 @@
-     NativeAdrenoGpuContext()=default;
-     NativeAdrenoGpuContext(const NativeAdrenoGpuContext &)=delete;
-     NativeAdrenoGpuContext &operator=(const NativeAdrenoGpuContext &)=delete;
--    /* The report is the GMU context's: route counts cover both streams. */
--    IOReturn bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned slots[2],
--        const uint16_t sids[2],void (*progress)(uint32_t step),NativeAdrenoGmuContextReport *report);
-+    /* The report is the GMU context's: route counts cover every stream (both SIDs and their TBU aliases). */
-+    IOReturn bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const ArmSmmu4KStream *routes,
-+        unsigned count,void (*progress)(uint32_t step),NativeAdrenoGmuContextReport *report);
-     bool ready() const {return ready_;}
-     const NativeAdrenoMemory &buffer(unsigned index) const {return buffers_[index];}
-     NativeAdrenoVm *vm() {return ready_?&vm_:nullptr;}
- };
-+/* slot0/sid0 and slot1/sid1 as NativeAdrenoGmuContextBringup reads its slot and sid. */
- extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *smmu,size_t bytes,unsigned bank,unsigned asid,
-     unsigned slot0,unsigned sid0,unsigned slot1,unsigned sid1,void (*progress)(uint32_t),
+ extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu,size_t bytes,
+     unsigned bank,unsigned asid,unsigned slot,unsigned sid,void (*progress)(uint32_t),
      NativeAdrenoGmuContextReport *report);
+diff --git a/NativeAdrenoGpuContext.cpp b/NativeAdrenoGpuContext.cpp
+index dfac46d..1af2a2d 100644
 --- a/NativeAdrenoGpuContext.cpp
 +++ b/NativeAdrenoGpuContext.cpp
-@@ -8,14 +8,17 @@
+@@ -8,14 +8,17 @@ extern "C" volatile uint32_t native_adreno_pool_stats[8],native_adreno_pool_stat
  extern "C" volatile uint32_t native_adreno_wc_enabled,native_adreno_pool_wc;
  static const uint64_t kIovas[GpuBufferCount]={GpuSqeIova,GpuRingIova,GpuMemptrsIova,GpuPwrupIova,GpuScratchIova};
  static const size_t kBytes[GpuBufferCount]={GpuSqeBytes,GpuRingBytes,GpuPageBytes,GpuPageBytes,GpuPageBytes};
@@ -127,7 +112,7 @@
      used_=true;
      IOReturn status=kIOReturnSuccess;
      auto step=[&](Step s) {report->step=s;if(progress)progress(s);};
-@@ -59,8 +62,7 @@
+@@ -59,8 +62,7 @@ IOReturn NativeAdrenoGpuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,uns
      }
      if(!status) {
          step(Attach);
@@ -137,7 +122,7 @@
          const ArmSmmu4KStreamResult *s=smmu_.streamResult();
          report->route_status=smmu_.attachStatus();
          report->route_phase=s->phase;report->route_writes=s->writes;report->routes_verified=s->streams_verified;
-@@ -93,14 +95,14 @@
+@@ -93,14 +95,14 @@ extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *smmu,size_t
  {
      static ArmSmmu4KMmio mmio;
      static ArmSmmu4KIo io;
@@ -156,9 +141,33 @@
  }
  extern "C" IOReturn NativeAdrenoGpuContextBuffers(NativeAdrenoGpuBuffer out[5])
  {
+diff --git a/NativeAdrenoGpuContext.h b/NativeAdrenoGpuContext.h
+index dbe915a..c670bd0 100644
+--- a/NativeAdrenoGpuContext.h
++++ b/NativeAdrenoGpuContext.h
+@@ -33,13 +33,14 @@ public:
+     NativeAdrenoGpuContext()=default;
+     NativeAdrenoGpuContext(const NativeAdrenoGpuContext &)=delete;
+     NativeAdrenoGpuContext &operator=(const NativeAdrenoGpuContext &)=delete;
+-    /* The report is the GMU context's: route counts cover both streams. */
+-    IOReturn bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned slots[2],
+-        const uint16_t sids[2],void (*progress)(uint32_t step),NativeAdrenoGmuContextReport *report);
++    /* The report is the GMU context's: route counts cover every stream (both SIDs and their TBU aliases). */
++    IOReturn bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const ArmSmmu4KStream *routes,
++        unsigned count,void (*progress)(uint32_t step),NativeAdrenoGmuContextReport *report);
+     bool ready() const {return ready_;}
+     const NativeAdrenoMemory &buffer(unsigned index) const {return buffers_[index];}
+     NativeAdrenoVm *vm() {return ready_?&vm_:nullptr;}
+ };
++/* slot0/sid0 and slot1/sid1 as NativeAdrenoGmuContextBringup reads its slot and sid. */
+ extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *smmu,size_t bytes,unsigned bank,unsigned asid,
+     unsigned slot0,unsigned sid0,unsigned slot1,unsigned sid1,void (*progress)(uint32_t),
+     NativeAdrenoGmuContextReport *report);
+diff --git a/NativeAdrenoService.cpp b/NativeAdrenoService.cpp
+index 8f26903..724f4db 100644
 --- a/NativeAdrenoService.cpp
 +++ b/NativeAdrenoService.cpp
-@@ -332,7 +332,8 @@
+@@ -332,7 +332,8 @@ bool NativeAdrenoGpuService::start(IOService *provider)
                  ArmSmmu4KIo smmu_io{&window,smmu_bytes,smmu_read32,smmu_read64,
                      smmu_write32,smmu_write64,smmu_barrier};
                  NativeAdrenoGmuContextReport report{};
@@ -168,9 +177,27 @@
                  NativeAdrenoGmuAllocator &gmu_=gmu_ctx_.allocator();
                  NativeAdrenoVm &vm_=gmu_ctx_.vm();
                  if(status) {
+diff --git a/tests/hostsim/host_gpu_service.cpp b/tests/hostsim/host_gpu_service.cpp
+index de8e1a0..6b8cb84 100644
+--- a/tests/hostsim/host_gpu_service.cpp
++++ b/tests/hostsim/host_gpu_service.cpp
+@@ -92,9 +92,8 @@ bool build() {
+     static const ArmSmmu4KIo io{nullptr,kSmmuBytes,sread32,sread64,swrite32,swrite64,sbarrier};
+     context=new NativeAdrenoGpuContext;
+     NativeAdrenoGmuContextReport report;
+-    const unsigned slots[2]={2,3};
+-    const uint16_t sids[2]={0,1};
+-    const IOReturn up=context->bringUp(&io,1,2,slots,sids,nullptr,&report);
++    const ArmSmmu4KStream routes[2]={{2,0},{3,1}};
++    const IOReturn up=context->bringUp(&io,1,2,routes,2,nullptr,&report);
+     if(up!=kIOReturnSuccess) {std::fprintf(stderr,"host gpu: context bring-up failed %d at step %u\n",up,report.step);return false;}
+     const NativeAdrenoMemory &ringmem=context->buffer(1),&memory=context->buffer(2);
+     memptrs=static_cast<volatile uint32_t *>(memory.mapping());
+diff --git a/tests/test_gmuctx.cpp b/tests/test_gmuctx.cpp
+index 39286b9..229a3f9 100644
 --- a/tests/test_gmuctx.cpp
 +++ b/tests/test_gmuctx.cpp
-@@ -34,6 +34,8 @@
+@@ -34,6 +34,8 @@ static int write32(void *,size_t at,uint32_t v)
  static int write64(void *,size_t at,uint64_t v)
  {CHECK(at%8==0 && at<=SMMU_BYTES-8);if(peer.frozen && at==peer.frozen)return 0;std::memcpy(mmio+at/4,&v,8);return 0;}
  static int barrier(void *){return 0;}
@@ -179,7 +206,7 @@
  static unsigned steps[16],step_count;
  static void progress(uint32_t step){CHECK(step_count<16);steps[step_count++]=step;}
  int main()
-@@ -44,7 +46,7 @@
+@@ -44,7 +46,7 @@ int main()
          reset();step_count=0;
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -188,7 +215,7 @@
          CHECK(report.step==NativeAdrenoGmuContext::Ready && report.status==kIOReturnSuccess && context.ready());
          CHECK(step_count==7);
          for(unsigned i=0;i<7;++i)CHECK(steps[i]==i+1);
-@@ -61,7 +63,26 @@
+@@ -61,7 +63,26 @@ int main()
          CHECK(report.ttbr0==((uint64_t(1)<<48)|context.allocator().tables().spans()[0].physical));
          uint64_t ttbr1;std::memcpy(&ttbr1,mmio+(cb+0x28)/4,8);
          CHECK((ttbr1&0x0000fffffffff000)==0);
@@ -216,7 +243,7 @@
      }
      /* A S2CR that reads back other than FAULT (the apps SMMU stored BYPASS writes as FAULT; here the reverse
       * case) is refused at attach, after the bank was programmed; the SMR stays invalid. */
-@@ -70,7 +91,7 @@
+@@ -70,7 +91,7 @@ int main()
          mmio[(0xc00+8)/4]=0x10000;
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -225,7 +252,7 @@
          CHECK(report.step==NativeAdrenoGmuContext::Attach && report.program_enabled && !report.routes_verified);
          CHECK(!(mmio[(0x800+8)/4]&(1u<<31)) && !context.ready());
      }
-@@ -79,7 +100,7 @@
+@@ -79,7 +100,7 @@ int main()
          reset();peer.frozen=cb+0x30;   /* TCR */
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -234,7 +261,7 @@
          CHECK(report.step==NativeAdrenoGmuContext::Program && !report.program_enabled);
          CHECK(report.mismatch==(1u<<2) && report.image.tcr==0);   /* only TCR differs; the banner names it */
          CHECK(!(mmio[cb/4]&1) && !(mmio[(0x800+8)/4]&(1u<<31)));
-@@ -89,7 +110,7 @@
+@@ -89,7 +110,7 @@ int main()
          reset();mmio[cb/4]=1;
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -243,7 +270,7 @@
          CHECK(report.step==NativeAdrenoGmuContext::Program && report.program_writes==0);
      }
      /* A 36-bit OAS gives a 36-bit context (TCR2.PASize 1) and allocations below 2^36. */
-@@ -97,7 +118,7 @@
+@@ -97,7 +118,7 @@ int main()
          reset();mmio[0x28/4]=0x1413;   /* OAS code 1 */
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -252,7 +279,7 @@
          CHECK((mmio[(cb+0x10)/4]&7)==1);
          CHECK(context.allocator().tables().spans()[0].physical+0x1000*NativeAdrenoGmuContext::TablePages<=(UINT64_C(1)<<36));
      }
-@@ -106,7 +127,7 @@
+@@ -106,7 +127,7 @@ int main()
          reset();mmio[0x28/4]=0x14f3;
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -261,7 +288,7 @@
          CHECK(report.step==NativeAdrenoGmuContext::Allocate && !context.allocator().ready() && !(mmio[cb/4]&1));
      }
      /* No AArch64 4 KiB granule (ID2.PTFS_4K clear): the kit refuses in phase 1 with no write, the case int-006
-@@ -115,7 +136,7 @@
+@@ -115,7 +136,7 @@ int main()
          reset();mmio[0x28/4]=0x0433;
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -270,7 +297,7 @@
          CHECK(report.step==NativeAdrenoGmuContext::Program && report.program_phase==1 && report.program_writes==0);
          CHECK(report.program_status==ArmSmmu4KUnsupported);
      }
-@@ -125,7 +146,7 @@
+@@ -125,7 +146,7 @@ int main()
          reset();mmio[0x28/4]=0x5511;peer.tbi=1;
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -279,7 +306,7 @@
          CHECK(report.output_bits==36 && mmio[(cb+0x10)/4]==0x38071 && report.mismatch==((1u<<3)|(1u<<8)));
          CHECK(mmio[cb/4]==0x167);
          CHECK(report.smr==((1u<<31)|5) && (report.s2cr&0xff)==1 && (report.sctlr&1));
-@@ -135,11 +156,11 @@
+@@ -135,11 +156,11 @@ int main()
          reset();
          NativeAdrenoGmuContext context;
          NativeAdrenoGmuContextReport report;
@@ -296,7 +323,7 @@
          CHECK(report.step==0);
      }
      /* The board entry over the kit's direct MMIO adapter on a plain array. A plain array has no
-@@ -157,7 +178,7 @@
+@@ -157,7 +178,7 @@ int main()
          CHECK(NativeAdrenoGmuContextPayloads(payloads)==kIOReturnNotReady && !payloads[4].bytes);
          CHECK(NativeAdrenoGmuContextPayloads(nullptr)==kIOReturnBadArgument);
      }
@@ -305,17 +332,3 @@
          "context write, 1 enabled-bank refusal, 1 36-bit OAS context, 1 sheng-observed ID2/TCR2 context, 2 ID2 refusals, 5 argument refusals and 1 board entry with a stuck fault status over a software SMMU peer\n");
  }
  /* Physical-page maintenance (imported BOs): record it; no host page is touched. */
---- a/tests/hostsim/host_gpu_service.cpp
-+++ b/tests/hostsim/host_gpu_service.cpp
-@@ -92,9 +92,8 @@
-     static const ArmSmmu4KIo io{nullptr,kSmmuBytes,sread32,sread64,swrite32,swrite64,sbarrier};
-     context=new NativeAdrenoGpuContext;
-     NativeAdrenoGmuContextReport report;
--    const unsigned slots[2]={2,3};
--    const uint16_t sids[2]={0,1};
--    const IOReturn up=context->bringUp(&io,1,2,slots,sids,nullptr,&report);
-+    const ArmSmmu4KStream routes[2]={{2,0},{3,1}};
-+    const IOReturn up=context->bringUp(&io,1,2,routes,2,nullptr,&report);
-     if(up!=kIOReturnSuccess) {std::fprintf(stderr,"host gpu: context bring-up failed %d at step %u\n",up,report.step);return false;}
-     const NativeAdrenoMemory &ringmem=context->buffer(1),&memory=context->buffer(2);
-     memptrs=static_cast<volatile uint32_t *>(memory.mapping());

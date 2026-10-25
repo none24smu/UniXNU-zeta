@@ -23,8 +23,9 @@
 //      (`zeta-gpu-level=<n>` picks another DT level, 0 = fastest) and the OOB GPU request (set bit 30, ack bit 31) that makes the
 //      GMU power GX; RBBM_STATUS and GBIF_HALT_ACK only when GX reports on. Nothing in the GPU register space is written.
 //   9  as 8, then, with GX on: the GPU's SMMU context and kernel buffers (NativeAdrenoGpuContext), the hash-pinned stock
-//      a660_sqe.fw from /chosen zeta-gpu-sqe, a6xx_start for the A660v2, the power-up register list, the ring, CP_ME_INIT, and
-//      without a zap shader the SECVID_TRUST_CNTL fallback and one CP_MEM_WRITE into a scratch page through the GPU's context.
+//      a660_sqe.fw from /chosen zeta-gpu-sqe, a6xx_start for the A660v2, the power-up register list, the ring, CP_ME_INIT, the
+//      stock zap shader (/chosen zeta-gpu-zap, PAS 13) and CP_SET_SECURE_MODE 0, or with zeta-gpu-zap=0 (or a failed zap) the
+//      SECVID_TRUST_CNTL fallback, then one CP_MEM_WRITE into a scratch page through the GPU's context.
 // The result goes to the kernel log as "zeta-gpu:" lines from a thread about ten seconds after the probe starts.
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
@@ -43,6 +44,7 @@
 #include "NativeAdrenoGpuContext.h"
 #include "NativeAdrenoRing.h"
 #include "AdrenoPM4.h"
+#include "NativeAdrenoMemory.h"
 #include <string.h>
 
 extern "C" {
@@ -365,6 +367,139 @@ size_t a660PwrupList(volatile uint32_t *out, size_t bytes) {
     __asm__ volatile("dsb sy" ::: "memory");
     return at * 4;
 }
+// The zap shader as stock KGSL loads it after CP init (adreno_zap_shader_load -> the qcom,kgsl-hyp pil-tz-generic node:
+// pas-id 13, firmware a660_zap, memory-region pil_gpu_region@8b51a000 size 0x2000), through SIP SMCs as qcom_scm does,
+// sheng's zapAndSecure on the zeta values. The image is the hash-pinned stock a660_zap.elf (the .mdt with its .b00-.b02
+// segments at their file offsets) from /chosen zeta-gpu-zap.
+struct ScmRes {int64_t a0; uint64_t a1; uint32_t ms, resumes;};
+// QCOM_SCM_INTERRUPTED (1) resumes with x0 = 1 and the returned x6; QCOM_SCM_V2_EBUSY (-12) retries after 30 ms, at most 20 times.
+ScmRes scmCall(uint64_t fn, uint64_t arginfo, uint64_t p0, uint64_t p1, uint64_t p2) {
+    uint64_t first = fn, a6 = 0;
+    const uint64_t start = ringNow(nullptr);
+    auto done = [&](int64_t a0, uint64_t a1, unsigned resumes) {
+        return ScmRes{a0, a1, static_cast<uint32_t>((ringNow(nullptr) - start) / 1000), resumes};
+    };
+    for (unsigned resume = 0, busy = 0; resume < 10000;) {
+        register uint64_t x0 asm("x0") = first, x1 asm("x1") = arginfo, x2 asm("x2") = p0, x3 asm("x3") = p1;
+        register uint64_t x4 asm("x4") = p2, x5 asm("x5") = 0, x6 asm("x6") = a6, x7 asm("x7") = 0;
+        asm volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
+                     :: "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
+        if (x0 == 1) {first = 1; a6 = x6; ++resume; continue;}
+        if (static_cast<int64_t>(x0) == -12 && busy++ < 20) {first = fn; a6 = 0; IOSleep(30); continue;}
+        return done(static_cast<int64_t>(x0), x1, resume);
+    }
+    return done(-1000, 0, 10000);
+}
+// ARM_SMCCC_CALL_VAL(STD, SMC_64, OWNER_SIP, QCOM_SCM_SVC_PIL << 8 | cmd).
+constexpr uint64_t kScmPil(uint32_t cmd) {return 0x42000000u | (0x02u << 8) | cmd;}
+constexpr uint32_t kGpuPasId = 13;
+constexpr uint64_t kZapPhys = 0x8b51a000, kZapBytes = 0x2000;
+OSSharedPtr<OSData> gZapFirmware;
+NativeAdrenoMemory gZapMetadata;
+// stage, init, mem_setup, auth (a0, or a1 when a0 is 0), secure-mode fence; init/mem_setup/auth milliseconds
+int32_t native_gpu_zap[8];
+uint32_t rd32le(const uint8_t *p) {return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;}
+uint16_t rd16le(const uint8_t *p) {return static_cast<uint16_t>(p[0] | p[1] << 8);}
+void zapState(const char *what) {
+    const int32_t *z = native_gpu_zap;
+    IOLog("zeta-gpu: zap %s stage %d init %d (%d ms) mem_setup %d (%d ms) auth %d (%d ms) secure %d\n", what, z[0], z[1], z[5],
+          z[2], z[6], z[3], z[7], z[4]);
+}
+// Returns true once TZ has authenticated the zap shader and the CP has left secure mode.
+bool zapAndSecure() {
+    int32_t *z = native_gpu_zap;
+    z[0] = 1;
+    IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
+    if (chosen) {
+        if (OSData *data = OSDynamicCast(OSData, chosen->getProperty("zeta-gpu-zap"))) gZapFirmware.reset(data, OSRetain);
+        chosen->release();
+    }
+    if (!gZapFirmware) {zapState("no /chosen zeta-gpu-zap"); return false;}
+    const uint8_t *fw = static_cast<const uint8_t *>(gZapFirmware->getBytesNoCopy());
+    const uint64_t size = gZapFirmware->getLength();
+    uint8_t digest[32];
+    coldSha256(nullptr, fw, size, digest);
+    static const uint8_t kZapSha256[32] = {   // a660_zap.elf, sha256 91da096c...4fa6e6
+        0x91, 0xda, 0x09, 0x6c, 0x2e, 0x3c, 0x84, 0x5d, 0x8d, 0x25, 0x4c, 0xbc, 0x45, 0x1c, 0x5f, 0x12,
+        0x66, 0x21, 0x46, 0xd4, 0xa7, 0x2a, 0x5a, 0x81, 0xa8, 0x24, 0xd5, 0x26, 0x9d, 0x4f, 0xa6, 0xe6};
+    if (memcmp(digest, kZapSha256, 32)) {z[0] = -1; zapState("hash"); return false;}
+    // mdt_header_valid / qcom_mdt_read_metadata: ELF32, 32-byte program headers, the first not PT_LOAD, a hash segment
+    // (p_flags segment type 2 in bits 24..26).
+    if (size < 52 || fw[0] != 0x7f || fw[1] != 'E' || fw[2] != 'L' || fw[3] != 'F' || fw[4] != 1) {z[0] = -2; zapState("elf"); return false;}
+    const uint32_t phoff = rd32le(fw + 28);
+    const unsigned phent = rd16le(fw + 42), phnum = rd16le(fw + 44);
+    if (phent != 32 || phnum < 2 || phnum > 16 || phoff + uint64_t(phnum) * 32 > size) {z[0] = -3; zapState("phdr"); return false;}
+    auto ph = [&](unsigned i, unsigned field) {return rd32le(fw + phoff + i * 32 + field * 4);};   // type off va pa filesz memsz flags
+    if (ph(0, 0) == 1) {z[0] = -4; zapState("phdr0"); return false;}
+    unsigned hash = 0;
+    for (unsigned i = 1; i < phnum && !hash; ++i) if (((ph(i, 6) >> 24) & 7) == 2) hash = i;
+    if (!hash) {z[0] = -5; zapState("hash segment"); return false;}
+    uint64_t lo = ~0ull, hi = 0;
+    bool relocate = false;
+    for (unsigned i = 0; i < phnum; ++i) {
+        if (ph(i, 0) != 1 || ((ph(i, 6) >> 24) & 7) == 2 || !ph(i, 5)) continue;   // mdt_phdr_valid
+        if (ph(i, 6) & (1u << 27)) relocate = true;
+        lo = lo < ph(i, 3) ? lo : ph(i, 3);
+        const uint64_t end = (uint64_t(ph(i, 3)) + ph(i, 5) + 0xfff) & ~0xfffull;
+        hi = hi > end ? hi : end;
+    }
+    if (lo >= hi || hi - lo > kZapBytes) {z[0] = -6; zapState("segments"); return false;}
+    const uint64_t ehdr = ph(0, 4), hashBytes = ph(hash, 4), hashOff = ph(hash, 1);
+    if (ehdr > size || hashOff + hashBytes > size || ehdr + hashBytes > 0x4000) {z[0] = -7; zapState("metadata"); return false;}
+    // Metadata: the ELF and program headers then the hash segment, physically contiguous and coherent (dma_alloc_coherent).
+    z[0] = 2;
+    const size_t metaBytes = size_t((ehdr + hashBytes + 0xfff) & ~0xfffull);
+    if (gZapMetadata.allocate(metaBytes, 40, true, metaBytes) || gZapMetadata.spanCount() != 1) {z[0] = -8; zapState("alloc"); return false;}
+    uint8_t *meta = static_cast<uint8_t *>(gZapMetadata.mapping());
+    for (uint64_t i = 0; i < ehdr; ++i) meta[i] = fw[i];
+    for (uint64_t i = 0; i < hashBytes; ++i) meta[ehdr + i] = fw[hashOff + i];
+    if (gZapMetadata.publishForDevice(0, metaBytes, true)) {z[0] = -9; zapState("publish"); return false;}
+    // qcom_scm_pas_init_image: ARGS(2, VAL, RW).
+    z[0] = 3;
+    ScmRes r = scmCall(kScmPil(0x01), 2 | (2u << 6), kGpuPasId, gZapMetadata.spans()[0].physical, 0);
+    z[1] = static_cast<int32_t>(r.a0 ? r.a0 : int64_t(r.a1)); z[5] = static_cast<int32_t>(r.ms);
+    if (r.a0 || r.a1) {zapState("init_image"); return false;}
+    if (relocate) {
+        // qcom_scm_pas_mem_setup: ARGS(3).
+        z[0] = 4;
+        r = scmCall(kScmPil(0x02), 3, kGpuPasId, kZapPhys, hi - lo);
+        z[2] = static_cast<int32_t>(r.a0 ? r.a0 : int64_t(r.a1)); z[6] = static_cast<int32_t>(r.ms);
+        if (r.a0 || r.a1) {zapState("mem_setup"); return false;}
+    }
+    // qcom_mdt_load_no_init into the reserved region (relocatable: offsets from the lowest segment address).
+    z[0] = 5;
+    {
+        IODeviceMemory *m = IODeviceMemory::withRange(kZapPhys, kZapBytes);
+        OSSharedPtr<IOMemoryMap> map;
+        if (m) {map = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapWriteCombineCache), OSNoRetain); m->release();}
+        if (!map) {z[0] = -10; zapState("region map"); return false;}
+        volatile uint8_t *region = reinterpret_cast<volatile uint8_t *>(map->getVirtualAddress());
+        const uint64_t base = relocate ? lo : kZapPhys;
+        for (unsigned i = 0; i < phnum; ++i) {
+            if (ph(i, 0) != 1 || ((ph(i, 6) >> 24) & 7) == 2 || !ph(i, 5)) continue;
+            const uint64_t at = uint64_t(ph(i, 3)) - base, file = ph(i, 4), mem = ph(i, 5), off = ph(i, 1);
+            if (ph(i, 3) < base || at + mem > kZapBytes || file > mem || off + file > size) {z[0] = -11; zapState("segment"); return false;}
+            for (uint64_t b = 0; b < file; ++b) region[at + b] = fw[off + b];
+            for (uint64_t b = file; b < mem; ++b) region[at + b] = 0;
+        }
+        __asm__ volatile("dsb sy" ::: "memory");
+    }   // the CPU mapping is gone before TZ takes the region
+    // qcom_scm_pas_auth_and_reset: ARGS(1).
+    z[0] = 6;
+    r = scmCall(kScmPil(0x05), 1, kGpuPasId, 0, 0);
+    z[3] = static_cast<int32_t>(r.a0 ? r.a0 : int64_t(r.a1)); z[7] = static_cast<int32_t>(r.ms);
+    if (r.a0 || r.a1) {zapState("auth_and_reset"); return false;}
+    // a6xx_rb_start with the zap loaded: CP_SET_SECURE_MODE (0x66) 0, then idle (2 s).
+    z[0] = 7;
+    uint32_t words[2] = {};
+    uint32_t fence = 0, seen = 0;
+    if (AdrenoPM4Type7(0x66, 1, &words[0]) != AdrenoPM4Success || gRing.submit(words, 2, &fence)) {z[0] = -12; zapState("submit"); return false;}
+    const NativeAdrenoRingClock clock{nullptr, ringNow, ringIdle};
+    z[4] = static_cast<int32_t>(gRing.wait(fence, &clock, 2000000, &seen));
+    z[0] = z[4] ? 8 : 9;
+    zapState(z[4] ? "secure-mode timeout" : "done");
+    return !z[4];
+}
 void gpuStart() {
     uint32_t *c = native_gpu_cp;
     if (!NativeAdrenoGpuContextBringup || !NativeAdrenoGpuContextBuffers || !gSmmuMap) {IOLog("zeta-gpu: gpu start not linked\n"); return;}
@@ -449,9 +584,12 @@ void gpuStart() {
     c[3] = gRing.wait(fence, &clock, 2000000, &c[4]);   // adreno_ringbuffer_submit_spin(rb, NULL, 2000)
     if (c[3]) {cpState(c[3] == NativeAdrenoRingFenceTimeout ? "init timeout" : "init fault"); return;}
     cpState("init done");
-    // 6. Secure mode off without a zap shader (a6xx_rb_start's fallback), then CP_MEM_WRITE (0x3d) into the scratch page.
+    // 6. Out of secure mode: the zap shader and CP_SET_SECURE_MODE 0 as stock does (zeta-gpu-zap=0: a6xx_rb_start's
+    // SECVID_TRUST_CNTL fallback instead), then CP_MEM_WRITE (0x3d) into the scratch page.
     c[0] = 6;
-    gpuWr(ZETA_RBBM_SECVID_TRUST_CNTL, 0);
+    unsigned zap = 1;
+    PE_parse_boot_argn("zeta-gpu-zap", &zap, sizeof zap);
+    if (!zap || !zapAndSecure()) gpuWr(ZETA_RBBM_SECVID_TRUST_CNTL, 0);
     volatile uint32_t *scratch = reinterpret_cast<volatile uint32_t *>(gGpuCpu[4]);
     scratch[0] = 0;
     __asm__ volatile("dsb sy" ::: "memory");

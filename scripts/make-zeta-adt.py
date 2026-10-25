@@ -77,9 +77,11 @@ BUTTON_NAMES = b'volup\0voldown\0hold\0'
 # The stock V54AP tree's /buttons home-button-type: 2 is no Home button (Face ID, swipe-up home gesture). MobileGestalt
 # reads it; absent, iOS treats the phone as a Home-button model ("Press Home to open").
 HOME_BUTTON_TYPE = 2
-# The stock vendor image's GPU firmware as GpuPowerProbe pins it: a660_gmu.bin (55256 bytes, ZetaGmu.c) and a660_sqe.fw.
+# The stock vendor image's GPU firmware as GpuPowerProbe pins it: a660_gmu.bin (55256 bytes, ZetaGmu.c), a660_sqe.fw and
+# a660_zap.elf (the zap .mdt with its .b00-.b02 segments at their file offsets).
 GPU_FIRMWARE = {'zeta-gpu-gmu': ('a660_gmu.bin', '6bb9360a1601253a86ee3ae1b9b916f5f1832a72d55e9b8573567f1740c94e2b'),
-                'zeta-gpu-sqe': ('a660_sqe.fw', 'f911a4badf7b56719cb130492bc39f9edb85335f54e8b4983b5c67eb9e6204bb')}
+                'zeta-gpu-sqe': ('a660_sqe.fw', 'f911a4badf7b56719cb130492bc39f9edb85335f54e8b4983b5c67eb9e6204bb'),
+                'zeta-gpu-zap': ('a660_zap.elf', '91da096c2e3c845d8d254cbc451c5f12662146d4a72a5a81a824d5269d4fa6e6')}
 
 
 def node(name, properties=(), children=()):
@@ -190,8 +192,8 @@ def main():
                         help='/chosen/asmb lp-sip0: the CSR flags of a kernel built with XNU_APFS_CSR (lp-sip1 stays 0). '
                              'Without it csr_config is 0, full SIP')
     parser.add_argument('--gpu-firmware', type=Path, default=None,
-                        help='a directory with the stock vendor image\'s a660_gmu.bin and a660_sqe.fw: /chosen zeta-gpu-gmu and '
-                             'zeta-gpu-sqe for GpuPowerProbe modes 7 and 9. Proprietary; local builds only, never CI')
+                        help='a directory with the stock vendor image\'s a660_gmu.bin, a660_sqe.fw and a660_zap.elf: /chosen '
+                             'zeta-gpu-gmu, -sqe and -zap for GpuPowerProbe modes 7 and 9. Proprietary; local builds only, never CI')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.ipad_identity:

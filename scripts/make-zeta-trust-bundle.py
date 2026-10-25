@@ -62,6 +62,13 @@ def owner_entries(report):
                 if 'trust_cache_entry' in f]
     if report.get('schema') == 'zeta-userland-tree-rewrite-v1':
         return [(i['paths'][0], i['original_cdhash'], i['trust_cache_entry']) for i in report['images']]
+    if report.get('bundle') == 'NativeAdrenoMetal.bundle':
+        # UniXNU build-adreno-metal-plugin.py trust.json: the owner-built plugin, its Turnip library and the probe daemon have no
+        # original; they get the plain attributes of an Apple library entry (SHA-256 code directory, no flags, no constraint).
+        plain = dict(hash_type=2, flags=0, constraint_category=0, copied_from_original=True)
+        return [(name, None, dict(plain, cdhash=report[key])) for name, key in
+                (('NativeAdrenoMetal.bundle', 'cdhash'), ('libvulkan_freedreno.dylib', 'turnip_cdhash'),
+                 ('adrenoprobed', 'daemon_cdhash')) if report.get(key)]
     return [(report['identifier'], report['original_cdhash'], report['trust_cache_entry'])]
 
 
@@ -104,7 +111,8 @@ def main(argv=None):
     parser.add_argument('--apple-trust-cache', action='append', required=True, type=Path,
                         help='IM4P trust cache from the IPSW (repeatable)')
     parser.add_argument('--rewrite-report', action='append', required=True, type=Path,
-                        help='rewrite-zeta-userland, -userland-tree or -dyld-cache report (repeatable)')
+                        help='rewrite-zeta-userland, -userland-tree or -dyld-cache report, or the Adreno plugin '
+                             'trust.json (repeatable)')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--report', required=True, type=Path)
     args = parser.parse_args(argv)

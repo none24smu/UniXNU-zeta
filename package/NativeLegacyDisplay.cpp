@@ -390,9 +390,10 @@ void scanoutSample(const char *when, const Display &display) {
 // Ping-pong done in the MDP top interrupt status (sde_hw_interrupts.c SDE_INTR_PING_PONG_n_DONE): the panel has taken
 // the whole frame of a command-mode transfer. CTL_n drives PP_n here (DsiPanel.cpp: CTL_0 -> PP_0, CTL_1 -> PP_1).
 uint32_t ppDoneBits(unsigned ctls) {return (ctls & 0xfU) << 8;}
-// Wait for the transfer in flight, as sde_encoder_phys_cmd waits for pp_done before the next kickoff: the scanout is
-// not written while the DPU still fetches it, and the next frame starts as soon as the panel (90 Hz timing@1, the mode
-// ABL leaves) took the last one. 40 ms bounds a lost done; the gated callers sleep, never spin with interrupts off.
+// Wait for the transfer in flight, as sde_encoder_phys_cmd waits for pp_done before the next kickoff: the next frame
+// starts as soon as the panel (90 Hz timing@1, the mode ABL leaves) took the last one. The copy itself does not wait: with one
+// scanout buffer, waiting before it (gpu12-v2) serialised the 10 ms copy behind the transfer, up to 19 ms a present. 40 ms
+// bounds a lost done; the gated callers sleep, never spin with interrupts off.
 void dpuIdle() {
     if (!gDpu.pending) return;
     const uint64_t deadline = mach_absolute_time() + 40 * 19200;
@@ -775,7 +776,6 @@ void kickOnce(IOService *self, Display *display) {
         OSSafeReleaseNULL(source);
         return stall(display, request, "scanout busy");
     }
-    if (gDpu.mode >= 2) dpuIdle();
     const uint64_t ready = mach_absolute_time();
     auto from = reinterpret_cast<const unsigned char *>(source->getVirtualAddress());
     // zeta-opaque=1: the source pipe blends with the alpha byte (SSPP format alpha enable), so a render-server frame

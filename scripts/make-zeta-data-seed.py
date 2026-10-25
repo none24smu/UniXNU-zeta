@@ -9,6 +9,10 @@ directories and the empty user-management skeleton are added, without keys or us
 packed as DBRDISK1 (DarwinBoot Test/packed_ramdisk.py) for the PackedRAMDisk placeholder.
 
   make-zeta-data-seed.py --os-root MOUNT/root --volume-uuid UUID --output seed.dbr --kernel ... --module ...
+
+--overlay DIR adds DIR's tree to the volume, root owned with its own modes (DIR/ngpu/addons becomes /private/var/ngpu/addons): the
+owner GPU addon content UniXNU's add-gpu-plugin-data.py stages (the Metal plugin bundle, its .publish and .clients files, the probe
+daemon and its job), for the kernel's boot-time addon mount (sheng-gpu-addon=1).
 """
 import argparse
 import hashlib
@@ -40,7 +44,28 @@ SKELETON = (
 RUNTIME = ('keybags', 'mobile/tmp', 'tmp', 'run')
 
 
-def plan(var):
+def overlay(tree, directories, files):
+    """Add an owner tree, root owned, keeping its modes; a path the OS var already has is refused."""
+    taken = {f['path'] for f in files}
+    for current, subdirs, names in os.walk(tree):
+        subdirs.sort()
+        relative = os.path.relpath(current, tree)
+        if relative != '.':
+            path = '/' + relative
+            if path not in directories:
+                directories[path] = (0, 0, f'{stat.S_IMODE(os.stat(current).st_mode):o}')
+        for name in sorted(names):
+            source = os.path.join(current, name)
+            info = os.lstat(source)
+            if not stat.S_ISREG(info.st_mode):
+                raise SystemExit(f'Overlay entries must be regular files: {source}')
+            target = '/' + os.path.relpath(source, tree)
+            if target in taken:
+                raise SystemExit(f'Overlay path is already in the OS var: {target}')
+            files.append(dict(source=source, path=target, uid=0, gid=0, mode=f'{stat.S_IMODE(info.st_mode):o}'))
+
+
+def plan(var, overlays=()):
     """Directories, files and symlinks of the OS /private/var as Data volume paths, with owners and modes."""
     directories, files, symlinks = {}, [], []
     for current, subdirs, names in os.walk(var):
@@ -65,6 +90,8 @@ def plan(var):
                                   mode=f'{stat.S_IMODE(info.st_mode):o}'))
             else:
                 raise SystemExit(f'Unexpected file type: {path}')
+    for tree in overlays:
+        overlay(tree, directories, files)
     added = []
     for name in RUNTIME + SKELETON:
         parts = name.split('/')
@@ -91,6 +118,8 @@ def main():
     parser.add_argument('--kernel', required=True, type=Path)
     parser.add_argument('--module', required=True, type=Path)
     parser.add_argument('--busybox', type=Path)
+    parser.add_argument('--overlay', action='append', default=[], type=Path,
+                        help='owner tree added under /private/var (root owned, modes kept); may repeat')
     parser.add_argument('--mkapfs', default='mkapfs',
                         help='apfsprogs mkapfs; it must set INODE_NO_RSRC_FORK on the directories it makes (1bd1c1c)')
     args = parser.parse_args()
@@ -103,7 +132,10 @@ def main():
         raise SystemExit('--os-root must be the mounted OS volume')
     if args.output.exists():
         raise SystemExit('Refuse to overwrite an existing seed')
-    directories, files, symlinks, added = plan(var)
+    for tree in args.overlay:
+        if not tree.is_dir():
+            raise SystemExit(f'--overlay must be a directory: {tree}')
+    directories, files, symlinks, added = plan(var, args.overlay)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='zeta-data-seed-', dir=args.output.parent) as temporary:
         raw = args.raw or Path(temporary) / 'data.apfs'
@@ -141,6 +173,7 @@ def main():
                   packed_sha256=hashlib.sha256(args.output.read_bytes()).hexdigest(),
                   directories=len(directories), files=len(files), symlinks=len(symlinks),
                   file_bytes=sum(os.path.getsize(f['source']) for f in files), added_directories=added,
+                  overlays=[str(tree) for tree in args.overlay],
                   seed='OS private/var excluding staged_system_apps; owners, modes and symlinks preserved; '
                        'runtime and user-management directories added; no keys or user records')
     args.output.with_suffix('.json').write_text(json.dumps(report, indent=2) + '\n')

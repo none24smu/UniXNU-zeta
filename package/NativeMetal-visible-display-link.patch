@@ -9,7 +9,7 @@
  #include <pthread.h>
  #include <dlfcn.h>
  #include <unistd.h>
-@@ -164,12 +166,70 @@
+@@ -164,12 +166,103 @@
          streamText(*gpu, text);
      }
  }
@@ -23,6 +23,38 @@
 +    const SEL selector = sel_registerName(name);
 +    Method method = c ? class_getInstanceMethod(c, selector) : nullptr;
 +    if (method) method_setImplementation(method, imp_implementationWithBlock(make(method_getImplementation(method), selector)));
++}
++// The hello view itself (the last one laid out) and what Setup's main queue saw of it at the last tick: layouts, main-queue runs, in a
++// window, hidden, alpha (percent), width x height, its displayLink and isPaused stored properties, the link's paused state and delegate.
++static __weak id gHello;
++static std::atomic<unsigned> gHelloLayouts, gMainRuns;
++static char gHelloState[96] = "-";
++static void countHelloLayouts() {
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        replaceMethod((Class)objc_getClass("_TtC23SetupAssistantSupportUI9HelloView"), "layoutSubviews", ^id(IMP original, SEL selector) {
++            return ^(id self) {++gHelloLayouts; gHello = self; ((void (*)(id, SEL))original)(self, selector);};
++        });
++    });
++}
++static void readHello() {
++    dispatch_async(dispatch_get_main_queue(), ^{
++        ++gMainRuns;
++        id hello = gHello;
++        if (!hello) return;
++        Ivar linkIvar = class_getInstanceVariable(object_getClass(hello), "displayLink");
++        Ivar pausedIvar = class_getInstanceVariable(object_getClass(hello), "isPaused");
++        id link = linkIvar ? object_getIvar(hello, linkIvar) : nil;
++        const int paused = pausedIvar ? *((const uint8_t *)(__bridge void *)hello + ivar_getOffset(pausedIvar)) : -1;
++        const CGRect bounds = ((CGRect (*)(id, SEL))objc_msgSend)(hello, sel_registerName("bounds"));
++        id window = ((id (*)(id, SEL))objc_msgSend)(hello, sel_registerName("window"));
++        const BOOL hidden = ((BOOL (*)(id, SEL))objc_msgSend)(hello, sel_registerName("isHidden"));
++        const double alpha = ((double (*)(id, SEL))objc_msgSend)(hello, sel_registerName("alpha"));
++        const int linkPaused = link ? ((BOOL (*)(id, SEL))objc_msgSend)(link, sel_registerName("isPaused")) : -1;
++        const int linkDelegate = link ? ((id (*)(id, SEL))objc_msgSend)(link, sel_registerName("delegate")) == hello : -1;
++        snprintf(gHelloState, sizeof gHelloState, "w%d h%d a%d %dx%d k%d i%d kp%d kd%d", window != nil, hidden, int(alpha * 100),
++                 int(bounds.size.width), int(bounds.size.height), link != nil, paused, linkPaused, linkDelegate);
++    });
 +}
 +static void countDelegateUpdates(Class c) {
 +    static Class counted[4];
@@ -77,19 +109,21 @@
      Gpu *gpu = makeGpu(port);
      if (!gpu) return;
 +    countDisplayLinks();
++    countHelloLayouts();
      pthread_attr_t attributes;
      pthread_attr_init(&attributes);
      pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-@@ -179,7 +239,12 @@
+@@ -179,7 +272,13 @@
          static char full[420], last[420];
          for (;;) {
              sleep(5);
 -            native_bridge_metal_status(full, sizeof full);
 +            // the hello's delegate when its link was made before these counters were in place
 +            countDelegateUpdates((Class)objc_getClass("_TtC23SetupAssistantSupportUI9HelloView"));
-+            const int used = snprintf(full, sizeof full, "L%u r%u p%u/%u f%d u%u n%u/%u q%u y%u %s || ", gLinks.load(), gLinkRuns.load(),
++            readHello();
++            const int used = snprintf(full, sizeof full, "L%u r%u p%u/%u f%d u%u n%u/%u q%u y%u H%u m%u %s || ", gLinks.load(), gLinkRuns.load(),
 +                gLinkPauses.load(), gLinkResumes.load(), gLinkLatency.load(), gLinkUpdates.load(), gNextDrawables.load(), gNilDrawables.load(),
-+                gPresents.load(), gPresented.load(), gLinkDelegate);
++                gPresents.load(), gPresented.load(), gHelloLayouts.load(), gMainRuns.load(), gHelloState);
 +            native_bridge_metal_status(full + used, sizeof full - used);
              if (!strcmp(full, last)) continue;
              strlcpy(last, full, sizeof last);

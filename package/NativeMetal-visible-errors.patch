@@ -1,20 +1,21 @@
 --- a/NativeAdrenoMetalPlugin.mm
 +++ b/NativeAdrenoMetalPlugin.mm
-@@ -291,6 +291,78 @@
+@@ -291,6 +291,79 @@
          });
      });
  }
 +// A listed client's own complaints: the hello's renderer logs "Failed to create textPipeline", "All pipelines failed to load" and the
-+// like. With OS_ACTIVITY_DT_MODE in the process's environment (native-exec-env) os_log and NSLog also write to stderr; stderr becomes a
-+// pipe here (its write end non-blocking, so a full pipe drops lines and never stalls the process), the lines that name a failure are
-+// kept (48 at most), and a sender puts each on the marker stream as "E0 <57 characters>" and "E1 <the next 57>", between the status
++// like, and its progress ("Background should render on next callback", "Wallpaper failed to load"). With OS_ACTIVITY_DT_MODE in the process's environment (native-exec-env) os_log and NSLog also write to stderr; stderr becomes a
++// pipe here (its write end non-blocking, so a full pipe drops lines and never stalls the process), the lines that name a failure or the
++// hello's steps are kept (96 at most), and a sender puts each on the marker stream as "E0 <57 characters>" and "E1 <the next 57>", between the status
 +// line's pieces (gStreamLock).
 +static pthread_mutex_t gStreamLock = PTHREAD_MUTEX_INITIALIZER;
-+static char gComplaints[48][116];
++static char gComplaints[96][116];
 +static std::atomic<unsigned> gComplaintCount;
 +static int gStderrPipe = -1;
 +static bool complaint(const char *line) {
-+    static const char *const words[] = {"fail", "error", "unable", "not available", "refused", "invalid", "pipeline"};
++    static const char *const words[] = {"fail", "error", "unable", "not available", "refused", "invalid", "pipeline", "background",
++                                        "wallpaper", "snapshot", "bookend", "animation", "display link", "drawable"};
 +    for (const char *word : words) if (strcasestr(line, word)) return true;
 +    return false;
 +}
@@ -32,7 +33,7 @@
 +            const char *text = line;
 +            if (const char *bracket = strstr(line, "] ")) if (bracket - line < 96) text = bracket + 2;
 +            const unsigned slot = gComplaintCount.load();
-+            if (slot < 48 && complaint(text)) {
++            if (slot < 96 && complaint(text)) {
 +                strlcpy(gComplaints[slot], text, sizeof gComplaints[slot]);
 +                gComplaintCount = slot + 1;
 +            }
@@ -79,7 +80,7 @@
  // A listed client's own frontend status (the render server's comes through its telemetry): when it changed, every five seconds, the
  // status line (counters, then the last two problems) in pieces "C<n> <57 characters>" on the marker stream, which the kernel keeps
  // as the client line. The pieces go 1.5 s apart: the kernel's printer reads the line once a second.
-@@ -299,6 +371,7 @@
+@@ -299,13 +372,14 @@
      if (!gpu) return;
      countDisplayLinks();
      countHelloLayouts();
@@ -87,12 +88,21 @@
      pthread_attr_t attributes;
      pthread_attr_init(&attributes);
      pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-@@ -318,12 +391,14 @@
+     pthread_t thread;
+     pthread_create(&thread, &attributes, [](void *arg) -> void * {
+         Gpu *g = static_cast<Gpu *>(arg);
+-        static char full[420], last[420];
++        static char full[720], last[720];
+         for (;;) {
+             sleep(5);
+             // the hello's delegate when its link was made before these counters were in place
+@@ -318,12 +392,14 @@
              if (!strcmp(full, last)) continue;
              strlcpy(last, full, sizeof last);
              const size_t length = strlen(full);
+-            for (size_t at = 0, n = 0; at < length && n < 8; at += 57, ++n) {
 +            pthread_mutex_lock(&gStreamLock);
-             for (size_t at = 0, n = 0; at < length && n < 8; at += 57, ++n) {
++            for (size_t at = 0, n = 0; at < length && n < 13; at += 57, ++n) {
                  char text[64];
                  snprintf(text, sizeof text, "C%zu %.57s", n, full + at);
                  streamText(*g, text);

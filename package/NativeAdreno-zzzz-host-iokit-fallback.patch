@@ -1,26 +1,11 @@
 --- a/tests/hostsim/host_iokit_shim.cpp
 +++ b/tests/hostsim/host_iokit_shim.cpp
-@@ -8,9 +8,13 @@
- #include <cstring>
- #include <cstdio>
- #include <unistd.h>
-+#include <dlfcn.h>
- #include <time.h>
- #include <errno.h>
- #include <atomic>
-+template<class Function> static Function original(const char *name) {
-+    return reinterpret_cast<Function>(dlsym(RTLD_NEXT,name));
-+}
- static bool trace(){static int t=-1;if(t<0)t=getenv("HOSTSIM_TRACE")?1:0;return t;}
- 
- extern "C" {
-@@ -59,24 +63,43 @@
+@@ -59,24 +59,37 @@
      if(trace())fprintf(stderr,"shim: IOServiceMatching(%s)\n",name);
      if(!strcmp(name,"NativeAdrenoGpuPublished"))return reinterpret_cast<CFMutableDictionaryRef>(1);
      if(!strcmp(name,"IOAcceleratorES"))return reinterpret_cast<CFMutableDictionaryRef>(2);
 -    return nullptr;
-+    auto call=original<decltype(&IOServiceMatching)>("IOServiceMatching");
-+    return call?call(name):nullptr;
++    return IOServiceMatching(name);
  }
 -static io_service_t shim_IOServiceGetMatchingService(mach_port_t,CFDictionaryRef matching) {
 +static io_service_t shim_IOServiceGetMatchingService(mach_port_t mainPort,CFDictionaryRef matching) {
@@ -28,16 +13,14 @@
 -    return static_cast<io_service_t>(reinterpret_cast<uintptr_t>(matching));
 +    if(matching==reinterpret_cast<CFDictionaryRef>(1) || matching==reinterpret_cast<CFDictionaryRef>(2))
 +        return static_cast<io_service_t>(reinterpret_cast<uintptr_t>(matching));
-+    auto call=original<decltype(&IOServiceGetMatchingService)>("IOServiceGetMatchingService");
-+    return call?call(mainPort,matching):0;
++    return IOServiceGetMatchingService(mainPort,matching);
  }
 -static kern_return_t shim_IOServiceOpen(io_service_t service,task_port_t,uint32_t type,io_connect_t *connect) {
 +static kern_return_t shim_IOServiceOpen(io_service_t service,task_port_t task,uint32_t type,io_connect_t *connect) {
      if(trace())fprintf(stderr,"shim: IOServiceOpen(%u, 0x%x)\n",service,type);
 -    if(service!=1 && service!=2)return kIOReturnBadArgument;
 +    if(service!=1 && service!=2) {
-+        auto call=original<decltype(&IOServiceOpen)>("IOServiceOpen");
-+        return call?call(service,task,type,connect):kIOReturnNotReady;
++        return IOServiceOpen(service,task,type,connect);
 +    }
      if(service==2 && type!=0x4147)return kIOReturnNotPermitted;
      const kern_return_t kr=translate(host_gpu_open());
@@ -50,31 +33,27 @@
 -static kern_return_t shim_IOConnectCallStructMethod(mach_port_t,uint32_t selector,const void *in,size_t in_size,void *out,size_t *out_size) {
 +static kern_return_t shim_IOServiceClose(io_connect_t connection) {
 +    if(connection==7)return translate(host_gpu_close());
-+    auto call=original<decltype(&IOServiceClose)>("IOServiceClose");
-+    return call?call(connection):kIOReturnNotReady;
++    return IOServiceClose(connection);
 +}
 +static kern_return_t shim_IOObjectRelease(io_object_t object) {
 +    if(object==1 || object==2)return KERN_SUCCESS;
-+    auto call=original<decltype(&IOObjectRelease)>("IOObjectRelease");
-+    return call?call(object):kIOReturnNotReady;
++    return IOObjectRelease(object);
 +}
 +static kern_return_t shim_IOConnectCallStructMethod(mach_port_t connection,uint32_t selector,const void *in,size_t in_size,void *out,size_t *out_size) {
 +    if(connection!=7) {
-+        auto call=original<decltype(&IOConnectCallStructMethod)>("IOConnectCallStructMethod");
-+        return call?call(connection,selector,in,in_size,out,out_size):kIOReturnNotReady;
++        return IOConnectCallStructMethod(connection,selector,in,in_size,out,out_size);
 +    }
      if(gOpenKind==2) {
          if(selector!=kAdmitted)return kIOReturnNotPermitted;
          const uint32_t *header=static_cast<const uint32_t *>(in);
-@@ -91,13 +114,21 @@
+@@ -91,13 +104,19 @@
      stallBoAlloc(selector);
      return translate(host_gpu_call(selector,in,in_size,out,out_size?*out_size:0));
  }
 -static kern_return_t shim_IOConnectMapMemory64(io_connect_t,uint32_t type,task_port_t,mach_vm_address_t *address,mach_vm_size_t *size,IOOptionBits) {
 +static kern_return_t shim_IOConnectMapMemory64(io_connect_t connection,uint32_t type,task_port_t task,mach_vm_address_t *address,mach_vm_size_t *size,IOOptionBits options) {
 +    if(connection!=7) {
-+        auto call=original<decltype(&IOConnectMapMemory64)>("IOConnectMapMemory64");
-+        return call?call(connection,type,task,address,size,options):kIOReturnNotReady;
++        return IOConnectMapMemory64(connection,type,task,address,size,options);
 +    }
      void *mapping=nullptr;uint64_t bytes=0;
      const kern_return_t kr=translate(host_gpu_map(type,&mapping,&bytes));
@@ -84,8 +63,7 @@
 -static kern_return_t shim_IOConnectUnmapMemory64(io_connect_t,uint32_t,task_port_t,mach_vm_address_t) {
 +static kern_return_t shim_IOConnectUnmapMemory64(io_connect_t connection,uint32_t type,task_port_t task,mach_vm_address_t address) {
 +    if(connection!=7) {
-+        auto call=original<decltype(&IOConnectUnmapMemory64)>("IOConnectUnmapMemory64");
-+        return call?call(connection,type,task,address):kIOReturnNotReady;
++        return IOConnectUnmapMemory64(connection,type,task,address);
 +    }
      return getenv("HOSTSIM_FAIL_USER_UNMAP") ? kIOReturnIOError : KERN_SUCCESS;
  }

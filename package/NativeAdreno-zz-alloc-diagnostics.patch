@@ -1,0 +1,139 @@
+--- a/NativeAdrenoUserClient.cpp
++++ b/NativeAdrenoUserClient.cpp
+@@ -6,6 +6,30 @@
+ /* BoImport record: [0] calls, [1] refused, [2..5] last refusal (status, stage, bytes, address), [6..9] first refusal. Stages 1..3 are this file's
+  * checks, 10..19 NativeAdrenoMemory::importTask's. */
+ extern "C" {volatile uint64_t native_adreno_import_diag[10];}
++/* Terminal BoAlloc memory refusals, retained across client close/respawn. All
++ * published clients' allocBo calls are serialized by NativeAdrenoPublish's
++ * g.lock, like the allocator/VM they share. Schema: [0] version 1, [1] failure
++ * count, [2] publication sequence (odd while writing), [3..10] last and [11..18]
++ * first (status, phase, live objects after cleanup, requested bytes, window peak,
++ * client address, align_log2, contiguous), [19] per-client object limit.
++ * Phases: 1 no client entry, 2 NativeAdrenoMemory::allocate, 3 write-combine.
++ * No successful attempt or recovered contiguous fallback is recorded. */
++extern "C" {volatile uint64_t native_adreno_alloc_diag[20]={1};}
++static void noteAllocFailure(IOReturn status,uint32_t phase,size_t live,
++    const NativeAdrenoAbiBoAlloc *request,uint64_t peak,const void *client)
++{
++    const uint64_t seq=__atomic_fetch_add(&native_adreno_alloc_diag[2],1,__ATOMIC_ACQ_REL);
++    const uint64_t count=native_adreno_alloc_diag[1]+1;
++    native_adreno_alloc_diag[1]=count;
++    const uint64_t record[8]={(uint32_t)status,phase,live,request->bytes,peak,
++        (uint64_t)(uintptr_t)client,request->align_log2,request->contiguous};
++    for(unsigned i=0;i<8;++i) {
++        native_adreno_alloc_diag[3+i]=record[i];
++        if(count==1)native_adreno_alloc_diag[11+i]=record[i];
++    }
++    native_adreno_alloc_diag[19]=NativeAdrenoClientMaxObjects;
++    __atomic_store_n(&native_adreno_alloc_diag[2],seq+2,__ATOMIC_RELEASE);
++}
+ extern "C" volatile uint32_t native_adreno_import_stage;
+ extern "C" volatile uint32_t native_adreno_io_coherent;
+ /* Per kernel method: [method][0] calls, [1] calls that returned non-zero, [2] last status, [3] total time (us, 32-bit). Method numbers are the ABI's (1..16). */
+@@ -132,7 +156,10 @@
+         request->align_log2<12 || request->align_log2>24 || request->contiguous>1)
+         return kIOReturnBadArgument;
+     Entry *entry=free();
+-    if(!entry)return kIOReturnNoResources;
++    if(!entry) {
++        noteAllocFailure(kIOReturnNoResources,1,liveObjects(),request,window_peak_,this);
++        return kIOReturnNoResources;
++    }
+     /* A scattered allocation costs one VM span per physical page (int-030: 16 MiB came back as 4096 single-page spans, the
+      * whole span table), so larger objects try one contiguous run first and fall back to scattered pages unless the
+      * caller demanded contiguity. */
+@@ -149,13 +176,18 @@
+      * (the kernel's cacheable alias read zeros past the first line too). Turnip maps every BO asking kIOMapWriteCombineCache, the user's
+      * cache bits replace the kernel's (IOUserClient::mapClientMemory64), and XNU's view machinery changes the page attribute to match, so
+      * the aliases disagreed. A coherent own BO needs a client that asks for a write-back view. */
+-    if(!status && native_adreno_wc_enabled)status=entry->memory.makeWriteCombined();
++    uint32_t failure_phase=2;
++    if(!status && native_adreno_wc_enabled) {
++        failure_phase=3;
++        status=entry->memory.makeWriteCombined();
++    }
+     if(status) {
+         /* A failed allocation can leave quarantine behind; never reuse it. */
+         clear(*entry);
+         if(entry->memory.release()!=kIOReturnSuccess) {
+             entry->used=true;entry->unreleasable=true;
+         }
++        noteAllocFailure(status,failure_phase,liveObjects(),request,window_peak_,this);
+         return status==kIOReturnUnsupported?kIOReturnUnsupported:status;
+     }
+     entry->used=true;entry->handle=next_handle_++;entry->token=(uint32_t)(entry-entries_)+1;
+--- a/tests/test_userclient.cpp
++++ b/tests/test_userclient.cpp
+@@ -7,6 +7,8 @@
+ #include <vector>
+ extern "C" volatile uint32_t native_adreno_io_coherent;
+ extern "C" volatile uint32_t native_adreno_coherent_skips[4];
++extern "C" volatile uint64_t native_adreno_alloc_diag[20];
++static bool fail_write_combine=false;
+ #define CHECK(x) do {if(!(x)){std::fprintf(stderr,"line %d: %s\n",__LINE__,#x);std::exit(1);}}while(0)
+ #define SMMU_BYTES 0x40000
+ #define CB 0x22000
+@@ -107,6 +109,52 @@
+ }
+ int main()
+ {
++    /* Terminal allocation diagnostic distinguishes client-table saturation from
++     * actual allocation/WC refusals, survives client close, and ignores success
++     * and recovered contiguous attempts. One map also verifies the window peak. */
++    {
++        Path p;CHECK(exposed(p)==kIOReturnSuccess);
++        CHECK(native_adreno_alloc_diag[0]==1 && native_adreno_alloc_diag[1]==0);
++        NativeAdrenoAbiBoAlloc alloc{4096,12,0};
++        NativeAdrenoAbiBoAllocReply allocated{};
++        for(size_t i=0;i<NativeAdrenoClientMaxObjects;++i) {
++            CHECK(p.client.allocBo(&alloc,&allocated)==kIOReturnSuccess && allocated.handle);
++            if(i==0) {
++                NativeAdrenoAbiBoMap map{allocated.handle,0x800000,3,0,2,0};
++                NativeAdrenoAbiBoMapReply mapped{};
++                CHECK(p.client.mapBo(&map,&mapped)==kIOReturnSuccess && mapped.iova==0x800000);
++            }
++        }
++        CHECK(native_adreno_alloc_diag[1]==0 && p.client.liveObjects()==1024);
++        CHECK(p.client.allocBo(&alloc,&allocated)==kIOReturnNoResources && !allocated.handle);
++        CHECK(native_adreno_alloc_diag[1]==1 && native_adreno_alloc_diag[2]==2);
++        CHECK(native_adreno_alloc_diag[3]==kIOReturnNoResources && native_adreno_alloc_diag[4]==1);
++        CHECK(native_adreno_alloc_diag[5]==1024 && native_adreno_alloc_diag[6]==4096);
++        CHECK(native_adreno_alloc_diag[7]==0x801000 && native_adreno_alloc_diag[8]==(uintptr_t)&p.client);
++        CHECK(native_adreno_alloc_diag[9]==12 && native_adreno_alloc_diag[10]==0 && native_adreno_alloc_diag[19]==1024);
++        uint64_t first[8];for(unsigned i=0;i<8;++i)first[i]=native_adreno_alloc_diag[11+i];
++        CHECK(p.client.releaseAll(&ringclock,1000)==kIOReturnSuccess);
++        CHECK(native_adreno_alloc_diag[1]==1); /* close must not erase the refusal */
++        CHECK(p.client.open(NativeAdrenoAbiVersion,&p.vm,&p.execbuf,&p.ring,32,40)==kIOReturnSuccess);
++        fixture.allocation_fail_count=1;
++        CHECK(p.client.allocBo(&alloc,&allocated)==kIOReturnNoMemory && !allocated.handle);
++        CHECK(native_adreno_alloc_diag[1]==2 && native_adreno_alloc_diag[2]==4);
++        CHECK(native_adreno_alloc_diag[3]==kIOReturnNoMemory && native_adreno_alloc_diag[4]==2);
++        CHECK(native_adreno_alloc_diag[5]==0 && native_adreno_alloc_diag[6]==4096);
++        fail_write_combine=true;
++        CHECK(p.client.allocBo(&alloc,&allocated)==kIOReturnIOError && !allocated.handle);
++        fail_write_combine=false;
++        CHECK(native_adreno_alloc_diag[1]==3 && native_adreno_alloc_diag[2]==6);
++        CHECK(native_adreno_alloc_diag[3]==kIOReturnIOError && native_adreno_alloc_diag[4]==3);
++        CHECK(native_adreno_alloc_diag[5]==0 && native_adreno_alloc_diag[6]==4096);
++        NativeAdrenoAbiBoAlloc big{1u<<20,12,0};
++        fixture.allocation_fail_count=1; /* first contiguous attempt fails; scattered succeeds */
++        CHECK(p.client.allocBo(&big,&allocated)==kIOReturnSuccess && allocated.handle);
++        CHECK(native_adreno_alloc_diag[1]==3 && native_adreno_alloc_diag[2]==6);
++        for(unsigned i=0;i<8;++i)CHECK(native_adreno_alloc_diag[11+i]==first[i]);
++        CHECK(p.client.releaseAll(&ringclock,1000)==kIOReturnSuccess);
++        std::puts("PASS: terminal BoAlloc diagnostics distinguish 1024 client slots, physical allocation and WC failure; preserve first refusal/respawn evidence; ignore recovered fallback");
++    }
+     /* Full client transaction: query, allocate, map, submit, wait, free, close. */
+     {
+         Path p;CHECK(exposed(p)==kIOReturnSuccess);
+@@ -626,7 +674,8 @@
+ }
+ /* Physical-page maintenance (imported BOs): record it; no host page is touched. */
+ /* Host double: the page attribute change of user BOs has no host equivalent (no host page is touched). */
+-IOReturn NativeAdrenoSetPagesCacheMode(const NativeAdrenoPhysicalSpan *spans,size_t count,bool){return spans && count?kIOReturnSuccess:kIOReturnBadArgument;}
++IOReturn NativeAdrenoSetPagesCacheMode(const NativeAdrenoPhysicalSpan *spans,size_t count,bool write_combined)
++{return !spans || !count?kIOReturnBadArgument:fail_write_combine && write_combined?kIOReturnIOError:kIOReturnSuccess;}
+ IOReturn NativeAdrenoReassertWriteCombined(const NativeAdrenoPhysicalSpan *spans,size_t count,uint32_t *reset)
+ {return spans && count && reset?kIOReturnSuccess:kIOReturnBadArgument;}
+ IOReturn NativeAdrenoMaintainPhysicalPages(uint64_t physical,size_t bytes,NativeAdrenoCacheOperation op)

@@ -39,6 +39,9 @@ extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
 extern processor_t cpu_to_processor(int cpu);
 extern kern_return_t processor_exit_from_user(processor_t);
 extern kern_return_t processor_start_from_user(processor_t);
+// xnu-12377 sched_prim.c.
+extern processor_t thread_bind(processor_t);
+extern wait_result_t thread_block(thread_continue_t);
 // xnu-12377 proc_internal.h.
 extern void proc_iterate(unsigned int, int (*)(proc_t, void *), void *, int (*)(proc_t, void *), void *);
 #define SHELL_PROC_RETURNED 0
@@ -424,6 +427,47 @@ static int cpu_command(const char *what, const char *which) {
     return result ? EIO : 0;
 }
 
+static int run(char *text);
+
+// on <n> <command>: run one command on core n (the shell thread is bound there for it), for per-core firmware state.
+static int on_cpu(int argc, char **argv) {
+    int ok, active = 0;
+    size_t size = sizeof active;
+    const int cpu = (int)number(argv[1], &ok);
+    if (!ok || cpu < 0 || kernel_sysctlbyname("hw.activecpu", &active, &size, NULL, 0) || cpu >= active) {
+        zeta_shell_line("usage: on <0..%d> <command>", active - 1);
+        return EINVAL;
+    }
+    const processor_t processor = cpu_to_processor(cpu);
+    if (!processor) {zeta_shell_line("cpu %d: no processor", cpu); return ENODEV;}
+    char text[200];
+    size_t used = 0;
+    for (int i = 2; i < argc; ++i) used += (size_t)snprintf(text + used, used < sizeof text ? sizeof text - used : 0, "%s%s", i > 2 ? " " : "", argv[i]);
+    if (used >= sizeof text) {zeta_shell_line("command too long"); return E2BIG;}
+    const processor_t previous = thread_bind(processor);
+    thread_block(THREAD_CONTINUE_NULL);
+    const int status = run(text);
+    thread_bind(previous);
+    thread_block(THREAD_CONTINUE_NULL);
+    return status;
+}
+
+// regs: this core's identity, timer and exception-mask registers.
+static int regs(void) {
+    uint64_t mpidr, daif, cntv_ctl, cntv_cval, cntvct, cntkctl, cntfrq;
+    __asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+    __asm__ volatile("mrs %0, daif" : "=r"(daif));
+    __asm__ volatile("mrs %0, cntv_ctl_el0" : "=r"(cntv_ctl));
+    __asm__ volatile("mrs %0, cntv_cval_el0" : "=r"(cntv_cval));
+    __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(cntvct));
+    __asm__ volatile("mrs %0, cntkctl_el1" : "=r"(cntkctl));
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(cntfrq));
+    zeta_shell_line("mpidr %#llx daif %#llx cntv_ctl %#llx cval %#llx vct %#llx kctl %#llx frq %llu", (unsigned long long)mpidr,
+                    (unsigned long long)daif, (unsigned long long)cntv_ctl, (unsigned long long)cntv_cval, (unsigned long long)cntvct,
+                    (unsigned long long)cntkctl, (unsigned long long)cntfrq);
+    return 0;
+}
+
 static void reboot_to_bootloader(void) {
     // PSCI SYSTEM_RESET; the firmware set the bootloader reason before handoff (as the console's ZETA:REBOOT-BOOTLOADER).
     register uint64_t x0 __asm__("x0") = 0x84000009;
@@ -448,6 +492,7 @@ static void help(void) {
         "props <name|class> [index] properties of a registry entry",
         "smc <fid> [x1 x2 x3]       one firmware/hypervisor call (hvc! exists but resets the Duo 2)",
         "cpu off|on <1..7>          power a core down or back up",
+        "on <n> <command>           run a command on core n | regs: this core's timer registers",
         "uptime | echo <text> | reboot (to the bootloader)",
     };
     for (unsigned i = 0; i < sizeof lines / sizeof lines[0]; ++i) zeta_shell_line("%s", lines[i]);
@@ -519,6 +564,8 @@ static int run(char *text) {
     if (!strcmp(c, "hvc")) {zeta_shell_line("hvc resets the Duo 2 (sh3-v1); use smc, or hvc! to call anyway"); return EPERM;}
     if ((!strcmp(c, "smc") || !strcmp(c, "hvc!")) && argc >= 2) return firmware_call(c[0] == 'h', argc, argv);
     if (!strcmp(c, "cpu") && argc >= 3) return cpu_command(argv[1], argv[2]);
+    if (!strcmp(c, "on") && argc >= 3) return on_cpu(argc, argv);
+    if (!strcmp(c, "regs")) return regs();
     if (!strcmp(c, "reboot")) {zeta_shell_line("returning to the bootloader"); IOSleep(200); reboot_to_bootloader(); return EIO;}
     zeta_shell_line("unknown command or missing arguments: %s (try help)", c);
     return EINVAL;

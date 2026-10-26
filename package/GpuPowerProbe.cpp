@@ -945,7 +945,24 @@ void beatThread(void *, wait_result_t) {
     }
 }
 
+// zeta-secwdog=1: the secure watchdog's deactivation, qcom_scm_sec_wdog_deactivate as stock qcom_wdt_core.ko calls it
+// (SVC_BOOT 1, BOOT_SEC_WDOG_DIS 7, one argument 1), after QCOM_SCM_INFO_IS_CALL_AVAIL (SVC_INFO 6, cmd 1) for it. Every SMP boot
+// resets about 320 s after the kernel starts with no panic, and the APSS watchdog's own registers (0x17c10000) stall this kernel
+// (hm2-v2), so the stock driver's MMIO pet is not open to it.
+void secureWatchdog() {
+    unsigned on = 0;
+    PE_parse_boot_argn("zeta-secwdog", &on, sizeof on);
+    if (on != 1) return;
+    constexpr uint64_t kAvail = 0x42000000u | (0x06u << 8) | 0x01u, kSecWdogDis = 0x42000000u | (0x01u << 8) | 0x07u;
+    const ScmRes avail = scmCall(kAvail, 1, 0x02000000u | (0x01u << 8) | 0x07u, 0, 0);
+    const ScmRes dis = scmCall(kSecWdogDis, 1, 1, 0, 0);
+    IOLog("zeta-secwdog: %llu s available %lld/%llu deactivate %lld/%llu\n", mach_absolute_time() / 19200000ULL,
+          static_cast<long long>(avail.a0), static_cast<unsigned long long>(avail.a1), static_cast<long long>(dis.a0),
+          static_cast<unsigned long long>(dis.a1));
+}
+
 void publishGpu() {
+    secureWatchdog();
     if (!native_adreno_publish || !native_adreno_published_service || !native_adreno_publish_stats) {
         IOLog("zeta-gpu: publish not linked\n");
         return;

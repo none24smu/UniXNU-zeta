@@ -1,0 +1,44 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -937,6 +937,41 @@
+  if(![self textures:NB_OBJECTS(s,d) count:2])return;
+  const uint64_t a[3]={so.x,so.y,so.z},size[3]={z.width,z.height,z.depth},b[3]={dO.x,dO.y,dO.z};
+  [self check:nmb_blit_copy_texture(self.handle,[(NBTexture *)s handle],ss,sl,a,size,[(NBTexture *)d handle],ds,dl,b) what:"copyFromTexture:toTexture:"];
++}
++// Public whole-subresource range copy, used by the wallpaper renderer. Validate
++// the entire range before encoding so an invalid later mip cannot leave a partial copy.
++- (void)copyFromTexture:(id<MTLTexture>)s sourceSlice:(NSUInteger)ss sourceLevel:(NSUInteger)sl
++              toTexture:(id<MTLTexture>)d destinationSlice:(NSUInteger)ds destinationLevel:(NSUInteger)dl
++              sliceCount:(NSUInteger)slices levelCount:(NSUInteger)levels {
++ if(![self textures:NB_OBJECTS(s,d) count:2])return;
++ NSUInteger sourceSlices=s.arrayLength,destinationSlices=d.arrayLength;
++ const bool sourceCube=s.textureType==MTLTextureTypeCube || s.textureType==MTLTextureTypeCubeArray;
++ const bool destinationCube=d.textureType==MTLTextureTypeCube || d.textureType==MTLTextureTypeCubeArray;
++ if((sourceCube && sourceSlices>NSUIntegerMax/6) || (destinationCube && destinationSlices>NSUIntegerMax/6)) {
++  [self.commandBuffer refuse:@"texture copy slice-count overflow"];return;
++ }
++ if(sourceCube)sourceSlices*=6;
++ if(destinationCube)destinationSlices*=6;
++ if(ss>sourceSlices || slices>sourceSlices-ss || ds>destinationSlices || slices>destinationSlices-ds ||
++    sl>s.mipmapLevelCount || levels>s.mipmapLevelCount-sl || dl>d.mipmapLevelCount || levels>d.mipmapLevelCount-dl ||
++    s.pixelFormat!=d.pixelFormat || s.sampleCount!=d.sampleCount) {
++  [self.commandBuffer refuse:@"invalid texture copy subresource range"];return;
++ }
++ for(NSUInteger level=0;level<levels;level++) {
++  const NSUInteger a=sl+level,b=dl+level;
++  if(a>=sizeof(NSUInteger)*8 || b>=sizeof(NSUInteger)*8 ||
++     MAX(s.width>>a,(NSUInteger)1)!=MAX(d.width>>b,(NSUInteger)1) ||
++     MAX(s.height>>a,(NSUInteger)1)!=MAX(d.height>>b,(NSUInteger)1) ||
++     MAX(s.depth>>a,(NSUInteger)1)!=MAX(d.depth>>b,(NSUInteger)1)) {
++   [self.commandBuffer refuse:@"texture copy mip dimensions differ"];return;
++  }
++ }
++ for(NSUInteger slice=0;slice<slices;slice++)for(NSUInteger level=0;level<levels;level++) {
++  const NSUInteger a=sl+level;
++  MTLSize size=MTLSizeMake(MAX(s.width>>a,(NSUInteger)1),MAX(s.height>>a,(NSUInteger)1),MAX(s.depth>>a,(NSUInteger)1));
++  [self copyFromTexture:s sourceSlice:ss+slice sourceLevel:a sourceOrigin:MTLOriginMake(0,0,0) sourceSize:size
++             toTexture:d destinationSlice:ds+slice destinationLevel:dl+level destinationOrigin:MTLOriginMake(0,0,0)];
++ }
+ }
+ - (void)copyFromTexture:(id<MTLTexture>)s toTexture:(id<MTLTexture>)d {
+  if(![self textures:NB_OBJECTS(s,d) count:2])return;

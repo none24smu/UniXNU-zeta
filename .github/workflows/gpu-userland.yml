@@ -83,6 +83,7 @@ jobs:
             unixnu/build/turnip-darwin-host/*.log
             unixnu/build/zeta-display-cache/*.log
             unixnu/build/zeta-surface-planes/*.log
+            unixnu/build/zeta-blit-subresources/*.log
             unixnu/build/mesa-tu*/meson-logs/*.txt
           if-no-files-found: ignore
           retention-days: 7

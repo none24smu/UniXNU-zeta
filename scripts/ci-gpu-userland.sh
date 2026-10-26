@@ -107,6 +107,7 @@ python3 scripts/check-turnip-darwin-host.py --skip-unavailable-ui-recipes
 python3 "$Z/scripts/check-zeta-heap-aliasing.py" "$U"
 python3 "$Z/scripts/check-zeta-display-cache.py" "$U"
 python3 "$Z/scripts/check-zeta-surface-planes.py" "$U"
+python3 "$Z/scripts/check-zeta-blit-subresources.py" "$U"
 python3 scripts/build-adreno-metal-plugin.py
 
 cp -R build/adreno-metal-plugin/. "$OUT/"
@@ -114,4 +115,6 @@ cp build/zeta-heap-aliasing/host.log "$OUT/heap-aliasing-host.log"
 cp build/zeta-heap-aliasing/negative-control.log "$OUT/heap-aliasing-negative-control.log"
 cp build/zeta-display-cache/*.log "$OUT/"
 cp build/zeta-surface-planes/host.log "$OUT/surface-planes-host.log"
+cp build/zeta-blit-subresources/host.log "$OUT/blit-subresources-host.log"
+cp build/zeta-blit-subresources/negative-control.log "$OUT/blit-subresources-negative-control.log"
 (cd "$OUT" && find . -type f | sort > files.txt)

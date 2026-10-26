@@ -44,7 +44,11 @@ int main(int argc,char **argv){
    if(test==0)[blit copyFromTexture:source sourceSlice:NSUIntegerMax sourceLevel:0 toTexture:destination destinationSlice:0 destinationLevel:1 sliceCount:2 levelCount:1];
    if(test==1)[blit copyFromTexture:source sourceSlice:0 sourceLevel:4 toTexture:destination destinationSlice:0 destinationLevel:5 sliceCount:1 levelCount:2];
    if(test==2)[blit copyFromTexture:source sourceSlice:0 sourceLevel:0 toTexture:destination destinationSlice:0 destinationLevel:0 sliceCount:1 levelCount:1];
+// Deliberately violate the public nonnull contract to exercise refusal, not a crash.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnonnull"
    if(test==3)[blit copyFromTexture:nil sourceSlice:0 sourceLevel:0 toTexture:destination destinationSlice:0 destinationLevel:1 sliceCount:1 levelCount:1];
+#pragma clang diagnostic pop
    CHECK(copies.empty());method_setImplementation(method,original);[blit endEncoding];[cb commit];[cb waitUntilCompleted];CHECK(cb.status==MTLCommandBufferStatusError);
   }
   puts("PASS: ranged texture-copy selector, slice/mip offsets and dimensions, zero-copy count, real runtime encoding/completion and four invalid-range refusals; software peer executes no shader");

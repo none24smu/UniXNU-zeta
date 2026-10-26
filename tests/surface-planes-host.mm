@@ -8,8 +8,11 @@
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);return 1;}}while(0)
 int main(int argc,char **argv) {
  if(argc!=3)return 2;
+ setbuf(stderr,nullptr);
  @autoreleasepool {
+  fprintf(stderr,"stage: opening bridge device\n");
   id<MTLDevice> device=native_bridge_metal_open(argv[1],argv[2],0x7a657461,nullptr);CHECK(device);
+  fprintf(stderr,"stage: bridge opened; creating IOSurface\n");
   NSDictionary *first=@{(id)kIOSurfacePlaneWidth:@16,(id)kIOSurfacePlaneHeight:@16,
    (id)kIOSurfacePlaneBytesPerElement:@1,(id)kIOSurfacePlaneBytesPerRow:@64,
    (id)kIOSurfacePlaneOffset:@0,(id)kIOSurfacePlaneSize:@1024};
@@ -19,11 +22,14 @@ int main(int argc,char **argv) {
   IOSurfaceRef surface=IOSurfaceCreate((__bridge CFDictionaryRef)@{
    (id)kIOSurfaceWidth:@16,(id)kIOSurfaceHeight:@16,(id)kIOSurfaceAllocSize:@8192,
    (id)kIOSurfacePixelFormat:@((uint32_t)0x5f524234),(id)kIOSurfacePlaneInfo:@[first,second]});
+  fprintf(stderr,"stage: IOSurfaceCreate returned\n");
   CHECK(surface && IOSurfaceGetPlaneCount(surface)==2);
   auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)542 width:16 height:16 mipmapped:NO];
   descriptor.storageMode=MTLStorageModeShared;descriptor.usage=MTLTextureUsageShaderRead;
+  fprintf(stderr,"stage: creating RGB plane texture\n");
   id<MTLTexture> rgb=[device newTextureWithDescriptor:descriptor iosurface:surface plane:0];
   CHECK(rgb && rgb.iosurface==surface && rgb.width==16 && rgb.height==16);
+  fprintf(stderr,"stage: RGB texture created; creating chroma plane\n");
   descriptor.pixelFormat=MTLPixelFormatRG8Unorm;
   id<MTLTexture> chroma=[device newTextureWithDescriptor:descriptor iosurface:surface plane:1];
   CHECK(chroma && chroma.iosurface==surface);

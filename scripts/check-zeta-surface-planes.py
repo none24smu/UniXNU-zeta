@@ -14,8 +14,19 @@ subprocess.run(['xcrun','clang++','-std=c++17','-O1','-fobjc-arc','-Wall','-Wext
  '-I',str(kit),'-I',str(kit/'bridge'),str(kit/'NativeBridgeMetalFrontend.mm'),str(z/'tests/surface-planes-host.mm'),
  str(u/'build/native-metal-bridge/host/libnative_metal_bridge.a'),*flags,'-framework','Foundation','-framework','Metal','-framework','IOSurface','-o',str(exe)],check=True)
 cache=out/'cache';cache.mkdir(exist_ok=True)
-env=dict(os.environ,DYLD_INSERT_LIBRARIES=str(u/'build/turnip-darwin-host/libhostiokit.dylib'))
-result=subprocess.run([str(exe),str(u/'build/mesa-tu/src/freedreno/vulkan/libvulkan_freedreno.dylib'),str(cache)],env=env,capture_output=True,text=True,timeout=120)
-(out/'host.log').write_text(result.stdout+result.stderr)
-if result.returncode or 'PASS:' not in result.stdout:raise SystemExit(result.stdout+result.stderr)
-print(result.stdout,end='')
+env=dict(os.environ,HOSTSIM_TRACE="1",DYLD_INSERT_LIBRARIES=str(u/'build/turnip-darwin-host/libhostiokit.dylib'))
+log=out/'host.log'
+with log.open('w') as stream:
+ process=subprocess.Popen([str(exe),str(u/'build/mesa-tu/src/freedreno/vulkan/libvulkan_freedreno.dylib'),str(cache)],env=env,stdout=stream,stderr=stream)
+ try:
+  process.wait(timeout=30)
+ except subprocess.TimeoutExpired:
+  # Preserve a blocking stack instead of losing all output on a hard timeout.
+  subprocess.run(['/usr/bin/sample',str(process.pid),'3','-file',str(out/'blocked-stack.log')],timeout=15,check=False)
+  try:process.wait(timeout=90)
+  except subprocess.TimeoutExpired:
+   process.kill();process.wait()
+   raise SystemExit('surface test timed out; '+log.read_text())
+output=log.read_text()
+if process.returncode or 'PASS:' not in output:raise SystemExit(output)
+print(output,end='')

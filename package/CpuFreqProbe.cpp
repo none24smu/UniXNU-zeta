@@ -91,6 +91,8 @@ void voteDomain(unsigned d) {
         for (unsigned c = 1; c < kDomainCpus[d]; ++c) wr32(w.va, kRegPerfState + c * 4, (uint32_t)level);
     w.voted = level;
     w.votedKHz = khz;
+    IOLog("zeta-cpufreq: domain %u requested level %d %u MHz (before %u MHz, cap %u MHz)\n",
+          d, level, khz / 1000, w.preKHz / 1000, gCapKHz / 1000);
 }
 
 void voteL3() {
@@ -100,6 +102,7 @@ void voteL3() {
     wr32(gL3.va, kRegL3Vote, (uint32_t)level);
     gL3.voted = level;
     gL3.votedKHz = khz;
+    IOLog("zeta-cpufreq: L3 requested level %d %u MHz (cap %u MHz)\n", level, khz / 1000, gCapKHz / 1000);
 }
 
 void refreshRow() {

@@ -39,6 +39,7 @@ extern "C" void proc_name(int pid, char *buf, int size);
 extern "C" void native_legacy_display_late_probe(void);
 extern "C" void native_keystore_probe(void);
 extern "C" void sheng_cpufreq_probe(void);
+extern "C" void sheng_cpufreq_poll(void);
 extern "C" void zeta_soc_health(void);
 extern "C" void zeta_cpufreq_thermal(void);
 extern "C" void zeta_hid_input_probe(void);
@@ -529,6 +530,9 @@ void dpuWatchFired(OSObject *, IOTimerEventSource *timer) {
     for (auto &display : gDisplays) {
         if (display.gpuRequest && mach_absolute_time() - display.gpuBegun > 19200000ULL) finishGpuSwap(display.object, kIOReturnTimeout);
     }
+    // Secondary clusters can still be off when the initial frequency probe runs.
+    // Keep retrying here after the boot-progress monitor gives way to userspace.
+    sheng_cpufreq_poll();
     dpuHealth(full);
     if (full) zeta_soc_health();
     zeta_cpufreq_thermal();

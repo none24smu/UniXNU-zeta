@@ -13,7 +13,7 @@ Z=$(cd "$2" && pwd)
 OUT=$3
 mkdir -p "$OUT"
 
-for module in NativeAdreno NativeMetal; do
+for module in NativeAdreno NativeMetal NativeMobileDisplay; do
   for patch in "$Z"/package/"$module"-*.patch; do
     [ -f "$patch" ] || continue
     patch -p1 --forward -d "$U/drivers/$module" -i "$patch"
@@ -54,10 +54,23 @@ fetch() {  # fetch DIR REPOSITORY COMMIT
 }
 
 MESA_PINS=$U/scripts/data/adreno-compiler-inputs.json
-fetch "$U/.cache/mesa-work" "$(pin "$MESA_PINS" mesa.mirror)" "$(pin "$MESA_PINS" mesa.commit)"
-pin "$MESA_PINS" patches | while read -r patch; do
-  git -C "$U/.cache/mesa-work" apply "$U/$patch"
-done
+# Reuse only a completely verified patched source tree. Keeping source mtimes
+# lets Ninja reuse compiled Mesa rather than rebuilding it on every CI retry.
+if [ "$(git -C "$U/.cache/mesa-work" rev-parse HEAD 2>/dev/null || true)" = "$(pin "$MESA_PINS" mesa.commit)" ] &&
+ python3 - "$U" "$MESA_PINS" > "$OUT/mesa-cache-verification.log" 2>&1 <<'PYMESA'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root/'scripts'))
+from mesa_patch_identity import validate_recorded_patches
+validate_recorded_patches(root,root/'.cache/mesa-work',json.load(open(sys.argv[2])))
+PYMESA
+then
+  echo 'Reusing verified Mesa source and compiler work'
+else
+  fetch "$U/.cache/mesa-work" "$(pin "$MESA_PINS" mesa.mirror)" "$(pin "$MESA_PINS" mesa.commit)"
+  pin "$MESA_PINS" patches | while read -r patch; do
+    git -C "$U/.cache/mesa-work" apply "$U/$patch"
+  done
+fi
 M2V_PINS=$U/scripts/data/gpu-metal-vulkan-inputs.json
 M2V_DIR=$U/.cache/gpu-reference/metal2vulkan
 M2V_COMMIT=$(pin "$M2V_PINS" translator.commit)
@@ -92,9 +105,13 @@ python3 scripts/build-native-metal-bridge.py --target host
 # recipes are the only explicit skips; a cache or transport failure is fatal.
 python3 scripts/check-turnip-darwin-host.py --skip-unavailable-ui-recipes
 python3 "$Z/scripts/check-zeta-heap-aliasing.py" "$U"
+python3 "$Z/scripts/check-zeta-display-cache.py" "$U"
+python3 "$Z/scripts/check-zeta-surface-planes.py" "$U"
 python3 scripts/build-adreno-metal-plugin.py
 
 cp -R build/adreno-metal-plugin/. "$OUT/"
 cp build/zeta-heap-aliasing/host.log "$OUT/heap-aliasing-host.log"
 cp build/zeta-heap-aliasing/negative-control.log "$OUT/heap-aliasing-negative-control.log"
+cp build/zeta-display-cache/*.log "$OUT/"
+cp build/zeta-surface-planes/host.log "$OUT/surface-planes-host.log"
 (cd "$OUT" && find . -type f | sort > files.txt)

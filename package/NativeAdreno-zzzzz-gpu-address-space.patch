@@ -1,0 +1,108 @@
+--- /dev/null
++++ b/NativeAdrenoAddressSpace.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef NATIVE_ADRENO_ADDRESS_SPACE_H
++#define NATIVE_ADRENO_ADDRESS_SPACE_H
++#include <stdint.h>
++#include <stddef.h>
++/* One 32-bit GPU address space. Keep the first 512 MiB for board/kernel use;
++ * clients own disjoint ranges. These are virtual limits, not physical reserves. */
++constexpr unsigned NativeAdrenoGpuInputBits=32;
++constexpr uint64_t NativeAdrenoGpuApertureBytes=UINT64_C(1)<<NativeAdrenoGpuInputBits;
++constexpr uint64_t NativeAdrenoGpuClientStart=0x20000000ull;
++constexpr uint64_t NativeAdrenoGpuClientBytes=NativeAdrenoGpuApertureBytes-NativeAdrenoGpuClientStart;
++constexpr size_t NativeAdrenoGpuTablePages=1+4+2048;
++constexpr unsigned NativeAdrenoGpuClientCount=3;
++struct NativeAdrenoGpuWindow {uint64_t start,bytes;};
++constexpr NativeAdrenoGpuWindow NativeAdrenoGpuWindows[NativeAdrenoGpuClientCount]={
++    {0x20000000ull,0x80000000ull}, /* render server: 2 GiB */
++    {0xa0000000ull,0x30000000ull}, /* other Metal client: 768 MiB */
++    {0xd0000000ull,0x30000000ull}};
++static_assert(NativeAdrenoGpuWindows[0].start==NativeAdrenoGpuClientStart);
++static_assert(NativeAdrenoGpuWindows[0].start+NativeAdrenoGpuWindows[0].bytes==NativeAdrenoGpuWindows[1].start);
++static_assert(NativeAdrenoGpuWindows[1].start+NativeAdrenoGpuWindows[1].bytes==NativeAdrenoGpuWindows[2].start);
++static_assert(NativeAdrenoGpuWindows[2].start+NativeAdrenoGpuWindows[2].bytes==NativeAdrenoGpuApertureBytes);
++#endif
+--- a/NativeAdrenoGpuContext.h
++++ b/NativeAdrenoGpuContext.h
+@@ -2,9 +2,10 @@
+ #ifndef NATIVE_ADRENO_GPU_CONTEXT_H
+ #define NATIVE_ADRENO_GPU_CONTEXT_H
+ #include "NativeAdrenoGmuContext.h"
++#include "NativeAdrenoAddressSpace.h"
+ 
+ /* The GPU's own SMMU context, built like the GMU's (NativeAdrenoGmuContext): a native4K lower-region (TTBR0) table
+- * pool for a 0..2 GiB GPU space, one context bank, the GPU's two streams routed to it, then the kernel buffers the
++ * pool for a 0..4 GiB GPU space, one context bank, the GPU's two streams routed to it, then the kernel buffers the
+  * command processor needs at fixed GPU addresses below the A740 GMEM window (UCHE_GMEM_RANGE_MIN 16 MiB):
+  *   sqe      the SQE microcode (a740_sqe.fw without its first dword, as adreno_fw_create_bo copies it), R+X
+  *   ring     ring buffer 0, 32 KiB, aligned to its size, R+W
+@@ -15,7 +16,7 @@
+  * a matching non-cacheable view. Bank, ASID, SMR slots and stream IDs are caller inputs. Nothing is torn down. */
+ enum : uint64_t {
+     GpuSqeIova=0x100000, GpuRingIova=0x200000, GpuMemptrsIova=0x300000, GpuPwrupIova=0x301000,
+-    GpuScratchIova=0x302000, GpuApertureBytes=0x80000000
++    GpuScratchIova=0x302000, GpuApertureBytes=NativeAdrenoGpuApertureBytes
+ };
+ enum : size_t {GpuSqeBytes=0x13000, GpuRingBytes=0x8000, GpuPageBytes=0x1000, GpuBufferCount=5};
+ struct NativeAdrenoGpuBuffer {uint64_t physical,bytes,iova;};
+@@ -29,7 +30,7 @@
+     bool ready_=false,used_=false;
+ public:
+     enum Step : uint32_t {Allocate=1,Prepare,Program,Attach,VmAttach,Map,Ready};
+-    enum : size_t {TablePages=1027};
++    enum : size_t {TablePages=NativeAdrenoGpuTablePages};
+     NativeAdrenoGpuContext()=default;
+     NativeAdrenoGpuContext(const NativeAdrenoGpuContext &)=delete;
+     NativeAdrenoGpuContext &operator=(const NativeAdrenoGpuContext &)=delete;
+--- a/NativeAdrenoSmmuContext.h
++++ b/NativeAdrenoSmmuContext.h
+@@ -30,8 +30,8 @@
+     ~NativeAdrenoSmmuContext()=default;
+     NativeAdrenoSmmuContext(const NativeAdrenoSmmuContext &)=delete;
+     NativeAdrenoSmmuContext &operator=(const NativeAdrenoSmmuContext &)=delete;
+-    /* A 2 GiB lower aperture, the GMU's, is 524288 leaves. */
+-    enum : size_t {MaxLeaves=size_t(1)<<19};
++    /* Maximum: the GPU's 4 GiB aperture. GMU retains its 2 GiB bound. */
++    enum : size_t {MaxLeaves=size_t(1)<<20};
+     /* iova/bytes describe the aperture in the chosen region; the pool must be contiguous. */
+     /* output_bits: the context's output size, at most the SMMU's ID2.OAS (Linux uses OAS for stage 1). */
+     IOReturn prepare(NativeAdrenoMemory *tables,unsigned upper,uint64_t iova,size_t bytes,
+--- a/NativeAdrenoGmuContext.cpp
++++ b/NativeAdrenoGmuContext.cpp
+@@ -41,7 +41,7 @@
+     if(!status)status=gmu_.allocate(NativeAdrenoGmuDefaultSizes(TablePages*0x1000),report->output_bits);
+     if(!status) {
+         step(Prepare);
+-        status=smmu_.prepare(&gmu_.tables(),0,0,GmuApertureBytes,NativeAdrenoSmmuContext::MaxLeaves,
++        status=smmu_.prepare(&gmu_.tables(),0,0,GmuApertureBytes,GmuApertureBytes/4096,
+             bank,asid,1000,report->output_bits);
+     }
+     if(!status) {
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -19,6 +19,7 @@
+ #include <string.h>
+ #include <kern/thread.h>
+ #include "NativeAdrenoUserClient.h"
++#include "NativeAdrenoAddressSpace.h"
+ 
+ extern "C" void proc_selfname(char *, int);
+ /* The plugin's telemetry table (rows of text the Metal bridge keeps), sent as markers: 0xC000|row starts a row, 0x8000|(a<<7)|b appends two characters. */
+@@ -101,12 +102,9 @@
+ struct NativeAdrenoAskerRecord {char name[20]; uint32_t reads;};
+ struct NativeAdrenoAskerRecord native_adreno_metal_askers[12];
+ }
+-/* GPU address windows inside the board's VA range (GpuPowerProbe gDeviceInfo: 0x20000000..0x80000000 of the 2 GiB aperture). Slot 0 is the
+- * render server's (it held the whole 1.5 GiB alone before int-155 and used at most a few hundred MiB); slots 1 and 2 are for other Metal
+- * processes. A kernel connection (the board's self-test) maps where it likes and is never scoped. */
+-enum : unsigned {NativeAdrenoMaxClients=3};
+-static const struct {uint64_t start,bytes;} kClientWindows[NativeAdrenoMaxClients]={
+-    {0x20000000ull,0x40000000ull},{0x60000000ull,0x10000000ull},{0x70000000ull,0x10000000ull}};
++/* Share the exact aperture layout with the GPU context and board metadata. */
++enum : unsigned {NativeAdrenoMaxClients=NativeAdrenoGpuClientCount};
++static constexpr auto &kClientWindows=NativeAdrenoGpuWindows;
+ 
+ namespace {
+ void shiftName(char names[3][17]) {

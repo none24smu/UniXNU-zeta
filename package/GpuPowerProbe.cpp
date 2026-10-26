@@ -741,8 +741,8 @@ NativeAdrenoSubmit gSubmit;
 NativeAdrenoTimer gTimer;
 // Constant facts for the Vulkan driver: chip id 0x06060001 (A660, lahaina-v2-gpu.dtsi), gmem 1.5 MiB (adreno_gpu_core_a660v2),
 // no UCHE GMEM window (the a650 family programs none), the UCHE trap base a660Start programs, highest bank bit 16 and UBWC 4.0 with
-// swizzle levels 2+3 and the eight-channel macrotile (drm/msm a6xx_calc_ubwc_config for a660). The VA window is sheng's.
-const NativeAdrenoAbiDeviceInfo gDeviceInfo = {0x06060001u, 0x180000u, 0, 0x1fffffffff000ull, 0x20000000ull, 0x60000000ull, 16, 6, 1,
+// swizzle levels 2+3 and the eight-channel macrotile (drm/msm a6xx_calc_ubwc_config for a660). VA constants match the GPU table layout.
+const NativeAdrenoAbiDeviceInfo gDeviceInfo = {0x06060001u, 0x180000u, 0, 0x1fffffffff000ull, NativeAdrenoGpuClientStart, NativeAdrenoGpuClientBytes, 16, 6, 1,
                                                4, NativeAdrenoDeviceClientIova, 0};
 int timerRead(void *, uint32_t reg, uint32_t *value) {*value = gpuRd(reg); return 0;}
 const NativeAdrenoTimeIo gTimerIo{nullptr, timerRead};
@@ -1003,7 +1003,7 @@ void publishGpu() {
     const IOReturn attached = gSubmit.attach(vm, &gRing);
     const IOReturn timer = gTimer.attach(&gTimerIo, NativeAdrenoTimeCp);
     const IOReturn published = attached ? attached :
-        native_adreno_publish(vm, &gSubmit, &gRing, &clock, timer ? nullptr : &gTimer, &gDeviceInfo, 31, 40);
+        native_adreno_publish(vm, &gSubmit, &gRing, &clock, timer ? nullptr : &gTimer, &gDeviceInfo, NativeAdrenoGpuInputBits, 40);
     IOService *svc = published ? nullptr : native_adreno_published_service();
     // zeta-gpu-metal=1: the two keys Metal's discovery reads (the IOAcceleratorES match is aliased to this service by the
     // kernel's iOS class aliases) and the one process whose opens the kernel grants in place of the sandbox verdict

@@ -72,6 +72,8 @@ if ! python3 scripts/check-turnip-darwin-host.py; then
   test ! -f scripts/check-quartzcore-turnip-cache-host.py
 fi
 python3 scripts/build-adreno-metal-plugin.py
+python3 "$Z/scripts/check-zeta-heap-aliasing.py" "$U"
 
 cp -R build/adreno-metal-plugin/. "$OUT/"
+cp build/zeta-heap-aliasing/host.log "$OUT/heap-aliasing-host.log"
 (cd "$OUT" && find . -type f | sort > files.txt)

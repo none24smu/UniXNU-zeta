@@ -2,6 +2,14 @@ name: GPU userland
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: Apple Silicon macOS runner
+        type: choice
+        options:
+          - macos-latest
+          - macos-26
+          - macos-15
+        default: macos-latest
       unixnu_ref:
         description: UniXNU ref (none24smu/UniXNU)
         required: true
@@ -13,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 240
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
@@ -46,6 +54,7 @@ jobs:
           path: |
             unixnu/.cache/*.log
             unixnu/build/native-metal-bridge/*.log
+            unixnu/build/zeta-heap-aliasing/*.log
             unixnu/build/mesa-tu*/meson-logs/*.txt
           if-no-files-found: ignore
           retention-days: 7

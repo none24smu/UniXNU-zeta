@@ -1030,3 +1030,22 @@ source. Two live samples show timer interrupts advancing on all eight cores
 but zero recorded signalCPU requests/SGIs. CPU startup therefore does not
 establish cross-core IPI correctness. No ITS/LPI support or watchdog recovery
 is claimed by this runtime test.
+
+
+Rendering follow-up: the `gpu-hm2` Data seed contains the publication marker
+but no `NativeAdrenoMetal.clients` allow-list. The plugin therefore gives
+backboardd a device and returns nil to every other process, including the
+running MercuryPosterExtension wallpaper provider. Whether enabling that
+provider restores the observed black lock-screen background needs a device
+test; successful backboardd pipeline creation alone cannot answer it.
+
+`NativeMetal-zz-heap-aliasing.patch` also fixes a separate source defect: the
+frontend's `makeAliasable` was empty and `isAliasable` always false, despite
+the pinned runtime implementing automatic-heap range reuse. Buffer and
+texture calls now reach that runtime, texture views report their owning
+heap, and heap offsets come from the runtime. Bounded journal entries and
+telemetry report alias calls and texture-allocation failures. The CI
+regression fills heaps, reuses still-retained buffer/texture/view ranges,
+checks repeated calls and destruction do not double-free a replacement,
+and covers placement and non-heap resources. Compilation and execution
+on macOS, followed by device rendering checks, remain required.

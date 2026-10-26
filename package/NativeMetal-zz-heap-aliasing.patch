@@ -1,0 +1,186 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -37,6 +37,7 @@
+ // What this device has been asked and refused, for the plugin's status line (native_bridge_metal_status): commits, render/compute pipelines made,
+ // refusals, and the last two refusals' texts. Counters only; nothing here changes a result.
+ static std::atomic<uint64_t> gCommits,gCommitFailures,gPipelines,gProblems,gCompleted;
++static std::atomic<uint64_t> gAliasCalls,gHeapTextureRefusals;
+ // What the render server actually asks of the GPU (int-141: 59 commits in 200 s, and a desktop that behaves like CPU compositing): render passes,
+ // draws, the pixels of their first colour attachment, compute dispatches, blits and the largest pass (pixels).
+ static std::atomic<uint64_t> gPasses,gDraws,gPassPixels,gDispatches,gBlits,gBiggestPass,gFullScreenPasses;
+@@ -171,13 +172,10 @@
+ // Resource SPI the runtime has no state for: no protected content (Metal's default options), and no owner transfer
+ // (memory attribution is the kernel driver's, by the importing task), refused as not supported. iOS 26 QuartzCore also names
+ // the process a resource works for (IOGPUMetalResource setResponsibleProcess:, v@:i), accepted and not kept for the same
+-// reason; asks for aliasing (none: a heap placement is never reused while its resource lives, isAliasable stays NO); and
++// reason; heap aliasing is forwarded separately to the runtime; and
+ // reads the compression and sparse tiers (_MTLResource): resources here are uncompressed and never sparse.
+ #define NB_RESOURCE_SPI \
+ - (uint64_t)protectionOptions {return 0;} \
+-- (id<MTLHeap>)heap {return _parentHeap;} \
+-- (BOOL)isAliasable {return NO;} \
+-- (void)makeAliasable {} \
+ - (void)setResponsibleProcess:(int)pid {(void)pid;} \
+ - (MTLTextureCompressionType)compressionType {return MTLTextureCompressionTypeLossless;} \
+ - (NSInteger)sparseTextureTier {return 0; /* MTLSparseTextureTierNone: the enum is macOS-only in the iOS SDK */} \
+@@ -197,7 +195,7 @@
+ @property(nonatomic) void *wrapped;
+ @property(nonatomic) IOSurfaceRef surfaceOwner; // keeps a shared import's CPU mapping alive
+ @property(nonatomic,strong) id<MTLHeap> parentHeap;   // the heap that made the buffer, nil otherwise
+-@property(nonatomic) NSUInteger heapOffset;
++@property(nonatomic,readonly) NSUInteger heapOffset;
+ @end
+ @interface NBTexture : _MTLResource
+ @property(nonatomic) NmbTexture *handle;
+@@ -208,10 +206,19 @@
+ @property(nonatomic,strong) id<MTLTexture> parent;
+ @property(nonatomic) NSUInteger parentLevel,parentSlice;   // a view's first level and slice in its parent
+ @property(nonatomic,strong) id<MTLHeap> parentHeap;
+-@property(nonatomic) NSUInteger heapOffset;
++@property(nonatomic,readonly) NSUInteger heapOffset;
+ @end
+ @implementation NBBuffer
+ NB_ON_METAL_BASE
++- (id<MTLHeap>)heap {return _parentHeap;}
++- (NSUInteger)heapOffset {return nmb_buffer_heap_offset(_handle);}
++- (BOOL)isAliasable {return nmb_buffer_is_aliasable(_handle);}
++- (void)makeAliasable {
++ if(!nmb_buffer_make_aliasable(_handle)){NBLOG(@"native-metal: buffer makeAliasable refused: %@",lastError());return;}
++ const uint64_t n=++gAliasCalls;
++ if(n<=64)journal("A buffer makeAliasable n="+std::to_string(n)+" aliasable="+std::to_string(nmb_buffer_is_aliasable(_handle)));
++}
++
+ - (void)dealloc {
+  const NSUInteger length=nmb_buffer_length(_handle);nmb_buffer_release(_handle);
+  if(_deallocator)_deallocator(_wrapped,length);
+@@ -273,6 +280,15 @@
+ }
+ @implementation NBTexture
+ NB_ON_METAL_BASE
++- (id<MTLHeap>)heap {return _parentHeap?:(_parent?[(id)_parent heap]:(_buffer?[(id)_buffer heap]:nil));}
++- (NSUInteger)heapOffset {return nmb_texture_heap_offset(_handle);}
++- (BOOL)isAliasable {return nmb_texture_is_aliasable(_handle);}
++- (void)makeAliasable {
++ if(!nmb_texture_make_aliasable(_handle)){NBLOG(@"native-metal: texture makeAliasable refused: %@",lastError());return;}
++ const uint64_t n=++gAliasCalls;
++ if(n<=64)journal("A texture makeAliasable n="+std::to_string(n)+" aliasable="+std::to_string(nmb_texture_is_aliasable(_handle)));
++}
++
+ - (void)dealloc {nmb_texture_release(_handle);if(_surface)CFRelease(_surface);}
+ - (MTLTextureType)textureType {return (MTLTextureType)_descriptor.type;}
+ - (MTLPixelFormat)pixelFormat {return (MTLPixelFormat)_descriptor.format;}
+@@ -1385,7 +1401,7 @@
+  NmbBuffer *handle=nmb_heap_new_buffer(_handle,length,options,offset);
+  if(!handle){NBLOG(@"native-metal: heap buffer refused: %@",lastError());return nil;}
+  NBBuffer *buffer=[NBBuffer new];buffer.handle=handle;buffer.options=options;buffer.parentHeap=(id<MTLHeap>)self;
+- buffer.heapOffset=offset==UINT64_MAX?0:offset;return (id<MTLBuffer>)buffer;
++ return (id<MTLBuffer>)buffer;
+ }
+ - (id<MTLBuffer>)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options {return [self bufferWithLength:length options:options offset:UINT64_MAX];}
+ - (id<MTLBuffer>)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options offset:(NSUInteger)offset {
+@@ -1394,9 +1410,19 @@
+ - (id<MTLTexture>)textureWithDescriptor:(MTLTextureDescriptor *)d offset:(uint64_t)offset {
+  NmbTextureDescriptor descriptor;if(!textureDescriptor(d,&descriptor))return nil;
+  NmbTexture *handle=nmb_heap_new_texture(_handle,&descriptor,offset);
+- if(!handle){NBLOG(@"native-metal: heap texture refused: %@",lastError());return nil;}
++ if(!handle){
++  NSString *why=lastError();const uint64_t n=++gHeapTextureRefusals;
++  if(n<=32) {
++   char text[400];snprintf(text,sizeof text,"H texture refused n=%llu heap=%lu used=%lu free=%lu fmt=%llu %llux%llu levels=%llu samples=%llu offset=%llu aliases=%llu | %s",
++    (unsigned long long)n,(unsigned long)self.size,(unsigned long)self.usedSize,(unsigned long)[self maxAvailableSizeWithAlignment:1],
++    (unsigned long long)descriptor.format,(unsigned long long)descriptor.width,(unsigned long long)descriptor.height,
++    (unsigned long long)descriptor.levels,(unsigned long long)descriptor.samples,(unsigned long long)offset,(unsigned long long)gAliasCalls.load(),why.UTF8String);
++   journal(text);
++  }
++  NBLOG(@"native-metal: heap texture refused: %@",why);return nil;
++ }
+  NBTexture *texture=[NBTexture new];texture.handle=handle;nmb_texture_describe(handle,&descriptor);texture.descriptor=descriptor;
+- texture.parentHeap=(id<MTLHeap>)self;texture.heapOffset=offset==UINT64_MAX?0:offset;return (id<MTLTexture>)texture;
++ texture.parentHeap=(id<MTLHeap>)self;return (id<MTLTexture>)texture;
+ }
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d {return [self textureWithDescriptor:d offset:UINT64_MAX];}
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d offset:(NSUInteger)offset {return [self textureWithDescriptor:d offset:offset];}
+@@ -1937,6 +1963,7 @@
+   (unsigned long long)gCompleted.load(),(unsigned long long)gPipelines.load(),(unsigned long long)gProblems.load(),(unsigned long long)gPasses.load(),
+   (unsigned long long)gDraws.load(),(unsigned long long)gFullScreenPasses.load(),(unsigned long long)(gBiggestPass.load()>>10),
+   (unsigned long long)gDispatches.load(),(unsigned long long)gBlits.load());
++ row("H alias calls=%llu heap texture refusals=%llu",(unsigned long long)gAliasCalls.load(),(unsigned long long)gHeapTextureRefusals.load());
+  row("T pipeline n=%llu total=%llums max=%llums",(unsigned long long)gTimePipeline.count.load(),ms(gTimePipeline.total.load()),ms(gTimePipeline.slowest.load()));
+  row("T library n=%llu total=%llums max=%llums",(unsigned long long)gTimeLibrary.count.load(),ms(gTimeLibrary.total.load()),ms(gTimeLibrary.slowest.load()));
+  row("T function n=%llu total=%llums max=%llums",
+--- a/bridge/NativeMetalObjects.h
++++ b/bridge/NativeMetalObjects.h
+@@ -68,6 +68,9 @@
+ /* Wraps page-aligned memory the caller keeps mapped until the buffer is released (an IOSurface's base, host pages). */
+ NmbBuffer *nmb_buffer_new_no_copy(NmbDevice *, void *pointer, uint64_t length, uint64_t options);
+ void nmb_buffer_release(NmbBuffer *);
++bool nmb_buffer_make_aliasable(const NmbBuffer *);
++bool nmb_buffer_is_aliasable(const NmbBuffer *);
++uint64_t nmb_buffer_heap_offset(const NmbBuffer *);
+ void *nmb_buffer_contents(const NmbBuffer *);
+ uint64_t nmb_buffer_length(const NmbBuffer *);
+ uint64_t nmb_buffer_gpu_address(const NmbBuffer *);
+@@ -95,6 +98,9 @@
+ uint64_t nmb_texture_set_purgeable_state(const NmbTexture *, uint64_t state);
+ uint64_t nmb_buffer_set_purgeable_state(const NmbBuffer *, uint64_t state);
+ void nmb_texture_release(NmbTexture *);
++bool nmb_texture_make_aliasable(const NmbTexture *);
++bool nmb_texture_is_aliasable(const NmbTexture *);
++uint64_t nmb_texture_heap_offset(const NmbTexture *);
+ void nmb_texture_describe(const NmbTexture *, struct NmbTextureDescriptor *out);
+ bool nmb_texture_replace(NmbTexture *, const uint64_t region[6], uint64_t level, uint64_t slice, const void *bytes, uint64_t bytes_per_row,
+                          uint64_t bytes_per_image, uint64_t length);
+--- a/bridge/NativeMetalObjects.rs
++++ b/bridge/NativeMetalObjects.rs
+@@ -591,6 +591,25 @@
+     release(buffer)
+ }
+ 
++/// Release an automatic heap's placement for reuse; the resource handle stays alive.
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_buffer_make_aliasable(buffer: *const NmbBuffer) -> bool {
++    guard(false, || {
++        get(buffer)?.0.make_aliasable().map_err(e("buffer makeAliasable"))?;
++        Ok(true)
++    })
++}
++
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_buffer_is_aliasable(buffer: *const NmbBuffer) -> bool {
++    guard(false, || Ok(get(buffer)?.0.is_aliasable()))
++}
++
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_buffer_heap_offset(buffer: *const NmbBuffer) -> u64 {
++    guard(0, || Ok(get(buffer)?.0.heap_offset()))
++}
++
+ #[unsafe(no_mangle)]
+ pub extern "C" fn nmb_buffer_contents(buffer: *const NmbBuffer) -> *mut c_void {
+     guard(std::ptr::null_mut(), || Ok(get(buffer)?.0.contents().map_or(std::ptr::null_mut(), |p| p.as_ptr() as *mut c_void)))
+@@ -790,6 +809,25 @@
+ #[unsafe(no_mangle)]
+ pub extern "C" fn nmb_texture_release(texture: *mut NmbTexture) {
+     release(texture)
++}
++
++/// Release an automatic heap's placement for reuse; the resource handle stays alive.
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_texture_make_aliasable(texture: *const NmbTexture) -> bool {
++    guard(false, || {
++        get(texture)?.0.make_aliasable().map_err(e("texture makeAliasable"))?;
++        Ok(true)
++    })
++}
++
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_texture_is_aliasable(texture: *const NmbTexture) -> bool {
++    guard(false, || Ok(get(texture)?.0.is_aliasable()))
++}
++
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_texture_heap_offset(texture: *const NmbTexture) -> u64 {
++    guard(0, || Ok(get(texture)?.0.heap_offset()))
+ }
+ 
+ #[unsafe(no_mangle)]

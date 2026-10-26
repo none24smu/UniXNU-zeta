@@ -1,0 +1,46 @@
+--- a/tests/hostsim/host_iokit_shim.cpp
++++ b/tests/hostsim/host_iokit_shim.cpp
+@@ -8,6 +8,9 @@
+ #include <cstring>
+ #include <cstdio>
+ #include <unistd.h>
++#include <time.h>
++#include <errno.h>
++#include <atomic>
+ static bool trace(){static int t=-1;if(t<0)t=getenv("HOSTSIM_TRACE")?1:0;return t;}
+ 
+ extern "C" {
+@@ -41,6 +44,16 @@
+     __attribute__((used)) static const struct {const void *with; const void *what;} interpose_##replacee \
+     __attribute__((section("__DATA,__interpose"))) = {reinterpret_cast<const void *>(&replacement), reinterpret_cast<const void *>(&replacee)}
+ 
++static void stallBoAlloc(uint32_t method) {
++    static std::atomic_flag injected=ATOMIC_FLAG_INIT;
++    const char *delay=getenv("HOSTSIM_STALL");
++    if(method!=2 || !delay || injected.test_and_set())return;
++    const unsigned seconds=(unsigned)atoi(delay);
++    fprintf(stderr,"hostsim: BoAlloc stall injected (%u seconds)\n",seconds);
++    struct timespec remaining={(time_t)seconds,0};
++    while(nanosleep(&remaining,&remaining) && errno==EINTR) {}
++}
++
+ extern "C" {
+ static CFMutableDictionaryRef shim_IOServiceMatching(const char *name) {
+     if(trace())fprintf(stderr,"shim: IOServiceMatching(%s)\n",name);
+@@ -69,14 +82,13 @@
+         const uint32_t *header=static_cast<const uint32_t *>(in);
+         if(!in || in_size<8 || header[0]!=kTunnelMagic)return kIOReturnBadArgument;
+         if(header[1]==0xffffffffu)return KERN_SUCCESS;
+-        /* HOSTSIM_STALL=<seconds>: the first BoAlloc (the first call vkCreateDevice makes) blocks that long, to exercise the plugin's watchdog. */
+-        static bool stalled=false;
+-        if(header[1]==2 && !stalled && getenv("HOSTSIM_STALL")) {stalled=true;sleep((unsigned)atoi(getenv("HOSTSIM_STALL")));}
++        stallBoAlloc(header[1]);
+         const int status=host_gpu_call(header[1],static_cast<const uint8_t *>(in)+8,in_size-8,out,out_size?*out_size:0);
+         if(trace())fprintf(stderr,"shim: method %u first word 0x%llx -> %d\n",header[1],in_size>=16?(unsigned long long)*reinterpret_cast<const uint64_t *>(static_cast<const uint8_t *>(in)+8):0ull,status);
+         if(trace() && status)fprintf(stderr,"shim: method %u (in %zu, out %zu) -> fixture status %d\n",header[1],in_size-8,out_size?*out_size:0,status);
+         return translate(status);
+     }
++    stallBoAlloc(selector);
+     return translate(host_gpu_call(selector,in,in_size,out,out_size?*out_size:0));
+ }
+ static kern_return_t shim_IOConnectMapMemory64(io_connect_t,uint32_t type,task_port_t,mach_vm_address_t *address,mach_vm_size_t *size,IOOptionBits) {

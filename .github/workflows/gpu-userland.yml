@@ -80,6 +80,7 @@ jobs:
             unixnu/.cache/*.log
             unixnu/build/native-metal-bridge/*.log
             unixnu/build/zeta-heap-aliasing/*.log
+            unixnu/build/turnip-darwin-host/*.log
             unixnu/build/mesa-tu*/meson-logs/*.txt
           if-no-files-found: ignore
           retention-days: 7

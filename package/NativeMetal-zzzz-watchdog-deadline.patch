@@ -1,0 +1,25 @@
+--- a/NativeTurnipSmoke.h
++++ b/NativeTurnipSmoke.h
+@@ -22,6 +22,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
++#include <time.h>
+ 
+ // Vulkan create-info structs are written as {sType} with every other member zero.
+ #pragma clang diagnostic push
+@@ -635,9 +636,12 @@
+     if (!started) {Result r; r.stage = 0; r.vkResult = -12; return r;}
+     static const unsigned checkpoints[] = {15, 45, 90};
+     unsigned next = 0;
+-    for (unsigned tenths = 0; !__atomic_load_n(&w->done, __ATOMIC_ACQUIRE); ++tenths) {
++    const uint64_t began = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    while (!__atomic_load_n(&w->done, __ATOMIC_ACQUIRE)) {
+         usleep(100000);
+-        if (next < 3 && tenths == checkpoints[next] * 10) {
++        const uint64_t elapsed = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - began;
++        if (next < 3 && elapsed >= uint64_t(checkpoints[next]) * 1000000000ULL &&
++            !__atomic_load_n(&w->done, __ATOMIC_ACQUIRE)) {
+             char text[64] = {};
+             sample(*w, worker, text, sizeof text);
+             report(text);

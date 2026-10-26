@@ -16,6 +16,8 @@ daemon and its job), for the kernel's boot-time addon mount (sheng-gpu-addon=1).
 --preferences PLIST merges PLIST's keys into backboardd.plist and .GlobalPreferences.plist of mobile and root, as add-gpu-plugin-data.py
 --publish does for the render server's framebuffer keys: an existing file keeps its other keys, owner and mode; a new one is owned by
 the home's user, mode 644.
+--skip-setup marks Setup as done, so the first boot goes to SpringBoard instead of the Hello page: the preference values and container
+directories of UniXNU scripts/seed-data-skip-setup.py (docs/guide/skip-setup.md), with this OS's build for the migration keys.
 """
 import argparse
 import hashlib
@@ -46,6 +48,21 @@ SKELETON = (
 )
 # prepare-owner-data-fixture.py runtime directories.
 RUNTIME = ('keybags', 'mobile/tmp', 'tmp', 'run')
+# UniXNU seed-data-skip-setup.py: the mobile preference domains that mark Setup as done, and the container directories it adds.
+BUILD = '23F84'
+SKIP_SETUP = {
+    'com.apple.migration': {'LastSystemVersion': BUILD,
+                            'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}},
+    'com.apple.springboard': {'BKNoWatchdogs': True, 'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
+                              'MCForceShowCloudConfigurationUI': False},
+    'com.apple.purplebuddy': {'SetupDone': True, 'SetupFinishedAllSteps': True, 'SetupVersion': 11,
+                              'daemonizeNeedsToRun': False},
+    'com.apple.purplebuddy.notbackedup': {k: False for k in (
+        'ShouldRunDiagnosticsMiniBuddy', 'ShouldRunHSA2MiniBuddy', 'ShouldRunKeychainSyncMiniBuddy', 'ShouldRunMesaMiniBuddy',
+        'ShouldRunPaymentMiniBuddy', 'ShouldRunStandardMiniBuddy', 'SilentICDPUpgrade')},
+    'com.apple.managedconfiguration.notbackedup': {'LockdownActivationIndicatesCloudConfigurationAvailable': False},
+}
+SKIP_SETUP_DIRECTORIES = ('containers/Bundle', 'containers/Data/System', 'containers/Shared/SystemGroup', 'containers/Temp')
 
 
 def overlay(tree, directories, files):
@@ -92,7 +109,23 @@ def preferences(values, directories, files, scratch):
                 files.append(dict(source=str(source), path=path, uid=owner, gid=owner, mode='644'))
 
 
-def plan(var, overlays=(), merge=None, scratch=None):
+def skip_setup(directories, files, scratch):
+    """Merge the Setup-done values into mobile's preference domains (an existing file keeps its other keys, owner and mode)."""
+    byPath = {f['path']: f for f in files}
+    for name, values in SKIP_SETUP.items():
+        path = f'/mobile/Library/Preferences/{name}.plist'
+        entry = byPath.get(path)
+        merged = plistlib.loads(Path(entry['source']).read_bytes()) if entry else {}
+        merged.update(values)
+        source = Path(scratch) / f'skip-setup-{name}.plist'
+        source.write_bytes(plistlib.dumps(merged, fmt=plistlib.FMT_BINARY))
+        if entry:
+            entry['source'] = str(source)
+        else:
+            files.append(dict(source=str(source), path=path, uid=MOBILE, gid=MOBILE, mode='600'))
+
+
+def plan(var, overlays=(), merge=None, scratch=None, setup_done=False):
     """Directories, files and symlinks of the OS /private/var as Data volume paths, with owners and modes."""
     directories, files, symlinks = {}, [], []
     for current, subdirs, names in os.walk(var):
@@ -121,8 +154,10 @@ def plan(var, overlays=(), merge=None, scratch=None):
         overlay(tree, directories, files)
     if merge:
         preferences(merge, directories, files, scratch)
+    if setup_done:
+        skip_setup(directories, files, scratch)
     added = []
-    for name in RUNTIME + SKELETON:
+    for name in RUNTIME + SKELETON + (SKIP_SETUP_DIRECTORIES if setup_done else ()):
         parts = name.split('/')
         for depth in range(1, len(parts) + 1):
             path = '/' + '/'.join(parts[:depth])
@@ -151,6 +186,8 @@ def main():
                         help='owner tree added under /private/var (root owned, modes kept); may repeat')
     parser.add_argument('--preferences', type=Path,
                         help='plist whose keys are merged into backboardd and global preferences of mobile and root')
+    parser.add_argument('--skip-setup', action='store_true',
+                        help='mark Setup as done (UniXNU seed-data-skip-setup.py values), so the first boot reaches SpringBoard')
     parser.add_argument('--mkapfs', default='mkapfs',
                         help='apfsprogs mkapfs; it must set INODE_NO_RSRC_FORK on the directories it makes (1bd1c1c)')
     args = parser.parse_args()
@@ -169,7 +206,7 @@ def main():
     merge = plistlib.loads(args.preferences.read_bytes()) if args.preferences else None
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='zeta-data-seed-', dir=args.output.parent) as temporary:
-        directories, files, symlinks, added = plan(var, args.overlay, merge, temporary)
+        directories, files, symlinks, added = plan(var, args.overlay, merge, temporary, args.skip_setup)
         raw = args.raw or Path(temporary) / 'data.apfs'
         if raw.exists():
             raise SystemExit(f'Refuse to overwrite {raw}')
@@ -207,6 +244,7 @@ def main():
                   directories=len(directories), files=len(files), symlinks=len(symlinks),
                   file_bytes=file_bytes, added_directories=added,
                   overlays=[str(tree) for tree in args.overlay], preferences=merge,
+                  skip_setup=sorted(SKIP_SETUP) if args.skip_setup else None,
                   seed='OS private/var excluding staged_system_apps; owners, modes and symlinks preserved; '
                        'runtime and user-management directories added; no keys or user records')
     args.output.with_suffix('.json').write_text(json.dumps(report, indent=2) + '\n')

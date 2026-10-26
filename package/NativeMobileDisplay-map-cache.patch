@@ -56,7 +56,7 @@
  IOService *native_gop_presenter_create(void);
  bool native_gop_gpu_offer(IOService *,void *display,IOMemoryDescriptor *,uint64_t stride,uint32_t width,uint32_t height);
  void native_gop_presenter_set_source(IOService *presenter,IOService *nub);
-@@ -39,9 +41,13 @@
+@@ -39,10 +41,14 @@
      struct {bool offered,delivered;uint64_t sequence;void *display;IOMemoryDescriptor *memory;IOMemoryMap *map;
              uint64_t stride;uint32_t width,height;} swap={};
      uint64_t swapSequence=0;
@@ -66,10 +66,11 @@
      IOReturn waitSwap(task_t,uint64_t timeoutMs,NGPSwap *);
      IOReturn completeSwap(uint64_t sequence,int status);
      void abandonSwap();
-+    void drainedClientGone(){abandonSwap();}
  public:
++    void drainedClientGone(){abandonSwap();}
      void setMemorySource(IOService *source) {memorySource=source;}
      static IOReturn handoffCall(uint32_t op,task_t task,const void *in,size_t inSize,void *out,size_t outSize);
+     static IOMemoryDescriptor *handoffMemory();
 @@ -92,6 +98,7 @@
         mapping->getLength()!=video.v_rowBytes*video.v_height)return false;
      gate=IOLockAlloc();if(!gate)return false;

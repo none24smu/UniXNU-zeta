@@ -1,0 +1,147 @@
+--- a/NativeGOPMapCache.h
++++ b/NativeGOPMapCache.h
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <stdint.h>
++#include <stddef.h>
++
++// Caller serializes access. Each cached map owns a reference; find() returns
++// another reference for the in-flight frame. Retired maps are released by the
++// caller outside its lock. A map retains the descriptor used as its key.
++template<class Map, size_t Count = 6> class NativeGOPMapCache {
++    struct Entry {const void *memory=nullptr,*task=nullptr;Map *map=nullptr;uint32_t id=0;uint64_t used=0;};
++    Entry entries_[Count]{};
++    uint64_t uses_=0,next_=1;
++public:
++    Map *find(const void *memory,const void *task,uint32_t *id) {
++        for(auto &entry:entries_)if(entry.map && entry.memory==memory && entry.task==task) {
++            entry.used=++uses_;*id=entry.id;entry.map->retain();return entry.map;
++        }
++        *id=0;return nullptr;
++    }
++    // Keeps a cache reference; the caller's original map reference is unchanged.
++    uint32_t insert(const void *memory,const void *task,Map *map,Map **retired) {
++        *retired=nullptr;
++        if(!map || next_>UINT32_MAX)return 0; // Never recycle a mapping identity.
++        size_t victim=0;
++        for(size_t i=0;i<Count;++i) {
++            if(!entries_[i].map){victim=i;break;}
++            if(entries_[i].used<entries_[victim].used)victim=i;
++        }
++        *retired=entries_[victim].map;
++        map->retain();const uint32_t id=(uint32_t)next_++;
++        entries_[victim]={memory,task,map,id,++uses_};return id;
++    }
++    Map *take() {
++        for(auto &entry:entries_)if(entry.map){Map *map=entry.map;entry={};return map;}
++        return nullptr;
++    }
++};
+--- a/NativeGOPPresenter.cpp
++++ b/NativeGOPPresenter.cpp
+@@ -9,6 +9,7 @@
+ #include <kern/clock.h>
+ #include <pexpert/pexpert.h>
+ #include "NativeGOPWire.h"
++#include "NativeGOPMapCache.h"
+ extern "C" {
+ volatile uint32_t native_gop_ready,native_gop_failures;
+ volatile uint64_t native_gop_transfers,native_gop_bytes,native_gop_physical,native_gop_virtual;
+@@ -16,6 +17,7 @@
+ /* waitSwap: [0] calls, [1] timeouts, [2] the requested timeout of the last call (ms), [3] time the last timed-out call really waited (ns), [4] the shortest
+  * and [5] the longest such wait (ns), [6] total ns waited in timed-out calls. A timed wait that returns long before its deadline shows here. */
+ volatile uint64_t native_gop_wait_stats[7];
++volatile uint64_t native_gop_map_stats[4]; // hits, misses, evictions, live cache entries
+ IOService *native_gop_presenter_create(void);
+ bool native_gop_gpu_offer(IOService *,void *display,IOMemoryDescriptor *,uint64_t stride,uint32_t width,uint32_t height);
+ void native_gop_presenter_set_source(IOService *presenter,IOService *nub);
+@@ -39,9 +41,13 @@
+     struct {bool offered,delivered;uint64_t sequence;void *display;IOMemoryDescriptor *memory;IOMemoryMap *map;
+             uint64_t stride;uint32_t width,height;} swap={};
+     uint64_t swapSequence=0;
++    NativeGOPMapCache<IOMemoryMap> frameMaps;
++    task_t frameTask=TASK_NULL;
++    bool cacheMaps=false;
+     IOReturn waitSwap(task_t,uint64_t timeoutMs,NGPSwap *);
+     IOReturn completeSwap(uint64_t sequence,int status);
+     void abandonSwap();
++    void drainedClientGone(){abandonSwap();}
+ public:
+     void setMemorySource(IOService *source) {memorySource=source;}
+     static IOReturn handoffCall(uint32_t op,task_t task,const void *in,size_t inSize,void *out,size_t outSize);
+@@ -92,6 +98,7 @@
+        mapping->getLength()!=video.v_rowBytes*video.v_height)return false;
+     gate=IOLockAlloc();if(!gate)return false;
+     {unsigned v=0;PE_parse_boot_argn("sheng-fb-gpu",&v,sizeof v);gpuMode=(v==1);}
++    uint32_t cache=0;PE_parse_boot_argn("zeta-gop-map-cache",&cache,sizeof(cache));cacheMaps=cache!=0;
+     mode={NGP_VERSION,NGP_BGRX8888,video.v_width,video.v_height,video.v_rowBytes,mapping->getLength()};
+     native_gop_physical=mapping->getPhysicalAddress();native_gop_virtual=mapping->getVirtualAddress();
+     online=true;native_gop_ready=1;if(gpuMode)gHandoff=this;registerService();return true;
+@@ -103,7 +110,7 @@
+     IOService::stop(provider);
+ }
+ void NativeGOPPresenter::free() {
+-    OSSafeReleaseNULL(mapping);if(gate){IOLockFree(gate);gate=nullptr;}IOService::free();
++    abandonSwap();OSSafeReleaseNULL(mapping);if(gate){IOLockFree(gate);gate=nullptr;}IOService::free();
+ }
+ IOReturn NativeGOPPresenter::transfer(task_t task,const NGPPresent &q,NGPTransfer *result) {
+     if(gpuMode)return kIOReturnUnsupported;   // in GPU mode no CPU copy exists, not even on request
+@@ -163,18 +170,31 @@
+     swap.delivered=true;
+     IOMemoryDescriptor *memory=swap.memory;memory->retain();
+     const uint64_t sequence=swap.sequence,stride=swap.stride;const uint32_t width=swap.width,height=swap.height;
++    uint32_t identity=0;
++    // Retain a cache hit for this in-flight frame. Task identity is pinned until drain.
++    const bool canCache=cacheMaps && (!frameTask || frameTask==task);
++    IOMemoryMap *map=canCache?frameMaps.find(memory,task,&identity):nullptr;
++    if(map)native_gop_map_stats[0]=native_gop_map_stats[0]+1;
++    else native_gop_map_stats[1]=native_gop_map_stats[1]+1;
+     IOLockUnlock(gate);
+-    // The frame's pages go into the client's task here, writable like any import (the GPU maps them for reading; the kernel pins and maintains them).
+-    IOMemoryMap *map=memory->createMappingInTask(task,0,kIOMapAnywhere);
+-    memory->release();
++    if(!map)map=memory->createMappingInTask(task,0,kIOMapAnywhere);
+     IOLockLock(gate);
+     if(!map || !map->getVirtualAddress() || !swap.offered || swap.sequence!=sequence) {
+-        IOLockUnlock(gate);OSSafeReleaseNULL(map);__atomic_fetch_add(&native_gop_gpu_failures,1,__ATOMIC_RELAXED);return kIOReturnNoMemory;
++        IOLockUnlock(gate);memory->release();OSSafeReleaseNULL(map);__atomic_fetch_add(&native_gop_gpu_failures,1,__ATOMIC_RELAXED);return kIOReturnNoMemory;
++    }
++    IOMemoryMap *retired=nullptr;
++    if(canCache && !identity) {
++        if(!frameTask){frameTask=task;task_reference(task);}
++        identity=frameMaps.insert(memory,task,map,&retired);
++        if(identity) {
++            if(retired)native_gop_map_stats[2]=native_gop_map_stats[2]+1;
++            else native_gop_map_stats[3]=native_gop_map_stats[3]+1;
++        }
+     }
+     swap.map=map;
+     out->sequence=sequence;out->address=map->getVirtualAddress();out->bytes=map->getLength();out->stride=stride;
+-    out->width=width;out->height=height;out->format=NGP_BGRX8888;out->reserved=0;
+-    IOLockUnlock(gate);return kIOReturnSuccess;
++    out->width=width;out->height=height;out->format=NGP_BGRX8888;out->reserved=identity;
++    IOLockUnlock(gate);memory->release();OSSafeReleaseNULL(retired);return kIOReturnSuccess;
+ }
+ IOReturn NativeGOPPresenter::completeSwap(uint64_t sequence,int status) {
+     IOLockLock(gate);
+@@ -192,7 +212,12 @@
+     IOLockLock(gate);
+     gpuClient=false;
+     auto done=swap;swap={};
++    IOMemoryMap *retired[6]={};unsigned count=0;
++    while(count<6 && (retired[count]=frameMaps.take()))++count;
++    task_t previous=frameTask;frameTask=TASK_NULL;native_gop_map_stats[3]=0;
+     IOLockUnlock(gate);
++    for(unsigned i=0;i<count;++i)retired[i]->release();
++    if(previous)task_deallocate(previous);
+     if(!done.offered)return;
+     OSSafeReleaseNULL(done.map);if(done.memory)done.memory->release();
+     __atomic_fetch_add(&native_gop_gpu_abandoned,1,__ATOMIC_RELAXED);
+@@ -309,3 +334,6 @@
+     *memory=controller->mapping->getMemoryDescriptor();if(!*memory)return kIOReturnNoMemory;
+     (*memory)->retain();if(type!=NGP_MEMORY_SCANOUT_RW)*options|=kIOMapReadOnly;return kIOReturnSuccess;
+ }
++
++// Called after the render client's GPU queues have drained, before its slot is reused.
++extern "C" void native_gop_gpu_drained_client_gone() {if(gHandoff)gHandoff->drainedClientGone();}

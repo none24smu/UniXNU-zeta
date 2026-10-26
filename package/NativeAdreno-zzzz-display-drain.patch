@@ -1,0 +1,38 @@
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -63,6 +63,7 @@
+ extern "C" int boot_log_export_put(uint32_t generation,uint32_t total,uint32_t offset,const void *data,uint32_t size) __attribute__((weak_import));
+ extern "C" {volatile uint32_t native_adreno_export_stats[4];}   /* [0] pieces taken, [1] refused, [2] last generation, [3] its total bytes */
+ extern "C" IOMemoryDescriptor *native_gop_handoff_memory(void);
++extern "C" void native_gop_gpu_drained_client_gone(void) __attribute__((weak_import));
+ 
+ /* Mailbox: a last-resort command channel for a sandbox that admits no external-method selector at all. It is one shared page (memory
+  * type NativeAdrenoMailboxType through IOConnectMapMemory64, which the selector filter does not cover) and a kernel poller that runs
+@@ -285,6 +286,7 @@
+     IOLockLock(g.lock);
+     IOReturn status=kIOReturnSuccess;
+     AGXDeviceUserClient *mailbox=nullptr;
++    unsigned releasedSlot=NativeAdrenoMaxClients;
+     if(gMailboxOwner==this) {mailbox=gMailboxOwner;gMailboxOwner=nullptr;}
+     if(live_) {
+         const uint64_t peak=core_->windowPeak();
+@@ -292,7 +294,7 @@
+         /* A failed teardown leaves the objects live and the slot taken: nothing is forced or reused. */
+         if(!status) {
+             live_=false;
+-            if(kernel_)g.kernel_client=false;else if(slot_<NativeAdrenoMaxClients)g.slots[slot_]=false;
++            if(kernel_)g.kernel_client=false;else if(slot_<NativeAdrenoMaxClients)releasedSlot=slot_;
+             ++g.closed;native_adreno_metal_diag.closes=native_adreno_metal_diag.closes+1;
+             if(NativeAdrenoClientRecord *record=clientRecord(name_)) {
+                 record->closes=record->closes+1;record->slot=0xff;
+@@ -301,6 +303,10 @@
+         }
+     }
+     IOLockUnlock(g.lock);
++    if(releasedSlot<NativeAdrenoMaxClients) {
++        if(releasedSlot==0 && native_gop_gpu_drained_client_gone)native_gop_gpu_drained_client_gone();
++        IOLockLock(g.lock);g.slots[releasedSlot]=false;IOLockUnlock(g.lock);
++    }
+     if(mailbox)mailbox->release();
+     if(!status)terminate();
+     return status;

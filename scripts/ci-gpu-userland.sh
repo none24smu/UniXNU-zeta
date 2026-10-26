@@ -76,8 +76,8 @@ python3 scripts/build-native-metal-bridge.py --target host
 # Every available host check must pass. The missing device-specific Apple UI
 # recipes are the only explicit skips; a cache or transport failure is fatal.
 python3 scripts/check-turnip-darwin-host.py --skip-unavailable-ui-recipes
-python3 scripts/build-adreno-metal-plugin.py
 python3 "$Z/scripts/check-zeta-heap-aliasing.py" "$U"
+python3 scripts/build-adreno-metal-plugin.py
 
 cp -R build/adreno-metal-plugin/. "$OUT/"
 cp build/zeta-heap-aliasing/host.log "$OUT/heap-aliasing-host.log"

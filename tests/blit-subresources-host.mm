@@ -26,6 +26,7 @@ int main(int argc,char **argv){
   id<MTLCommandQueue> queue=[device newCommandQueue];CHECK(queue);
   id<MTLCommandBuffer> cb=[queue commandBuffer];id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];CHECK(blit);
   SEL range=@selector(copyFromTexture:sourceSlice:sourceLevel:toTexture:destinationSlice:destinationLevel:sliceCount:levelCount:);
+  if(![blit respondsToSelector:range])[blit endEncoding]; // clean up before the old-code assertion returns
   CHECK([blit respondsToSelector:range]);
   SEL lower=@selector(copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:);
   Method method=class_getInstanceMethod(object_getClass(blit),lower);CHECK(method);IMP original=method_setImplementation(method,(IMP)record);

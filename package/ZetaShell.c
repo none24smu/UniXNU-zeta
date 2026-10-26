@@ -36,6 +36,9 @@ extern int unlink1(vfs_context_t, vnode_t, user_addr_t, enum uio_seg, int);
 extern unsigned long long ml_phys_read_double_64(unsigned long long paddr);
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
+extern processor_t cpu_to_processor(int cpu);
+extern kern_return_t processor_exit_from_user(processor_t);
+extern kern_return_t processor_start_from_user(processor_t);
 // xnu-12377 proc_internal.h.
 extern void proc_iterate(unsigned int, int (*)(proc_t, void *), void *, int (*)(proc_t, void *), void *);
 #define SHELL_PROC_RETURNED 0
@@ -387,6 +390,40 @@ static int mmio_write(const char *address_text, const char *value_text) {
     return 0;
 }
 
+// smc/hvc <function id> [x1] [x2] [x3]: one SMCCC call to TZ or the hypervisor (Haven/Gunyah), its x0..x3 printed. A call that the
+// firmware treats as fatal resets the phone, as from any kernel code.
+static int firmware_call(int hypervisor, int argc, char **argv) {
+    uint64_t value[4] = {0};
+    for (int i = 0; i < 4 && i + 1 < argc; ++i) {
+        int ok;
+        value[i] = number(argv[i + 1], &ok);
+        if (!ok) {zeta_shell_line("usage: %s <function id> [x1] [x2] [x3]", hypervisor ? "hvc" : "smc"); return EINVAL;}
+    }
+    register uint64_t x0 __asm__("x0") = value[0], x1 __asm__("x1") = value[1], x2 __asm__("x2") = value[2], x3 __asm__("x3") = value[3];
+    if (hypervisor)
+        __asm__ volatile("hvc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) :: "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+                         "x14", "x15", "x16", "x17", "memory");
+    else
+        __asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) :: "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+                         "x14", "x15", "x16", "x17", "memory");
+    zeta_shell_line("%s %#llx -> x0 %#llx (%lld) x1 %#llx x2 %#llx x3 %#llx", hypervisor ? "hvc" : "smc", (unsigned long long)value[0],
+                    (unsigned long long)x0, (long long)x0, (unsigned long long)x1, (unsigned long long)x2, (unsigned long long)x3);
+    return 0;
+}
+
+// cpu off|on <n>: take a core out of scheduling and power it down (processor_exit_from_user), or bring it back.
+static int cpu_command(const char *what, const char *which) {
+    int ok;
+    const int cpu = (int)number(which, &ok);
+    const int off = !strcmp(what, "off");
+    if (!ok || cpu <= 0 || cpu > 7 || (!off && strcmp(what, "on"))) {zeta_shell_line("usage: cpu off|on <1..7>"); return EINVAL;}
+    const processor_t processor = cpu_to_processor(cpu);
+    if (!processor) {zeta_shell_line("cpu %d: no processor", cpu); return ENODEV;}
+    const kern_return_t result = off ? processor_exit_from_user(processor) : processor_start_from_user(processor);
+    zeta_shell_line("cpu %d %s -> %d", cpu, what, result);
+    return result ? EIO : 0;
+}
+
 static void reboot_to_bootloader(void) {
     // PSCI SYSTEM_RESET; the firmware set the bootloader reason before handoff (as the console's ZETA:REBOOT-BOOTLOADER).
     register uint64_t x0 __asm__("x0") = 0x84000009;
@@ -409,6 +446,8 @@ static void help(void) {
         "phys <pa> [words] | mmio <pa> [words] | mmiow <pa> <value>",
         "ioreg [name|class] [depth] I/O Registry service plane",
         "props <name|class> [index] properties of a registry entry",
+        "smc|hvc <fid> [x1 x2 x3]   one firmware/hypervisor call",
+        "cpu off|on <1..7>          power a core down or back up",
         "uptime | echo <text> | reboot (to the bootloader)",
     };
     for (unsigned i = 0; i < sizeof lines / sizeof lines[0]; ++i) zeta_shell_line("%s", lines[i]);
@@ -475,6 +514,8 @@ static int run(char *text) {
         const unsigned index = argc > 2 ? (unsigned)number(argv[2], &ok2) : 0;
         return zeta_shell_props(argv[1], ok2 ? index : 0);
     }
+    if ((!strcmp(c, "smc") || !strcmp(c, "hvc")) && argc >= 2) return firmware_call(c[0] == 'h', argc, argv);
+    if (!strcmp(c, "cpu") && argc >= 3) return cpu_command(argv[1], argv[2]);
     if (!strcmp(c, "reboot")) {zeta_shell_line("returning to the bootloader"); IOSleep(200); reboot_to_bootloader(); return EIO;}
     zeta_shell_line("unknown command or missing arguments: %s (try help)", c);
     return EINVAL;

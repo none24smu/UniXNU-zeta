@@ -7,7 +7,6 @@
 // physical memory, MMIO and the I/O Registry (ZetaShellIo.cpp) can be read, and changed, without a rebuild or a reboot.
 #include <sys/param.h>
 #include <sys/errno.h>
-#include <sys/systm.h>
 #include <sys/proc.h>
 #include <sys/vnode.h>
 #include <sys/vnode_if.h>
@@ -20,6 +19,10 @@
 #include <stdarg.h>
 #include <string.h>
 
+// sys/systm.h's: it needs the BSD prefix header for its lock configuration, which these units are built without.
+extern int printf(const char *, ...) __attribute__((format(printf, 1, 2)));
+extern int snprintf(char *, size_t, const char *, ...) __attribute__((format(printf, 3, 4)));
+extern int vsnprintf(char *, size_t, const char *, va_list) __attribute__((format(printf, 3, 0)));
 extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
 extern void thread_deallocate(thread_t);
 extern void IOSleep(unsigned int milliseconds);

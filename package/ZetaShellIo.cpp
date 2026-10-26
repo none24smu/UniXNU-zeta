@@ -5,6 +5,7 @@
 #include <libkern/c++/OSSerialize.h>
 #include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSCollectionIterator.h>
+#include <string.h>
 
 extern "C" void zeta_shell_line(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
@@ -20,7 +21,7 @@ void tree(IORegistryEntry *entry, unsigned level, unsigned depth, unsigned *rows
     memset(indent, ' ', width);
     indent[width] = 0;
     IOService *service = OSDynamicCast(IOService, entry);
-    zeta_shell_line("%s%s <%s>%s%s", indent, entry->getName(gIOServicePlane) ?: "?", entry->getMetaClass()->getClassName(),
+    zeta_shell_line("%s%s <%s>%s%s", indent, entry->getName(gIOServicePlane) ? entry->getName(gIOServicePlane) : "?", entry->getMetaClass()->getClassName(),
                     service && service->isInactive() ? " !inactive" : "", service && service->getBusyState() ? " busy" : "");
     if (++*rows > 4000 || level >= depth) return;
     OSIterator *children = entry->getChildIterator(gIOServicePlane);

@@ -1,0 +1,51 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -1647,6 +1647,48 @@
+  NBComputePipeline *state=[[NBComputePipeline alloc] initWithDevice:gDeviceObject pipelineStateDescriptor:d];state.handle=handle;state.label=d.label;gPipelines++;
+  if(error)*error=nil;return (id<MTLComputePipelineState>)state;
+ }
++// The other forms of the pipeline calls. _MTLDevice answers them through its own compiler object ([self compiler], nil on this device), so
++// each returned nil without a word: backboardd's compute_average_luma pipeline (newComputePipelineStateWithDescriptor:error:) came back
++// nil and QuartzCore aborted "Metal failed to build compute pipeline" (hm1-v1, sb9-v1). The asynchronous forms make the state on a
++// global queue and answer the handler there, as Metal answers it off the caller's thread; the descriptor is copied first.
++- (id<MTLComputePipelineState>)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d error:(NSError **)error {
++ return [(id<MTLDevice>)self newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:error];
++}
++- (void)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d options:(MTLPipelineOption)options
++                            completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)handler {
++ MTLComputePipelineDescriptor *copy=[d copy];
++ dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
++  NSError *error=nil;id<MTLComputePipelineState> state=[(id<MTLDevice>)self newComputePipelineStateWithDescriptor:copy options:options reflection:nil error:&error];
++  handler(state,nil,error);
++ });
++}
++- (void)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d completionHandler:(MTLNewComputePipelineStateCompletionHandler)handler {
++ [(id<MTLDevice>)self newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone
++  completionHandler:^(id<MTLComputePipelineState> state,MTLComputePipelineReflection *reflection,NSError *error){(void)reflection;handler(state,error);}];
++}
++- (void)newComputePipelineStateWithFunction:(id<MTLFunction>)function options:(MTLPipelineOption)options
++                          completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)handler {
++ dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
++  NSError *error=nil;id<MTLComputePipelineState> state=[(id<MTLDevice>)self newComputePipelineStateWithFunction:function options:options reflection:nil error:&error];
++  handler(state,nil,error);
++ });
++}
++- (void)newComputePipelineStateWithFunction:(id<MTLFunction>)function completionHandler:(MTLNewComputePipelineStateCompletionHandler)handler {
++ [(id<MTLDevice>)self newComputePipelineStateWithFunction:function options:MTLPipelineOptionNone
++  completionHandler:^(id<MTLComputePipelineState> state,MTLComputePipelineReflection *reflection,NSError *error){(void)reflection;handler(state,error);}];
++}
++- (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)d options:(MTLPipelineOption)options
++                           completionHandler:(MTLNewRenderPipelineStateWithReflectionCompletionHandler)handler {
++ MTLRenderPipelineDescriptor *copy=[d copy];
++ dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
++  NSError *error=nil;id<MTLRenderPipelineState> state=[(id<MTLDevice>)self newRenderPipelineStateWithDescriptor:copy options:options reflection:nil error:&error];
++  handler(state,nil,error);
++ });
++}
++- (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)d completionHandler:(MTLNewRenderPipelineStateCompletionHandler)handler {
++ [(id<MTLDevice>)self newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionNone
++  completionHandler:^(id<MTLRenderPipelineState> state,MTLRenderPipelineReflection *reflection,NSError *error){(void)reflection;handler(state,error);}];
++}
+ - (id<MTLRenderPipelineState>)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)d error:(NSError **)error {
+  return [(id<MTLDevice>)self newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:error];
+ }

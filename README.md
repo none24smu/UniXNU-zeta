@@ -988,3 +988,14 @@ The user confirmed iOS was visible but slow. The inherited
 `sheng-smp-delay=100000` holds the other cores back, so all-core performance
 and stability need a separate test. Evidence is in that image directory's
 `hardware-test.json`, `capture/` and process/core snapshots.
+
+`qcom-userland-stability-smp1` uses the exact same runtime kernel and removes
+only the `sheng-smp-delay=100000` boot argument. XNU's shell reported seven
+online secondaries and `hw.activecpu=8`. The same boot passed 981 seconds
+with no recorded kernel fault, spontaneous USB disconnect, or exit of the
+sampled launchd/SpringBoard/backboardd PIDs (1/28/60). The host handed capture
+from `capture/` to `capture-continued/` without resetting or re-enumerating
+the device, removing the host's finite capture deadline too. iOS and that
+USB capture were left running. The report records an observed stability
+window, not a guarantee across every workload; `hardware-test.json` and
+`capture-handoff.json` distinguish it from a completed capture/reset.

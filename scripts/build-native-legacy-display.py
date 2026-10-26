@@ -107,7 +107,12 @@ SHELL = ROOT / 'kits/zeta/ZetaShell.c'
 SHELL_IO = ROOT / 'kits/zeta/ZetaShellIo.cpp'
 shell = OUT / 'ZetaShell.o'
 shell_io = OUT / 'ZetaShellIo.o'
-compile_unit(SHELL, shell, 'ZetaShell', base=c_command)
+# kern_exec.c's forced include (the kernel configuration: CONFIG_DTRACE, which the lock headers of sys/proc.h check) goes back
+# in for it; the kit units above are built without it.
+bsd_prefix = [value for at, value in enumerate(c_record['arguments'][1:]) if c_record['arguments'][at] == '-include']
+bsd_prefix = [str(Path(c_record['directory']) / value) if (Path(c_record['directory']) / value).exists() else value for value in bsd_prefix]
+print('zeta shell: BSD prefix ' + ' '.join(bsd_prefix))
+compile_unit(SHELL, shell, 'ZetaShell', [part for value in bsd_prefix for part in ('-include', value)], base=c_command)
 compile_unit(SHELL_IO, shell_io, 'ZetaShellIo')
 # The board's patches to the upstream submodules (kits/zeta/<module>-*.patch, in name order) apply to a copy: the submodules
 # are not ours to change. NativeAdreno-16k-vm.patch: xnu-12377 keeps 16 KiB VM pages over the 4 KiB granule.

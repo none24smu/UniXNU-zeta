@@ -1035,9 +1035,12 @@ is claimed by this runtime test.
 Rendering follow-up: the `gpu-hm2` Data seed contains the publication marker
 but no `NativeAdrenoMetal.clients` allow-list. The plugin therefore gives
 backboardd a device and returns nil to every other process, including the
-running MercuryPosterExtension wallpaper provider. Whether enabling that
-provider restores the observed black lock-screen background needs a device
-test; successful backboardd pipeline creation alone cannot answer it.
+running MercuryPosterExtension wallpaper provider. The live RAM-only opt-in did not restore it: the user saw white then black
+and another backboardd UI restart. The retained map refusal again counted
+1024 objects. Mercury additionally reported unsupported texture-layout calls,
+its Space.metallib binary archive, and GPU address-space exhaustion. The
+allow-list was removed and that extension restarted. Successful backboardd
+pipeline creation alone cannot establish wallpaper rendering.
 
 `NativeMetal-zz-heap-aliasing.patch` also fixes a separate source defect: the
 frontend's `makeAliasable` was empty and `isAliasable` always false, despite
@@ -1049,3 +1052,12 @@ regression fills heaps, reuses still-retained buffer/texture/view ranges,
 checks repeated calls and destruction do not double-free a replacement,
 and covers placement and non-heap resources. Compilation and execution
 on macOS, followed by device rendering checks, remain required.
+
+
+The Apple Silicon runner did not acquire the capacity-fix job. The kernel
+workflow can now select a standard Intel macOS runner, and the graphics host
+checks select their native Rust architecture and Homebrew headers. The
+software kernel peers use a host atomic fence on Intel; ARM64 keeps the
+original DSB. The diagnostic worker sampler reads native Intel registers
+there and preserves the ARM64 path. These host changes enable the same
+allocation/lifetime tests without claiming host rendering as device proof.

@@ -58,7 +58,8 @@ done
 M2V_PINS=$U/scripts/data/gpu-metal-vulkan-inputs.json
 fetch "$U/.cache/gpu-reference/metal2vulkan" "$(pin "$M2V_PINS" translator.repository)" "$(pin "$M2V_PINS" translator.commit)"
 
-rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --target aarch64-apple-darwin
+HOST_RUST_TARGET=$(python3 -c 'import platform; print({"arm64":"aarch64-apple-darwin","x86_64":"x86_64-apple-darwin"}[platform.machine()])')
+rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --target "$HOST_RUST_TARGET"
 
 cd "$U"
 python3 scripts/build-turnip-darwin.py --target host

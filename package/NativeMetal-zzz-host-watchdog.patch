@@ -1,0 +1,27 @@
+--- a/NativeTurnipSmoke.h
++++ b/NativeTurnipSmoke.h
+@@ -589,11 +589,23 @@
+         return;
+     }
+     if (thread_suspend(thread) != KERN_SUCCESS) {snprintf(text + at, size - at, " nosusp"); return;}
++#if defined(__aarch64__)
+     arm_thread_state64_t state = {};
+     count = ARM_THREAD_STATE64_COUNT;
+-    if (thread_get_state(thread, ARM_THREAD_STATE64, reinterpret_cast<thread_state_t>(&state), &count) == KERN_SUCCESS) {
++    const thread_state_flavor_t flavor = ARM_THREAD_STATE64;
++#else
++    x86_thread_state64_t state = {};
++    count = x86_THREAD_STATE64_COUNT;
++    const thread_state_flavor_t flavor = x86_THREAD_STATE64;
++#endif
++    if (thread_get_state(thread, flavor, reinterpret_cast<thread_state_t>(&state), &count) == KERN_SUCCESS) {
++#if defined(__aarch64__)
+         const uint64_t pc = arm_thread_state64_get_pc(state), lr = arm_thread_state64_get_lr(state);
+         uint64_t fp = arm_thread_state64_get_fp(state);
++#else
++        const uint64_t pc = state.__rip, lr = 0;
++        uint64_t fp = state.__rbp;
++#endif
+         at += frameText(text + at, size - at, pc);
+         if (at < size) at += frameText(text + at, size - at, lr);
+         const uint64_t low = reinterpret_cast<uint64_t>(pthread_get_stackaddr_np(worker)) - pthread_get_stacksize_np(worker);

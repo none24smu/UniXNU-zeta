@@ -3,11 +3,12 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Apple Silicon macOS runner
+        description: macOS build and host-test runner
         type: choice
         options:
           - macos-latest
           - macos-26
+          - macos-26-intel
           - macos-15
         default: macos-latest
       unixnu_ref:

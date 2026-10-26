@@ -1,0 +1,36 @@
+--- a/NativeAdrenoMemory.cpp
++++ b/NativeAdrenoMemory.cpp
+@@ -115,7 +115,14 @@
+                 mapping_=pool.virt+offset;bytes_=bytes;pooled_=true;pool_offset_=offset;prepared_=true;
+                 bzero(mapping_,bytes);
+                 /* Through a write-combined pool's own mapping the zeros go to DRAM; the barrier completes them. */
+-                if(pool.write_combined)__asm__ volatile("dsb sy":::"memory");
++                if(pool.write_combined){
++#if defined(__aarch64__)
++        __asm__ volatile("dsb sy":::"memory");
++#else
++        /* Software kernel peer only: no device memory exists on the host. */
++        __atomic_thread_fence(__ATOMIC_SEQ_CST);
++#endif
++    }
+                 else status=NativeAdrenoMaintainOwnedPages(mapping_,bytes,NativeAdrenoClean);
+                 if(status!=kIOReturnSuccess) {(void)release();return status;}
+                 native_adreno_pool_stats[1]=native_adreno_pool_stats[1]+1;
+--- a/NativeAdrenoSubmit.cpp
++++ b/NativeAdrenoSubmit.cpp
+@@ -118,7 +118,14 @@
+      * caches over every mapped BO are cleaned and invalidated. The board shows the last submission's record on a stall. */
+     uint32_t cached=~0u,before=~0u,ignored=0,after=~0u;
+     /* Write-combined stores this CPU made before the call (the client's command words) complete before anything below. */
+-    __asm__ volatile("dsb sy":::"memory");
++    {
++#if defined(__aarch64__)
++        __asm__ volatile("dsb sy":::"memory");
++#else
++        /* Software kernel peer only: no device memory exists on the host. */
++        __atomic_thread_fence(__ATOMIC_SEQ_CST);
++#endif
++    }
+     /* int-098/099: with write-combined user BOs and no maintenance the CP stopped at the end of the first IB, as in int-065..069 when an
+      * IB sat in a CPU cache. While write-combined BOs are trusted, every line of this submission's IBs is compared as a CPU cache and
+      * DRAM hold it (bounded). A dirty line means a client view still caches its BOs: maintain every BO from now on, this submission

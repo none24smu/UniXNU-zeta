@@ -1,0 +1,108 @@
+--- a/NativeAdrenoMemory.cpp
++++ b/NativeAdrenoMemory.cpp
+@@ -166,6 +166,20 @@
+      * as success. No object has been exposed to a GPU or userspace yet. */
+     (void)release();return status;
+ }
++/* An import holds the pages through a memory entry of its own (kIOMemoryPersistent), which references the VM object: the owner may unmap
++ * its range while the GPU still uses it (Core Animation frees an image's Shmem once its no-copy buffer is released, before the runtime frees
++ * the import), and the object then lives on until the import completes instead of being torn down under a wired UPL (int-233..235: the render
++ * thread stuck in vm_deallocate). A range no memory entry can be made of is imported as before; [0] counts the persistent imports, [1] those. */
++extern "C" {volatile uint32_t native_adreno_import_persistent[2];}
++static IOMemoryDescriptor *importRange(uint64_t address,size_t bytes,IODirection direction,void *task)
++{
++    const IOOptionBits options=static_cast<IOOptionBits>(direction)|static_cast<IOOptionBits>(kIOMemoryMapperNone);
++    IOMemoryDescriptor *range=IOMemoryDescriptor::withAddressRange(address,bytes,options|kIOMemoryPersistent,static_cast<task_t>(task));
++    if(range) {native_adreno_import_persistent[0]=native_adreno_import_persistent[0]+1;return range;}
++    range=IOMemoryDescriptor::withAddressRange(address,bytes,options,static_cast<task_t>(task));
++    if(range)native_adreno_import_persistent[1]=native_adreno_import_persistent[1]+1;
++    return range;
++}
+ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes,unsigned bits,size_t budget)
+ {
+     native_adreno_import_stage=10;
+@@ -179,8 +193,7 @@
+     native_adreno_import_stage=13;
+     IOReturn status=NativeAdrenoQueryCpu4K(&cpu);if(status!=kIOReturnSuccess)return status;
+     const uint64_t limit=UINT64_C(1)<<bits;
+-    imported_=IOMemoryDescriptor::withAddressRange(address,bytes,
+-        static_cast<IOOptionBits>(kIODirectionInOut)|static_cast<IOOptionBits>(kIOMemoryMapperNone),static_cast<task_t>(task));
++    imported_=importRange(address,bytes,kIODirectionInOut,task);
+     native_adreno_import_stage=14;
+     if(!imported_)return kIOReturnNoMemory;
+     native_adreno_import_stage=15;
+@@ -189,8 +202,7 @@
+         /* Read-only memory of the owner (a mapped file, constant data): cannot be pinned for writing. Pin it for reading only; the GPU then maps it
+          * read-only. Metal's no-copy buffers over such memory are only ever read by shaders. */
+         imported_->release();imported_=nullptr;
+-        imported_=IOMemoryDescriptor::withAddressRange(address,bytes,
+-            static_cast<IOOptionBits>(kIODirectionOut)|static_cast<IOOptionBits>(kIOMemoryMapperNone),static_cast<task_t>(task));
++        imported_=importRange(address,bytes,kIODirectionOut,task);
+         if(!imported_)return kIOReturnNoMemory;
+         status=imported_->prepare();
+         if(status==kIOReturnSuccess)read_only_=true;
+--- a/tests/XnuMemoryFixture.h
++++ b/tests/XnuMemoryFixture.h
+@@ -10,6 +10,8 @@
+ #include <vector>
+ using IOReturn=int;
+ using IOOptionBits=unsigned;
++using IODirection=unsigned;
++constexpr unsigned kIOMemoryPersistent=0x10000;
+ using IOByteCount=size_t;
+ using addr64_t=uint64_t;
+ constexpr IOReturn kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnBusy=2,
+@@ -24,6 +26,7 @@
+ struct MemoryFixture {
+     unsigned created=0,prepared=0,completed=0,released=0,cache_calls=0,segment_calls=0;
+     unsigned allocation_fail_count=0;
++    bool persistent_import_refused=false;
+     bool allocation_fail=false,prepare_fail=false,complete_fail=false,metadata_fail=false;
+     bool write_protected_imports=false;   /* user ranges that can only be pinned for reading: prepare() of a writable one reports KERN_PROTECTION_FAILURE */
+     bool null_mapping=false,unaligned_mapping=false,wrong_length=false;
+@@ -100,6 +103,7 @@
+     static IOMemoryDescriptor *withAddressRange(uint64_t address,uint64_t bytes,unsigned options,task_t task) {
+         if(!task || task==kernel_task || !(options&kIOMemoryMapperNone))std::abort();
+         if(fixture.allocation_fail)return nullptr;
++        if(fixture.persistent_import_refused && (options&kIOMemoryPersistent))return nullptr;
+         auto *d=new IOMemoryDescriptor;d->options=options;d->address=address;d->bytes=bytes;d->physical_base=fixture.next_physical;
+         fixture.next_physical+=2*bytes+0x10000;++fixture.imported;++fixture.imports_live;return d;
+     }
+--- a/tests/test_userclient.cpp
++++ b/tests/test_userclient.cpp
+@@ -8,6 +8,7 @@
+ extern "C" volatile uint32_t native_adreno_io_coherent;
+ extern "C" volatile uint32_t native_adreno_coherent_skips[4];
+ extern "C" volatile uint64_t native_adreno_alloc_diag[20];
++extern "C" volatile uint32_t native_adreno_import_persistent[2];
+ static bool fail_write_combine=false;
+ #define CHECK(x) do {if(!(x)){std::fprintf(stderr,"line %d: %s\n",__LINE__,#x);std::exit(1);}}while(0)
+ #define SMMU_BYTES 0x40000
+@@ -109,6 +110,27 @@
+ }
+ int main()
+ {
++    /* Persistent imports, refused memory-entry fallback, read-only retry and failed creation. */
++    {
++        const auto task=reinterpret_cast<void *>(2);
++        const unsigned live=fixture.imports_live, kept=native_adreno_import_persistent[0], fallback=native_adreno_import_persistent[1];
++        NativeAdrenoMemory memory;
++        CHECK(memory.importTask(task,0x20000000,4096,40,4096)==kIOReturnSuccess);
++        CHECK(native_adreno_import_persistent[0]==kept+1 && native_adreno_import_persistent[1]==fallback);
++        CHECK(memory.release()==kIOReturnSuccess && fixture.imports_live==live);
++        fixture.persistent_import_refused=true;
++        CHECK(memory.importTask(task,0x20000000,4096,40,4096)==kIOReturnSuccess);
++        CHECK(native_adreno_import_persistent[1]==fallback+1);
++        CHECK(memory.release()==kIOReturnSuccess && fixture.imports_live==live);
++        fixture.persistent_import_refused=false;fixture.write_protected_imports=true;
++        CHECK(memory.importTask(task,0x20000000,4096,40,4096)==kIOReturnSuccess && memory.readOnly());
++        CHECK(native_adreno_import_persistent[0]==kept+3);
++        CHECK(memory.release()==kIOReturnSuccess && fixture.imports_live==live);
++        fixture.write_protected_imports=false;fixture.allocation_fail=true;
++        CHECK(memory.importTask(task,0x20000000,4096,40,4096)==kIOReturnNoMemory);
++        CHECK(fixture.imports_live==live);fixture.allocation_fail=false;
++        std::puts("PASS: persistent import selection, fallback, read-only retry and failure cleanup; real VM lifetime requires hardware");
++    }
+     /* Terminal allocation diagnostic distinguishes client-table saturation from
+      * actual allocation/WC refusals, survives client close, and ignores success
+      * and recovered contiguous attempts. One map also verifies the window peak. */

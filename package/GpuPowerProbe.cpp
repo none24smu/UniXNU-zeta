@@ -945,24 +945,51 @@ void beatThread(void *, wait_result_t) {
     }
 }
 
-// zeta-secwdog=1: the secure watchdog's deactivation, qcom_scm_sec_wdog_deactivate as stock qcom_wdt_core.ko calls it
-// (SVC_BOOT 1, BOOT_SEC_WDOG_DIS 7, one argument 1), after QCOM_SCM_INFO_IS_CALL_AVAIL (SVC_INFO 6, cmd 1) for it. Every SMP boot
-// resets about 320 s after the kernel starts with no panic, and the APSS watchdog's own registers (0x17c10000) stall this kernel
-// (hm2-v2), so the stock driver's MMIO pet is not open to it.
-void secureWatchdog() {
+// zeta-vwdt=1: the watchdog of this OS as a Haven guest, through the hypervisor's SMCCC calls stock hh_virt_wdt.ko makes
+// (fast SMC32, vendor-hypervisor owner): 0x86000005 control (3 enable, 2 disable), 0x86000006 status (control, ms since the
+// last pet, expired), 0x86000007 pet, 0x86000008 bark/bite time (0xffff keeps one). Every SMP boot reset about 320 s after the
+// kernel started with no panic; the APSS watchdog's registers (0x17c10000) fault from this kernel and from UEFI, and TZ refuses
+// the secure watchdog's deactivation (-2). The watchdog is disabled; if the hypervisor keeps it enabled, a thread pets it every 5 s.
+struct HypRes {uint64_t a0, a1, a2, a3;};
+HypRes hypCall(uint32_t fn, uint64_t p1, uint64_t p2) {
+    register uint64_t x0 asm("x0") = fn, x1 asm("x1") = p1, x2 asm("x2") = p2, x3 asm("x3") = 0;
+    asm volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
+                 :: "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
+    return HypRes{x0, x1, x2, x3};
+}
+constexpr uint32_t kVwdtControl = 0x86000005, kVwdtStatus = 0x86000006, kVwdtPet = 0x86000007;
+void vwdtStatus(const char *what) {
+    const HypRes r = hypCall(kVwdtStatus, 0, 0);
+    IOLog("zeta-vwdt: %s %llu s status %lld ctl %llu since-pet %llu ms expired %llu\n", what, mach_absolute_time() / 19200000ULL,
+          static_cast<long long>(r.a0), static_cast<unsigned long long>(r.a1), static_cast<unsigned long long>(r.a2),
+          static_cast<unsigned long long>(r.a3));
+}
+void vwdtPetThread(void *, wait_result_t) {
+    for (unsigned n = 0;; ++n) {
+        const HypRes r = hypCall(kVwdtPet, 0, 0);
+        if (n % 60 == 0) {
+            IOLog("zeta-vwdt: pet %u -> %lld\n", n, static_cast<long long>(r.a0));
+            vwdtStatus("pet");
+        }
+        IOSleep(5000);
+    }
+}
+void hypervisorWatchdog() {
     unsigned on = 0;
-    PE_parse_boot_argn("zeta-secwdog", &on, sizeof on);
+    PE_parse_boot_argn("zeta-vwdt", &on, sizeof on);
     if (on != 1) return;
-    constexpr uint64_t kAvail = 0x42000000u | (0x06u << 8) | 0x01u, kSecWdogDis = 0x42000000u | (0x01u << 8) | 0x07u;
-    const ScmRes avail = scmCall(kAvail, 1, 0x02000000u | (0x01u << 8) | 0x07u, 0, 0);
-    const ScmRes dis = scmCall(kSecWdogDis, 1, 1, 0, 0);
-    IOLog("zeta-secwdog: %llu s available %lld/%llu deactivate %lld/%llu\n", mach_absolute_time() / 19200000ULL,
-          static_cast<long long>(avail.a0), static_cast<unsigned long long>(avail.a1), static_cast<long long>(dis.a0),
-          static_cast<unsigned long long>(dis.a1));
+    vwdtStatus("before");
+    const HypRes off = hypCall(kVwdtControl, 2, 0);
+    IOLog("zeta-vwdt: disable -> %lld\n", static_cast<long long>(off.a0));
+    vwdtStatus("after");
+    const HypRes r = hypCall(kVwdtStatus, 0, 0);
+    if (static_cast<int64_t>(r.a0) == 0 && !(r.a1 & 1)) return;
+    thread_t thread = nullptr;
+    if (kernel_thread_start(vwdtPetThread, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);
 }
 
 void publishGpu() {
-    secureWatchdog();
+    hypervisorWatchdog();
     if (!native_adreno_publish || !native_adreno_published_service || !native_adreno_publish_stats) {
         IOLog("zeta-gpu: publish not linked\n");
         return;

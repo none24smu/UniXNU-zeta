@@ -34,6 +34,7 @@
 #include <libkern/OSKextLib.h>
 #include <pexpert/pexpert.h>
 #include <string.h>
+#include "ZetaPowerKey.h"
 
 extern "C" uintptr_t native_kext_symbol(const char *bundleID, const char *symbol);
 extern "C" void zeta_hid_input_probe(void);
@@ -41,7 +42,8 @@ extern "C" void zeta_hid_input_probe(void);
 extern "C" volatile uint32_t unixnu_dwc3_home_requests;
 // [0] stage (1 loaded, 2 bound, 3 started, negative: the step that failed), [1] presses, [2] last down result, [3] last up result,
 // [4] event driver attached
-extern "C" {volatile int32_t zeta_hid_stats[5];}
+extern "C" {volatile int32_t zeta_hid_stats[5];
+volatile uint32_t zeta_hid_power_stats[4];} // queued, down reports, last down result, last up result
 // The finger set TouchProbe.cpp publishes: coordinates 0..32767 across the whole spanned screen.
 extern "C" {
 extern volatile uint32_t native_touch_seq, native_touch_count, native_touch_hid_reports;
@@ -73,6 +75,10 @@ const uint8_t kDescriptor[] = {
     0x19,0x00,0x29,0x65,0x15,0x00,0x25,0x65,
     0x75,0x08,0x95,0x06,0x81,0x00,
     0x85,0x02,0x05,0x0c,0x09,0x40,0x15,0x00,0x25,0x01,
+    0x75,0x01,0x95,0x01,0x81,0x02,
+    0x75,0x07,0x95,0x01,0x81,0x03,
+    // Consumer Power, report 4: the existing event driver delivers a short power-key press to backboardd.
+    0x85,0x04,0x05,0x0c,0x09,0x30,0x15,0x00,0x25,0x01,
     0x75,0x01,0x95,0x01,0x81,0x02,
     0x75,0x07,0x95,0x01,0x81,0x03,0xc0
 };
@@ -199,6 +205,7 @@ IOWorkLoop *gLoop;
 IOTimerEventSource *gTimer;
 IOService *gDevice, *gTouchDevice;
 bool gDown, gTouch, gSplit, gTouchDriver;
+ZetaPowerKey gPower;
 uint32_t gTouchSeq;
 IOReturn gTouchResult;
 uint32_t gTouchLogged;
@@ -253,6 +260,10 @@ IOReturn sendReport(IOService *device, const uint8_t *report, size_t length) {
 }
 IOReturn sendMenu(bool down) {
     const uint8_t report[] = {2, static_cast<uint8_t>(down ? 1 : 0)};
+    return sendReport(gDevice, report, sizeof(report));
+}
+IOReturn sendPower(bool down) {
+    const uint8_t report[] = {4, static_cast<uint8_t>(down ? 1 : 0)};
     return sendReport(gDevice, report, sizeof(report));
 }
 
@@ -374,6 +385,12 @@ bool homeRequested() {
 
 // Always release after a press, even when the press returned an error: input is never left down.
 void tick(OSObject *, IOTimerEventSource *source) {
+    if(gPower.down()) {
+        (void)gPower.next(false);
+        zeta_hid_power_stats[3]=(uint32_t)sendPower(false);
+        IOLog("zeta-hid: Power up: %#x\n",zeta_hid_power_stats[3]);
+        source->setTimeoutMS(250);return;
+    }
     if (gDown) {
         zeta_hid_stats[3] = sendMenu(false);
         gDown = false;
@@ -406,6 +423,12 @@ void tick(OSObject *, IOTimerEventSource *source) {
                   native_touch_edge_stats[1], native_touch_edge_stats[2], native_touch_edge_stats[3], native_touch_edge_stats[5],
                   native_touch_edge_stats[6]);
         }
+    }
+    if(gPower.next(driver)==ZetaPowerKey::Press) {
+        zeta_hid_power_stats[2]=(uint32_t)sendPower(true);
+        zeta_hid_power_stats[1]=zeta_hid_power_stats[1]+1;
+        IOLog("zeta-hid: Power down: %#x\n",zeta_hid_power_stats[2]);
+        source->setTimeoutMS(100);return;
     }
     if (driver && homeRequested()) {
         zeta_hid_stats[2] = sendMenu(true);
@@ -567,4 +590,12 @@ void zeta_hid_input_probe(void) {
     if (touchTarget()) native_touch_set_sink(&touchNotify, nullptr);
     IOLog("zeta-hid: Home input started (auto %u s, %u presses every %u s)\n", first, gAutoCount, gAutoInterval);
     gTimer->setTimeoutMS(1000);
+}
+
+// Queue only. The HID timer owns the press/release pair, including a failed down report.
+extern "C" int zeta_hid_power_key(void) {
+    if(zeta_hid_stats[0]!=3 || !zeta_hid_stats[4])return -1;
+    if(!gPower.request())return -2;
+    __atomic_fetch_add(&zeta_hid_power_stats[0],1,__ATOMIC_RELAXED);
+    return 0;
 }

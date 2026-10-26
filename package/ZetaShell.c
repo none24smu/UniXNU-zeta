@@ -69,6 +69,7 @@ extern unsigned int unixnu_dwc3_read(uint8_t *, unsigned int) __attribute__((wea
 extern unsigned int unixnu_dwc3_backlog(void) __attribute__((weak_import));
 extern volatile uint64_t unixnu_dwc3_received_dropped __attribute__((weak_import));
 // ZetaShellIo.cpp.
+extern int zeta_hid_power_key(void) __attribute__((weak_import));
 extern int zeta_shell_ioreg(const char *root, unsigned depth) __attribute__((weak_import));
 extern int zeta_shell_props(const char *name, unsigned index) __attribute__((weak_import));
 // UniXNU ArmCpu (patches/drivers/ArmCpu-12377-smp-start.patch).
@@ -593,6 +594,7 @@ static void help(void) {
         "cpu off|on <1..7>          power a core down or back up",
         "smp [1..7]                 start one queued core | counts",
         "on <n> <command>           run a command on core n | regs: this core's timer registers",
+        "power                     queue a short virtual power-key press (lock/wake)",
         "uptime | echo <text> | reboot (to the bootloader)",
     };
     for (unsigned i = 0; i < sizeof lines / sizeof lines[0]; ++i) zeta_shell_line("%s", lines[i]);
@@ -615,6 +617,11 @@ static int run(char *text) {
     if (!strcmp(c, "uptime")) {
         zeta_shell_line("%llu s, received bytes dropped %llu", mach_absolute_time() / 19200000ULL, &unixnu_dwc3_received_dropped ? unixnu_dwc3_received_dropped : 0ULL);
         return 0;
+    }
+    if (!strcmp(c,"power")) {
+        const int status=zeta_hid_power_key?zeta_hid_power_key():-1;
+        if(status){zeta_shell_line(status==-2?"power key already queued":"power-key HID service unavailable");return status==-2?EBUSY:ENODEV;}
+        zeta_shell_line("short power-key press queued; release follows after 100 ms");return 0;
     }
     if (!strcmp(c, "ps")) return ps();
     if (!strcmp(c, "kill") && argc >= 2) {

@@ -44,6 +44,7 @@ jobs:
         with:
           path: |
             unixnu/.cache/mesa-work
+            unixnu/.cache/gpu-reference/metal2vulkan
             unixnu/build/mesa-tu
             unixnu/build/mesa-tu-ios
             unixnu/build/m2v-target
@@ -58,6 +59,7 @@ jobs:
         with:
           path: |
             unixnu/.cache/mesa-work
+            unixnu/.cache/gpu-reference/metal2vulkan
             unixnu/build/mesa-tu
             unixnu/build/mesa-tu-ios
             unixnu/build/m2v-target

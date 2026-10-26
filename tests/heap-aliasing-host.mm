@@ -17,17 +17,22 @@ int main(int argc,char **argv) {
   // A full automatic heap must reuse a still-retained buffer after makeAliasable.
   MTLHeapDescriptor *hd=[MTLHeapDescriptor new];hd.size=16384;hd.storageMode=MTLStorageModeShared;
   id<MTLHeap> heap=[device newHeapWithDescriptor:hd];CHECK(heap);
-  id<MTLBuffer> first=[heap newBufferWithLength:8192 options:MTLResourceStorageModeShared];
-  id<MTLBuffer> second=[heap newBufferWithLength:8192 options:MTLResourceStorageModeShared];
+  id<MTLBuffer> first,second,replacement;
+  __weak id<MTLBuffer> releasedFirst;
+  @autoreleasepool {
+  first=[heap newBufferWithLength:8192 options:MTLResourceStorageModeShared];
+  second=[heap newBufferWithLength:8192 options:MTLResourceStorageModeShared];
   CHECK(first && second && heap.usedSize==16384 && !first.isAliasable);
   CHECK(![heap newBufferWithLength:8192 options:MTLResourceStorageModeShared]);
   void *address=first.contents;std::memset(address,0x3a,8192);
   [first makeAliasable];[first makeAliasable];
   CHECK(first.isAliasable && heap.usedSize==8192);
-  id<MTLBuffer> replacement=[heap newBufferWithLength:8192 options:MTLResourceStorageModeShared];
+  replacement=[heap newBufferWithLength:8192 options:MTLResourceStorageModeShared];
   CHECK(replacement && replacement.contents==address && replacement.heap==heap && !replacement.isAliasable);
   CHECK(((unsigned char *)replacement.contents)[0]==0x3a && heap.usedSize==16384);
-  first=nil;CHECK(heap.usedSize==16384); // destruction must not release the replacement's range
+  releasedFirst=first;first=nil;
+  } // Drain helper-factory autoreleases before asserting actual destruction.
+  CHECK(!releasedFirst && heap.usedSize==16384); // old owner cannot free the replacement
   second=nil;replacement=nil;CHECK(heap.usedSize==0);
   id<MTLBuffer> outside=[device newBufferWithLength:4096 options:MTLResourceStorageModeShared];
   CHECK(outside && !outside.isAliasable);[outside makeAliasable];CHECK(!outside.isAliasable);
@@ -46,24 +51,33 @@ int main(int argc,char **argv) {
   hd.type=MTLHeapTypeAutomatic;hd.storageMode=MTLStorageModePrivate;hd.size=2*((need.size+need.align-1)/need.align*need.align);
   heap=[device newHeapWithDescriptor:hd];CHECK(heap);
   NSMutableArray<id<MTLTexture>> *held=[NSMutableArray array];
+  id<MTLTexture> original,view,reused;
+  __weak id<MTLTexture> releasedOriginal,releasedView;
+  NSUInteger before=0;
+  @autoreleasepool {
   bool full=false;
   for(unsigned i=0;i<64;++i) {
    id<MTLTexture> t=[heap newTextureWithDescriptor:td];
    if(!t){full=true;break;}[held addObject:t];
   }
   CHECK(full && held.count>=2);
-  id<MTLTexture> original=held[0];
-  id<MTLTexture> view=[original newTextureViewWithPixelFormat:td.pixelFormat];
+  original=held[0];
+  view=[original newTextureViewWithPixelFormat:td.pixelFormat];
   CHECK(view && view.heap==heap && !view.isAliasable);
-  const NSUInteger before=heap.usedSize;
+  before=heap.usedSize;
   [view makeAliasable];[view makeAliasable];
   CHECK(view.isAliasable && original.isAliasable && heap.usedSize<before);
-  id<MTLTexture> reused=[heap newTextureWithDescriptor:td];CHECK(reused && !reused.isAliasable && heap.usedSize==before);
-  [held removeObjectAtIndex:0];original=nil;view=nil;CHECK(heap.usedSize==before);
+  reused=[heap newTextureWithDescriptor:td];CHECK(reused && !reused.isAliasable && heap.usedSize==before);
+  releasedOriginal=original;releasedView=view;
+  [held removeObjectAtIndex:0];original=nil;view=nil;
+  }
+  CHECK(!releasedOriginal && !releasedView && heap.usedSize==before);
   for(unsigned i=0;i<32;++i) {
    [reused makeAliasable];
-   id<MTLTexture> next=[heap newTextureWithDescriptor:td];CHECK(next && heap.usedSize==before);
-   reused=nil;CHECK(heap.usedSize==before);reused=next;
+   @autoreleasepool {
+    id<MTLTexture> next=[heap newTextureWithDescriptor:td];CHECK(next && heap.usedSize==before);
+    reused=nil;CHECK(heap.usedSize==before);reused=next;
+   }
   }
   reused=nil;[held removeAllObjects];CHECK(heap.usedSize==0);
   std::puts("PASS: frontend heap buffer/texture/view aliasing, retained-owner reuse, repeated release, placement offsets and non-heap controls; no pixel proof");

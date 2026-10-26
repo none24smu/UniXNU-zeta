@@ -56,7 +56,13 @@ pin "$MESA_PINS" patches | while read -r patch; do
   git -C "$U/.cache/mesa-work" apply "$U/$patch"
 done
 M2V_PINS=$U/scripts/data/gpu-metal-vulkan-inputs.json
-fetch "$U/.cache/gpu-reference/metal2vulkan" "$(pin "$M2V_PINS" translator.repository)" "$(pin "$M2V_PINS" translator.commit)"
+M2V_DIR=$U/.cache/gpu-reference/metal2vulkan
+M2V_COMMIT=$(pin "$M2V_PINS" translator.commit)
+# Preserve cached source mtimes only at the exact pin. The bridge build below
+# independently verifies the entire diff against its recorded patch series.
+if [ "$(git -C "$M2V_DIR" rev-parse HEAD 2>/dev/null || true)" != "$M2V_COMMIT" ]; then
+  fetch "$M2V_DIR" "$(pin "$M2V_PINS" translator.repository)" "$M2V_COMMIT"
+fi
 
 HOST_RUST_TARGET=$(python3 -c 'import platform; print({"arm64":"aarch64-apple-darwin","x86_64":"x86_64-apple-darwin"}[platform.machine()])')
 rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --target "$HOST_RUST_TARGET"
@@ -64,17 +70,13 @@ rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --t
 cd "$U"
 python3 scripts/build-turnip-darwin.py --target host
 python3 scripts/build-turnip-darwin.py --target ios
-# The host simulation (gen-turnip-replay.py records Turnip's first submission there). Its last step runs
-# check-quartzcore-turnip-cache-host.py, which only sheng's device repository has (it needs the original QuartzCore inputs);
-# every check before it must pass, and the smoke client it builds must exist.
-if ! python3 scripts/check-turnip-darwin-host.py; then
-  test -x build/turnip-darwin-host/plugin_smoke
-  test -f build/turnip-darwin-host/libhostiokit.dylib
-  test ! -f scripts/check-quartzcore-turnip-cache-host.py
-fi
+# Every available host check must pass. The missing device-specific Apple UI
+# recipes are the only explicit skips; a cache or transport failure is fatal.
+python3 scripts/check-turnip-darwin-host.py --skip-unavailable-ui-recipes
 python3 scripts/build-adreno-metal-plugin.py
 python3 "$Z/scripts/check-zeta-heap-aliasing.py" "$U"
 
 cp -R build/adreno-metal-plugin/. "$OUT/"
 cp build/zeta-heap-aliasing/host.log "$OUT/heap-aliasing-host.log"
+cp build/zeta-heap-aliasing/negative-control.log "$OUT/heap-aliasing-negative-control.log"
 (cd "$OUT" && find . -type f | sort > files.txt)

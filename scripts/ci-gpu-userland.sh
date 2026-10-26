@@ -70,6 +70,9 @@ rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --t
 cd "$U"
 python3 scripts/build-turnip-darwin.py --target host
 python3 scripts/build-turnip-darwin.py --target ios
+# The priming-cache control links this library, so build it before running the
+# complete peer suite rather than relying on a previous local invocation.
+python3 scripts/build-native-metal-bridge.py --target host
 # Every available host check must pass. The missing device-specific Apple UI
 # recipes are the only explicit skips; a cache or transport failure is fatal.
 python3 scripts/check-turnip-darwin-host.py --skip-unavailable-ui-recipes

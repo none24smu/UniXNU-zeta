@@ -39,6 +39,20 @@ extern unsigned long long ml_phys_read_double_64(unsigned long long paddr);
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 #define SHELL_VM_WIMG_IO 0x7 // osfmk/arm/memory_types.h VM_WIMG_IO
 extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
+// xnu-12377 vm_resident.c: the kernel's page mask (16 KiB pages here; a 4 KiB unmap panicked in write_pte_fast, bis3).
+extern vm_size_t page_mask;
+
+// A device range mapped whole pages at a time, for one command.
+struct io_window {vm_offset_t base; vm_size_t size;};
+static volatile uint32_t *io_open(struct io_window *window, uint64_t phys, uint64_t length) {
+    const uint64_t first = phys & ~(uint64_t)page_mask;
+    window->size = (vm_size_t)(((phys + length + page_mask) & ~(uint64_t)page_mask) - first);
+    window->base = ml_io_map_unmappable((vm_offset_t)first, window->size, SHELL_VM_WIMG_IO);
+    return window->base ? (volatile uint32_t *)(window->base + (phys - first)) : NULL;
+}
+static void io_close(struct io_window *window) {
+    if (window->base) ml_io_unmap(window->base, window->size);
+}
 extern processor_t cpu_to_processor(int cpu);
 extern kern_return_t processor_exit_from_user(processor_t);
 extern kern_return_t processor_start_from_user(processor_t);
@@ -373,17 +387,17 @@ static int memory(const char *address_text, const char *count_text, int device) 
             zeta_shell_line("%010llx %016llx", address + i * 4, ml_phys_read_double_64((address + i * 4) & ~7ULL));
         return 0;
     }
-    const unsigned long long page = address & ~0xfffULL, end = (address + count * 4 + 0xfff) & ~0xfffULL;
-    const vm_offset_t mapped = ml_io_map_unmappable((vm_offset_t)page, (vm_size_t)(end - page), SHELL_VM_WIMG_IO);
-    if (!mapped) {zeta_shell_line("map failed"); return ENOMEM;}
+    struct io_window window;
+    volatile uint32_t *const words = io_open(&window, address, count * 4);
+    if (!words) {zeta_shell_line("map failed"); return ENOMEM;}
     for (unsigned long long i = 0; i < count; i += 4) {
         char line[100];
         int n = snprintf(line, sizeof line, "%010llx", address + i * 4);
         for (unsigned long long j = i; j < count && j < i + 4; ++j)
-            n += snprintf(line + n, sizeof line - (size_t)n, " %08x", *(volatile uint32_t *)(mapped + (address - page) + j * 4));
+            n += snprintf(line + n, sizeof line - (size_t)n, " %08x", words[j]);
         zeta_shell_line("%s", line);
     }
-    ml_io_unmap(mapped, (vm_size_t)(end - page));
+    io_close(&window);
     return 0;
 }
 
@@ -391,13 +405,13 @@ static int mmio_write(const char *address_text, const char *value_text) {
     int ok, ok2;
     const unsigned long long address = number(address_text, &ok), value = number(value_text, &ok2);
     if (!ok || !ok2 || (address & 3)) {zeta_shell_line("usage: mmiow <address, 4-byte aligned> <value>"); return EINVAL;}
-    const vm_offset_t mapped = ml_io_map_unmappable((vm_offset_t)(address & ~0xfffULL), 0x1000, SHELL_VM_WIMG_IO);
-    if (!mapped) {zeta_shell_line("map failed"); return ENOMEM;}
-    volatile uint32_t *word = (volatile uint32_t *)(mapped + (address & 0xfff));
+    struct io_window window;
+    volatile uint32_t *const word = io_open(&window, address, 4);
+    if (!word) {zeta_shell_line("map failed"); return ENOMEM;}
     *word = (uint32_t)value;
     __asm__ volatile("dsb sy" ::: "memory");
     zeta_shell_line("%010llx <- %08x, reads %08x", address, (uint32_t)value, *word);
-    ml_io_unmap(mapped, 0x1000);
+    io_close(&window);
     return 0;
 }
 
@@ -414,25 +428,25 @@ static int spmi_read(const char *sid_text, const char *address_text, const char 
         return EINVAL;
     }
     const unsigned ppid = sid << 8 | address >> 8;
-    const vm_offset_t core = ml_io_map_unmappable(0xc440000, 0x2000, SHELL_VM_WIMG_IO);
-    if (!core) {zeta_shell_line("map failed"); return ENOMEM;}
+    struct io_window window;
+    volatile uint32_t *const map = io_open(&window, 0xc440900, 0x800);
+    if (!map) {zeta_shell_line("map failed"); return ENOMEM;}
     int apid = -1;
-    for (unsigned n = 0; 0x900 + 4 * n < 0x1100 && apid < 0; ++n) {
-        const uint32_t entry = *(volatile uint32_t *)(core + 0x900 + 4 * n);
+    for (unsigned n = 0; n < 0x200 && apid < 0; ++n) {
+        const uint32_t entry = map[n];
         if (entry && ((entry >> 8) & 0xfff) == ppid) apid = (int)n;
     }
-    ml_io_unmap(core, 0x2000);
+    io_close(&window);
     if (apid < 0) {zeta_shell_line("no APID for sid %u peripheral %#x", sid, address >> 8); return ENODEV;}
-    const vm_offset_t page = ml_io_map_unmappable((0xe600000 + 0x80 * (unsigned)apid) & ~0xfffU, 0x1000, SHELL_VM_WIMG_IO);
-    if (!page) {zeta_shell_line("map failed"); return ENOMEM;}
-    volatile uint32_t *channel = (volatile uint32_t *)(page + ((0x80 * (unsigned)apid) & 0xfff));
+    volatile uint32_t *const channel = io_open(&window, 0xe600000 + 0x80 * (unsigned)apid, 0x20);
+    if (!channel) {zeta_shell_line("map failed"); return ENOMEM;}
     channel[0] = 1U << 27 | (address & 0xff) << 4 | (count - 1);
     __asm__ volatile("dsb sy" ::: "memory");
     uint32_t status = 0;
     const uint64_t deadline = mach_absolute_time() + 19200 * 10; // 10 ms
     while (!((status = channel[2]) & 1) && mach_absolute_time() < deadline) {}
     const uint32_t data0 = channel[6], data1 = channel[7];
-    ml_io_unmap(page, 0x1000);
+    io_close(&window);
     if ((status & 0xf) != 1) {zeta_shell_line("sid %u %#x: apid %d status %#x", sid, address, apid, status); return EIO;}
     char text[40];
     int used = 0;

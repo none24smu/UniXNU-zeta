@@ -34,7 +34,10 @@ extern int kernel_sysctlbyname(const char *, void *, size_t *, void *, size_t);
 extern uint64_t get_task_phys_footprint(task_t);
 extern int unlink1(vfs_context_t, vnode_t, user_addr_t, enum uio_seg, int);
 extern unsigned long long ml_phys_read_double_64(unsigned long long paddr);
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+// xnu-12377 machine_routines.c: ml_io_map allocates KMA_PERMANENT, so ml_io_unmap of it panics ("Attempting to remove permanent
+// VM map entry", bis2); a mapping the shell drops again comes from ml_io_map_unmappable.
+extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+#define SHELL_VM_WIMG_IO 0x7 // osfmk/arm/memory_types.h VM_WIMG_IO
 extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
 extern processor_t cpu_to_processor(int cpu);
 extern kern_return_t processor_exit_from_user(processor_t);
@@ -371,7 +374,7 @@ static int memory(const char *address_text, const char *count_text, int device) 
         return 0;
     }
     const unsigned long long page = address & ~0xfffULL, end = (address + count * 4 + 0xfff) & ~0xfffULL;
-    const vm_offset_t mapped = ml_io_map((vm_offset_t)page, (vm_size_t)(end - page));
+    const vm_offset_t mapped = ml_io_map_unmappable((vm_offset_t)page, (vm_size_t)(end - page), SHELL_VM_WIMG_IO);
     if (!mapped) {zeta_shell_line("map failed"); return ENOMEM;}
     for (unsigned long long i = 0; i < count; i += 4) {
         char line[100];
@@ -388,13 +391,54 @@ static int mmio_write(const char *address_text, const char *value_text) {
     int ok, ok2;
     const unsigned long long address = number(address_text, &ok), value = number(value_text, &ok2);
     if (!ok || !ok2 || (address & 3)) {zeta_shell_line("usage: mmiow <address, 4-byte aligned> <value>"); return EINVAL;}
-    const vm_offset_t mapped = ml_io_map((vm_offset_t)(address & ~0xfffULL), 0x1000);
+    const vm_offset_t mapped = ml_io_map_unmappable((vm_offset_t)(address & ~0xfffULL), 0x1000, SHELL_VM_WIMG_IO);
     if (!mapped) {zeta_shell_line("map failed"); return ENOMEM;}
     volatile uint32_t *word = (volatile uint32_t *)(mapped + (address & 0xfff));
     *word = (uint32_t)value;
     __asm__ volatile("dsb sy" ::: "memory");
     zeta_shell_line("%010llx <- %08x, reads %08x", address, (uint32_t)value, *word);
     ml_io_unmap(mapped, 0x1000);
+    return 0;
+}
+
+// spmi <sid> <address> [bytes]: PMIC registers through the SPMI arbiter v5 observer channel of EE 0, as the stock HLOS reads them
+// (msm-5.4 spmi-pmic-arb.c): the APID map at core 0xc440000+0x900+4n holds each PPID in bits 8..19; the channel at observer
+// 0xe600000+0x80*apid takes CMD (EXT_READL 1 <<27 | address low byte <<4 | bytes-1), sets STATUS bit 0 when done (1 fail,
+// 2 denied, 3 dropped) and returns RDATA0/1 at 0x18/0x1c.
+static int spmi_read(const char *sid_text, const char *address_text, const char *count_text) {
+    int ok1, ok2, ok3 = 1;
+    const unsigned sid = (unsigned)number(sid_text, &ok1), address = (unsigned)number(address_text, &ok2);
+    const unsigned count = count_text ? (unsigned)number(count_text, &ok3) : 1;
+    if (!ok1 || !ok2 || !ok3 || sid > 15 || address > 0xffff || count < 1 || count > 8) {
+        zeta_shell_line("usage: spmi <sid 0..15> <address> [bytes 1..8]");
+        return EINVAL;
+    }
+    const unsigned ppid = sid << 8 | address >> 8;
+    const vm_offset_t core = ml_io_map_unmappable(0xc440000, 0x2000, SHELL_VM_WIMG_IO);
+    if (!core) {zeta_shell_line("map failed"); return ENOMEM;}
+    int apid = -1;
+    for (unsigned n = 0; 0x900 + 4 * n < 0x1100 && apid < 0; ++n) {
+        const uint32_t entry = *(volatile uint32_t *)(core + 0x900 + 4 * n);
+        if (entry && ((entry >> 8) & 0xfff) == ppid) apid = (int)n;
+    }
+    ml_io_unmap(core, 0x2000);
+    if (apid < 0) {zeta_shell_line("no APID for sid %u peripheral %#x", sid, address >> 8); return ENODEV;}
+    const vm_offset_t page = ml_io_map_unmappable((0xe600000 + 0x80 * (unsigned)apid) & ~0xfffU, 0x1000, SHELL_VM_WIMG_IO);
+    if (!page) {zeta_shell_line("map failed"); return ENOMEM;}
+    volatile uint32_t *channel = (volatile uint32_t *)(page + ((0x80 * (unsigned)apid) & 0xfff));
+    channel[0] = 1U << 27 | (address & 0xff) << 4 | (count - 1);
+    __asm__ volatile("dsb sy" ::: "memory");
+    uint32_t status = 0;
+    const uint64_t deadline = mach_absolute_time() + 19200 * 10; // 10 ms
+    while (!((status = channel[2]) & 1) && mach_absolute_time() < deadline) {}
+    const uint32_t data0 = channel[6], data1 = channel[7];
+    ml_io_unmap(page, 0x1000);
+    if ((status & 0xf) != 1) {zeta_shell_line("sid %u %#x: apid %d status %#x", sid, address, apid, status); return EIO;}
+    char text[40];
+    int used = 0;
+    for (unsigned i = 0; i < count; ++i)
+        used += snprintf(text + used, sizeof text - (size_t)used, " %02x", (i < 4 ? data0 >> (8 * i) : data1 >> (8 * (i - 4))) & 0xff);
+    zeta_shell_line("sid %u %#06x apid %d:%s", sid, address, apid, text);
     return 0;
 }
 
@@ -511,6 +555,7 @@ static void help(void) {
         "chown <path> <uid> <gid> | chmod <path> <mode>",
         "sysctl <name> [int]        read, or set an integer",
         "phys <pa> [words] | mmio <pa> [words] | mmiow <pa> <value>",
+        "spmi <sid> <addr> [n]      PMIC registers (SPMI observer channel)",
         "ioreg [name|class] [depth] I/O Registry service plane",
         "props <name|class> [index] properties of a registry entry",
         "smc <fid> [x1 x2 x3]       one firmware/hypervisor call (hvc! exists but resets the Duo 2)",
@@ -572,6 +617,7 @@ static int run(char *text) {
     if (!strcmp(c, "sysctl") && argc >= 2) return sysctl_command(argv[1], argc > 2 ? argv[2] : NULL);
     if ((!strcmp(c, "phys") || !strcmp(c, "mmio")) && argc >= 2) return memory(argv[1], argc > 2 ? argv[2] : NULL, c[0] == 'm');
     if (!strcmp(c, "mmiow") && argc >= 3) return mmio_write(argv[1], argv[2]);
+    if (!strcmp(c, "spmi") && argc >= 3) return spmi_read(argv[1], argv[2], argc > 3 ? argv[3] : NULL);
     if ((!strcmp(c, "ioreg") || !strcmp(c, "props")) && !zeta_shell_ioreg) {zeta_shell_line("ZetaShellIo.cpp was not built"); return ENOTSUP;}
     if (!strcmp(c, "ioreg")) {
         int ok2 = 1;

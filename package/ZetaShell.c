@@ -446,7 +446,7 @@ static void help(void) {
         "phys <pa> [words] | mmio <pa> [words] | mmiow <pa> <value>",
         "ioreg [name|class] [depth] I/O Registry service plane",
         "props <name|class> [index] properties of a registry entry",
-        "smc|hvc <fid> [x1 x2 x3]   one firmware/hypervisor call",
+        "smc <fid> [x1 x2 x3]       one firmware/hypervisor call (hvc! exists but resets the Duo 2)",
         "cpu off|on <1..7>          power a core down or back up",
         "uptime | echo <text> | reboot (to the bootloader)",
     };
@@ -514,7 +514,10 @@ static int run(char *text) {
         const unsigned index = argc > 2 ? (unsigned)number(argv[2], &ok2) : 0;
         return zeta_shell_props(argv[1], ok2 ? index : 0);
     }
-    if ((!strcmp(c, "smc") || !strcmp(c, "hvc")) && argc >= 2) return firmware_call(c[0] == 'h', argc, argv);
+    // An hvc from this kernel reset the phone at once (sh3-v1: hvc 0xc6006000, Gunyah hyp_identify); this OS reaches Gunyah through
+    // smc vendor calls. "hvc!" still makes the call.
+    if (!strcmp(c, "hvc")) {zeta_shell_line("hvc resets the Duo 2 (sh3-v1); use smc, or hvc! to call anyway"); return EPERM;}
+    if ((!strcmp(c, "smc") || !strcmp(c, "hvc!")) && argc >= 2) return firmware_call(c[0] == 'h', argc, argv);
     if (!strcmp(c, "cpu") && argc >= 3) return cpu_command(argv[1], argv[2]);
     if (!strcmp(c, "reboot")) {zeta_shell_line("returning to the bootloader"); IOSleep(200); reboot_to_bootloader(); return EIO;}
     zeta_shell_line("unknown command or missing arguments: %s (try help)", c);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // sheng package/CpuFreqProbe.cpp on the SM8350 (lahaina) EPSS frequency domains and EPSS L3. Default off. `sheng-cpufreq=<n>`:
-//   1  read-only: report each domain's enable bit, current/requested level and its highest LUT entry
+//   1  read-only: report each domain's enable bit, hardware limit and requested LUT level
 //   2  additionally request that highest non-turbo level in domain 0 (the boot CPU's cluster)
 //   3  the same in every domain once it reads enabled, and the highest L3 level
 // Optional `sheng-cpufreq-cap=<MHz>`: mode 3 requests the highest non-turbo level at or below it (domains and L3).
@@ -39,7 +39,7 @@ struct Window {
     uintptr_t va;
     int voted;          // level written, -1 none
     uint32_t votedKHz;
-    uint32_t preKHz;    // domain state the first time it read enabled, before the vote
+    uint32_t preLimitKHz; // DOMAIN_STATE limit indication before the vote, not measured CPU frequency
 };
 Window gDomain[3], gL3;
 unsigned gMode;
@@ -85,14 +85,14 @@ void voteDomain(unsigned d) {
     uint32_t khz = 0;
     int level = pickLevel(w.va, true, &khz, nullptr);
     if (level < 0) return;
-    w.preKHz = (rd32(w.va, kRegDomainState) & 0xff) * kXoKHz;
+    w.preLimitKHz = (rd32(w.va, kRegDomainState) & 0xff) * kXoKHz;
     wr32(w.va, kRegPerfState, (uint32_t)level);
     if (rd32(w.va, kRegDcvsCtrl) & 1)
         for (unsigned c = 1; c < kDomainCpus[d]; ++c) wr32(w.va, kRegPerfState + c * 4, (uint32_t)level);
     w.voted = level;
     w.votedKHz = khz;
-    IOLog("zeta-cpufreq: domain %u requested level %d %u MHz (before %u MHz, cap %u MHz)\n",
-          d, level, khz / 1000, w.preKHz / 1000, gCapKHz / 1000);
+    IOLog("zeta-cpufreq: domain %u requested level %d %u MHz (prior limit %u MHz, request cap %u MHz)\n",
+          d, level, khz / 1000, w.preLimitKHz / 1000, gCapKHz / 1000);
 }
 
 void voteL3() {
@@ -112,12 +112,11 @@ void refreshRow() {
     for (unsigned d = 0; d < 3 && n < cap; ++d) {
         Window &w = gDomain[d];
         if (!w.va) {n += (unsigned)snprintf(out + n, cap - n, " d%u:nomap", d); continue;}
-        uint32_t enable = rd32(w.va, kRegEnable) & 1, state = (rd32(w.va, kRegDomainState) & 0xff) * kXoKHz / 1000;
+        uint32_t enable = rd32(w.va, kRegEnable) & 1, limit = (rd32(w.va, kRegDomainState) & 0xff) * kXoKHz / 1000;
         if (w.voted >= 0)
-            n += (unsigned)snprintf(out + n, cap - n, " d%u:e%u c%u v%d@%u pre%u", d, enable, state, w.voted, w.votedKHz / 1000,
-                                    w.preKHz / 1000);
+            n += (unsigned)snprintf(out + n, cap - n, " d%u:e%u lim%u v%d@%u", d, enable, limit, w.voted, w.votedKHz / 1000);
         else
-            n += (unsigned)snprintf(out + n, cap - n, " d%u:e%u c%u p%u", d, enable, state, rd32(w.va, kRegPerfState));
+            n += (unsigned)snprintf(out + n, cap - n, " d%u:e%u lim%u p%u", d, enable, limit, rd32(w.va, kRegPerfState));
     }
     if (n < cap) {
         if (!gL3.va) snprintf(out + n, cap - n, " L3:nomap");
@@ -143,7 +142,9 @@ extern "C" void sheng_cpufreq_poll(void) {
 
 // zeta-soc=<mask>: a read-only SoC health line for the USB log (zeta_soc_health, called from the display driver's 15 s watch, which
 // keeps running when the other monitors stall): the hottest TSENS sensor of each controller, the APSS watchdog and each cluster's
-// current frequency. Vendor lahaina.dtsi: tsens0/1 TM windows 0x0c263000 and 0x0c265000 (tsens24xx: sensor status 0xa0 + 4 * n,
+// hardware frequency-limit indication. Stock qcom-cpufreq-hw.c uses DOMAIN_STATE in limits_mitigation_notify; its get-frequency path
+// reads PERF_STATE and resolves the requested LUT entry. Neither is a cycle-counter measurement. Vendor lahaina.dtsi:
+// tsens0/1 TM windows 0x0c263000 and 0x0c265000 (tsens24xx: sensor status 0xa0 + 4 * n,
 // last temperature bits 11:0 signed in 0.1 C, valid bit 21); qcom,msm-watchdog at 0x17c10000 (msm_watchdog_v2.c: STS 0xc, EN 0x8,
 // BARK_TIME 0x10, BITE_TIME 0x14, in 32 kHz sleep clock ticks). Mask bits: 1 tsens0, 2 tsens1, 4 watchdog, 8 cluster frequency;
 // one of them raised an SError at the first read with zeta-soc=1 (all four), so each window is opt-in.
@@ -180,7 +181,7 @@ extern "C" void zeta_soc_health(void) {
                                 rd32(gWdt.va, 0xc), rd32(gWdt.va, 0x10), rd32(gWdt.va, 0x14));
     for (unsigned d = 0; d < 3 && n < sizeof(line); ++d)
         if (gSocDomain[d].va)
-            n += (unsigned)snprintf(line + n, sizeof(line) - n, " d%u %u MHz", d,
+            n += (unsigned)snprintf(line + n, sizeof(line) - n, " d%u limit %u MHz", d,
                                     (rd32(gSocDomain[d].va, kRegDomainState) & 0xff) * kXoKHz / 1000);
     if (gThermalC && n < sizeof(line))
         n += (unsigned)snprintf(line + n, sizeof(line) - n, " thermal %u C levels %d/%d/%d steps %u", gThermalC, gThermalLevel[0],

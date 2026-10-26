@@ -61,11 +61,23 @@ done
 M2V_PINS=$U/scripts/data/gpu-metal-vulkan-inputs.json
 M2V_DIR=$U/.cache/gpu-reference/metal2vulkan
 M2V_COMMIT=$(pin "$M2V_PINS" translator.commit)
-# Preserve cached source mtimes only at the exact pin. The bridge build below
-# independently verifies the entire diff against its recorded patch series.
-if [ "$(git -C "$M2V_DIR" rev-parse HEAD 2>/dev/null || true)" != "$M2V_COMMIT" ]; then
+# Preserve source mtimes only for this exact pin and recorded runtime series.
+# Older cached trees contain the previous series; reset that ephemeral checkout
+# before the bridge verifies the new overlapping patch chain.
+M2V_SERIES=$(python3 - "$U/drivers/NativeMetal/bridge/patches" <<'PYHASH'
+import hashlib,pathlib,sys
+h=hashlib.sha256()
+for p in sorted(pathlib.Path(sys.argv[1]).glob('*.patch')):
+ h.update(p.name.encode()+b'\0'+p.read_bytes())
+print(h.hexdigest())
+PYHASH
+)
+M2V_MARKER=$M2V_DIR/.git/zeta-runtime-series
+if [ "$(git -C "$M2V_DIR" rev-parse HEAD 2>/dev/null || true)" != "$M2V_COMMIT" ] ||
+   [ "$(cat "$M2V_MARKER" 2>/dev/null || true)" != "$M2V_SERIES" ]; then
   fetch "$M2V_DIR" "$(pin "$M2V_PINS" translator.repository)" "$M2V_COMMIT"
 fi
+printf '%s\n' "$M2V_SERIES" > "$M2V_MARKER"
 
 HOST_RUST_TARGET=$(python3 -c 'import platform; print({"arm64":"aarch64-apple-darwin","x86_64":"x86_64-apple-darwin"}[platform.machine()])')
 rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --target "$HOST_RUST_TARGET"

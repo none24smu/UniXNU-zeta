@@ -1,5 +1,5 @@
---- a/bridge/patches/0007-smaller-pool-blocks.patch
-+++ b/bridge/patches/0007-smaller-pool-blocks.patch
+--- a/bridge/patches/0017-smaller-pool-blocks.patch
++++ b/bridge/patches/0017-smaller-pool-blocks.patch
 @@ -0,0 +1,18 @@
 +diff --git a/crates/metal2vulkan-runtime/src/memory.rs b/crates/metal2vulkan-runtime/src/memory.rs
 +index de3df1e..f7b5fa6 100644

@@ -54,6 +54,11 @@ extern volatile uint64_t unixnu_dwc3_received_dropped __attribute__((weak_import
 // ZetaShellIo.cpp.
 extern int zeta_shell_ioreg(const char *root, unsigned depth) __attribute__((weak_import));
 extern int zeta_shell_props(const char *name, unsigned index) __attribute__((weak_import));
+// UniXNU ArmCpu (patches/drivers/ArmCpu-12377-smp-start.patch).
+extern int armcpu_start_pending(unsigned id) __attribute__((weak_import));
+extern volatile uint32_t armcpu_smp_running __attribute__((weak_import));
+extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
+extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
 
 static unsigned reply_id;
 
@@ -427,6 +432,23 @@ static int cpu_command(const char *what, const char *which) {
     return result ? EIO : 0;
 }
 
+// smp [n]: start queued core n alone (sheng-smp-delay holds them), so a fault that follows one core's power-on shows which core
+// and cluster; without n, the started-core count and the CPU driver's quiesce and halt counts (system sleep reaches those).
+static int smp_command(int argc, char **argv) {
+    if (!armcpu_start_pending) {zeta_shell_line("this kernel's ArmCpu cannot start one core"); return ENOTSUP;}
+    if (argc < 2) {
+        zeta_shell_line("running %u secondary, quiesce %u halt %u", armcpu_smp_running, armcpu_quiesce_calls, armcpu_halt_calls);
+        return 0;
+    }
+    int ok;
+    const unsigned cpu = (unsigned)number(argv[1], &ok);
+    if (!ok || cpu < 1 || cpu > 7) {zeta_shell_line("usage: smp [1..7]"); return EINVAL;}
+    const int result = armcpu_start_pending(cpu);
+    static const char *const kResult[] = {"started", "no such slot", "not queued", "registration failed"};
+    zeta_shell_line("smp %u: %s", cpu, result >= 0 && result <= 3 ? kResult[result] : "?");
+    return result ? EIO : 0;
+}
+
 static int run(char *text);
 
 // on <n> <command>: run one command on core n (the shell thread is bound there for it), for per-core firmware state.
@@ -459,7 +481,8 @@ static int regs(void) {
     __asm__ volatile("mrs %0, daif" : "=r"(daif));
     __asm__ volatile("mrs %0, cntv_ctl_el0" : "=r"(cntv_ctl));
     __asm__ volatile("mrs %0, cntv_cval_el0" : "=r"(cntv_cval));
-    __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(cntvct));
+    // Darwin's assembler takes ';' as a comment: the instructions go on separate lines.
+    __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(cntvct));
     __asm__ volatile("mrs %0, cntkctl_el1" : "=r"(cntkctl));
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(cntfrq));
     zeta_shell_line("mpidr %#llx daif %#llx cntv_ctl %#llx cval %#llx vct %#llx kctl %#llx frq %llu", (unsigned long long)mpidr,
@@ -492,6 +515,7 @@ static void help(void) {
         "props <name|class> [index] properties of a registry entry",
         "smc <fid> [x1 x2 x3]       one firmware/hypervisor call (hvc! exists but resets the Duo 2)",
         "cpu off|on <1..7>          power a core down or back up",
+        "smp [1..7]                 start one queued core | counts",
         "on <n> <command>           run a command on core n | regs: this core's timer registers",
         "uptime | echo <text> | reboot (to the bootloader)",
     };
@@ -565,6 +589,7 @@ static int run(char *text) {
     if ((!strcmp(c, "smc") || !strcmp(c, "hvc!")) && argc >= 2) return firmware_call(c[0] == 'h', argc, argv);
     if (!strcmp(c, "cpu") && argc >= 3) return cpu_command(argv[1], argv[2]);
     if (!strcmp(c, "on") && argc >= 3) return on_cpu(argc, argv);
+    if (!strcmp(c, "smp")) return smp_command(argc, argv);
     if (!strcmp(c, "regs")) return regs();
     if (!strcmp(c, "reboot")) {zeta_shell_line("returning to the bootloader"); IOSleep(200); reboot_to_bootloader(); return EIO;}
     zeta_shell_line("unknown command or missing arguments: %s (try help)", c);

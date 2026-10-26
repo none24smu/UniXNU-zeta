@@ -964,3 +964,27 @@ fixes.
 Local reports are in
 `../work/apfs-stage6/`, `../work/amfi-stage6/`, `../work/fscompression-stage6/`,
 `../work/userland-stage6/`, `../work/apfs-crypto/` and `../work/apfs-mldsa-host/`.
+
+For runtime stability captures, `patch-zeta-kernel-probe.py --fault-guards-only`
+keeps the original boot call intact and installs only the requested fault
+guards. It requires native IRQ, VM and EL0 exception handling plus USB fault
+logging. It refuses normal reset delays, sleep polling and checkpoint checks.
+The report explicitly records `normal_timeout_enabled=false`. Bounded
+bring-up probes retain their original behavior; a 300-second probe is not
+an indefinite runtime image.
+
+The `qcom-userland-stability1` RAM image uses that mode with the same
+firmware, ADT, graphics options and userland as `qcom-userland-bis10`.
+The latter still branches from `bsdinit_task` into a 300-second delay and
+PSCI SYSTEM_RESET. The runtime candidate restores the original call and
+recomputes the normal source-crypto integrity field. This removes that
+intentional reset source. Hardware validation completed a 1,200-second capture
+without a spontaneous disconnect or recorded kernel panic. Core4 was started
+at capture+482.607s; the shell confirmed one online secondary. launchd,
+SpringBoard and backboardd retained their sampled PIDs. The host deliberately
+requested bootloader return at capture+1,200.083s and verified it at
+1,205.415s. This qualifies that run, not every workload or all eight cores.
+The user confirmed iOS was visible but slow. The inherited
+`sheng-smp-delay=100000` holds the other cores back, so all-core performance
+and stability need a separate test. Evidence is in that image directory's
+`hardware-test.json`, `capture/` and process/core snapshots.

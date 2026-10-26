@@ -8,6 +8,8 @@ Optional fault guards reset after 20 seconds for exceptions and 24 for panic;
 they replace exception handling and are only for bounded bring-up copies.
 Use --allow-vm-faults beyond early bootstrap so normal demand paging reaches
 the original XNU data-abort handlers.
+For runtime stability tests, --fault-guards-only preserves the original boot
+flow and installs fault logging/reset guards without a normal reset timer.
 Firmware arms the PMIC bootloader reason.
 The optional early ramoops record has not survived the tested reset path;
 hardware conclusions use paired timing, not an assumed retained record.
@@ -34,7 +36,17 @@ def prepare(kernel, output, reset_delay=0, stage='entry', reset_after=None,
             check_word=None, expected_word=None, acquire_text_console=False,
             physical_framebuffer=False, install_boot_irq_early=False, inspect_zeta_ufs=False,
             allow_vm_faults=False, inspect_zeta_smmu=False, inspect_zeta_ufs_status=False, settle_zeta_ufs_ms=0,
-            allow_user_exceptions=False, sleep_poll_ms=0):
+            allow_user_exceptions=False, sleep_poll_ms=0, fault_guards_only=False):
+    if fault_guards_only:
+        if not (guard_early_faults and allow_interrupts and allow_vm_faults and
+                allow_user_exceptions and poll_native_usb and log_faults):
+            raise ValueError('Fault-guards-only requires native IRQ/VM/EL0 handling and USB fault logging')
+        if (reset_delay or sleep_poll_ms or reset_before or warm_reset or check_pointer or
+                check_return_zero or check_return_one or check_usb_controller or check_word or
+                expected_word is not None or print_kernel_banner or acquire_text_console or
+                physical_framebuffer or install_boot_irq_early or inspect_zeta_ufs or
+                inspect_zeta_smmu or inspect_zeta_ufs_status or settle_zeta_ufs_ms):
+            raise ValueError('Fault-guards-only cannot be combined with a normal delay, checkpoint or conditional probe')
     if not 0 <= settle_zeta_ufs_ms <= 60000 or (settle_zeta_ufs_ms and not inspect_zeta_ufs_status):
         raise ValueError("UFS scheduler wait requires the counter inspector and 0..60000 ms")
     if settle_zeta_ufs_ms and (function != '_bsd_init' or reset_after != '_IOFindBSDRoot' or not reset_before):
@@ -766,6 +778,11 @@ native_vm:
             raise ValueError('Unrecognized panic prologue')
         branch(panic, cave+panic_offset)
         guard_sites.append(hex(panic))
+    if fault_guards_only:
+        # Keep the original call/instruction and its link semantics. The
+        # normal trampoline (including its reset path) is never entered;
+        # only the explicit fault-vector/panic branches reach the guards.
+        data[site:site + 4] = original[site:site + 4]
     # Exactly the selected instruction and the verified padding may differ.
     for index, (before, after) in enumerate(zip(original, data)):
         if before != after and not any(low <= index < high for low, high in allowed):
@@ -778,7 +795,10 @@ native_vm:
               'patched_site_va': hex(site_va),
               'record_pa': hex(record_address), 'nonce': hex(nonce), 'probe_bytes': len(code),
               'record_written': bool(record),
-              'reset_delay_seconds': reset_delay,
+              'reset_delay_seconds': None if fault_guards_only else reset_delay,
+              'normal_probe_site_active': not fault_guards_only,
+              'normal_timeout_enabled': not fault_guards_only,
+              'fault_guards_only': fault_guards_only,
               'warm_reset_feature_discovery': warm_reset,
               'unsupported_warm_reset_delay_seconds': 12 if warm_reset else None,
               'returned_warm_reset_cold_fallback_delay_seconds': 12 if warm_reset else None,
@@ -829,6 +849,8 @@ native_vm:
                                 'early-fault-test': 'deliberate BRK after MMU enable; verifies early exception reset'}[stage],
               'retained_record_verified': False,
               'hardware_tested': False}
+    if fault_guards_only:
+        report['stage_meaning'] = 'original boot flow preserved; only fault logging/reset guards installed'
     output.with_suffix(output.suffix+'.probe.json').write_text(json.dumps(report, indent=2)+'\n')
     print(json.dumps(report, indent=2))
 
@@ -837,6 +859,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('kernel', type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--fault-guards-only', action='store_true', help='retain original boot flow and fault capture; no normal reset timer')
     parser.add_argument('--reset-delay', type=int, default=0, help='seconds between probe entry and reset (0..300)')
     parser.add_argument('--stage', choices=['entry', 'before-mmu', 'after-mmu', 'arm-init', 'early-fault-test', 'function-return', 'function-offset'], default='entry')
     parser.add_argument('--instruction-offset', type=lambda value: int(value, 0), help='function-offset byte offset, from reviewed disassembly')
@@ -886,7 +909,7 @@ def main():
                 args.instruction_offset, args.expected_instruction, args.check_word, args.expected_word,
                 args.acquire_text_console, args.physical_framebuffer, args.install_boot_irq_early,
                 args.inspect_zeta_ufs, args.allow_vm_faults, args.inspect_zeta_smmu, args.inspect_zeta_ufs_status, args.settle_zeta_ufs_ms,
-                args.allow_user_exceptions, args.sleep_poll_ms)
+                args.allow_user_exceptions, args.sleep_poll_ms, args.fault_guards_only)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'patch-zeta-kernel-probe: {exc}\n')
 

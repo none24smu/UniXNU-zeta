@@ -999,3 +999,34 @@ the device, removing the host's finite capture deadline too. iOS and that
 USB capture were left running. The report records an observed stability
 window, not a guarantee across every workload; `hardware-test.json` and
 `capture-handoff.json` distinguish it from a completed capture/reset.
+
+The subsequent Settings interaction on that same boot **did crash the UI**.
+`capture-continued/kernel.log:4899` records backboardd PID 60 taking a null
+write at `libvulkan_freedreno.dylib+0x5215c`; its crash report names the Core
+Animation primary display thread. SpringBoard restarted, while launchd PID 1,
+XNU and USB remained alive. Thus the idle interval above does not qualify
+Settings stability or establish that all reported crashes are fixed.
+
+The loaded Turnip UUID is `99cbbd40-b372-3bc5-a6c6-80c0cac4d629` (the
+`gpu-hm2` bundle). The fault follows `tu_cs_reserve_space` returning
+`VK_ERROR_OUT_OF_DEVICE_MEMORY`, which the packet emitter does not handle.
+A read of the kernel's retained mapping-failure diagnostics found one
+`kIOReturnNoResources` failure with exactly 1024 mapped objects and 28734
+spans. No kernel BO allocation failures were recorded. The shared VM table
+has 1024 entries, although each of three clients independently allows 1024
+BOs. `NativeAdreno-vm-object-budget.patch` raises that shared metadata limit
+to 4096, covering all three client allowances plus the kernel mappings.
+Its host regression maps 1025 objects, releases and reuses a slot, and drains
+all ownership; it fails with the original 1024 limit. This is a candidate
+fix for the observed table exhaustion; a rebuilt kernel and a repeat of
+Settings navigation are required before claiming a device fix. General
+Turnip command-stream allocation-error handling remains a separate gap.
+
+The UEFI developer's GICWAKER/IRM/Haven guidance is also relevant: ArmCpu
+already clears ProcessorSleep and waits for ChildrenAsleep, and the routing
+paths use explicit affinity with IRM clear. The active FD hash is recorded,
+but its inherited WAKER workaround has not been verified from firmware
+source. Two live samples show timer interrupts advancing on all eight cores
+but zero recorded signalCPU requests/SGIs. CPU startup therefore does not
+establish cross-core IPI correctness. No ITS/LPI support or watchdog recovery
+is claimed by this runtime test.

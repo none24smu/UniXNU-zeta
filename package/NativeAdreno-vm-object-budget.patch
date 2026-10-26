@@ -1,0 +1,51 @@
+--- a/NativeAdrenoVm.h
++++ b/NativeAdrenoVm.h
+@@ -26,7 +26,11 @@
+  * only the owned streams. Uncertain resources require independent real reset.
+  * No VM may be advertised to apps until per-client isolation, submission
+  * validation/protection, genuine IRQ fences and reset are implemented. */
+-enum : size_t {NativeAdrenoVmMaxObjects=1024};
++/* One VM is shared by three published clients, each with 1024 BO slots, plus
++ * the kernel's firmware/ring/fence mappings. A per-client-sized shared table
++ * rejects otherwise valid mappings when the aggregate reaches 1024. Keep
++ * enough bounded metadata for every client plus kernel mappings. */
++enum : size_t {NativeAdrenoVmMaxObjects=4096};
+ /* Board hook for sampleWord(): reads one aligned word of physical memory through a fresh uncached mapping; 0 on success. */
+ extern "C" int (*native_adreno_dram_read32)(uint64_t physical,uint32_t *value);
+ /* The board's reader through the kernel's cacheable physical aperture (null on the host: the BO's own mapping is read). */
+--- a/tests/test_vm.cpp
++++ b/tests/test_vm.cpp
+@@ -85,6 +85,33 @@
+ {return s.object.allocate(pages*4096,40,false,pages*4096);}
+ int main()
+ {
++    /* The shared VM must exceed one client's 1024-object allowance. Model
++     * another client mapping while the first still owns its objects, then
++     * release/reuse a slot and finally drain every mapping. */
++    {
++        constexpr size_t n=1025;
++        Fixture s;CHECK(exposed(s,n+1,n+1)==kIOReturnSuccess);
++        s.aliasScratch.resize(n+1);s.arena.alias_scratch=s.aliasScratch.data();
++        s.arena.alias_scratch_entries=s.aliasScratch.size();
++        std::vector<NativeAdrenoMemory> buffers(n+1);
++        std::vector<uint64_t> handles(n+1);
++        for(size_t i=0;i<n;++i) {
++            CHECK(!buffers[i].allocate(4096,40,false,4096));
++            CHECK(!s.vm.map(&buffers[i],0,0x800000+i*4096,3,0,2,&handles[i]));
++        }
++        CHECK(s.vm.objectCount()==n);
++        CHECK(!s.vm.unmap(handles[512]) && !buffers[512].release());handles[512]=0;
++        CHECK(!buffers[n].allocate(4096,40,false,4096));
++        CHECK(!s.vm.map(&buffers[n],0,0x800000+512*4096,3,0,2,&handles[n]));
++        CHECK(s.vm.objectCount()==n);
++        for(size_t i=0;i<=n;++i)if(handles[i]) {
++            CHECK(!s.vm.unmap(handles[i]) && !buffers[i].release());
++        }
++        CHECK(!s.vm.objectCount() && !s.vm.spanCount());
++        CHECK(!s.vm.detach() && !s.tables.retireAfterQuiescence() && !s.tables.release());
++        CHECK(fixture.live.empty() && fixture.metadata.empty());
++        std::printf("PASS: shared VM maps 1025 objects, reuses a released slot and drains all ownership\n");
++    }
+     /* A real map/hold/unmap transaction across the actual code paths. */
+     {
+         Fixture s;

@@ -94,13 +94,13 @@
 +                CHECK(p.client.mapBo(&map,&mapped)==kIOReturnSuccess && mapped.iova==0x800000);
 +            }
 +        }
-+        CHECK(native_adreno_alloc_diag[1]==0 && p.client.liveObjects()==1024);
++        CHECK(native_adreno_alloc_diag[1]==0 && p.client.liveObjects()==NativeAdrenoClientMaxObjects);
 +        CHECK(p.client.allocBo(&alloc,&allocated)==kIOReturnNoResources && !allocated.handle);
 +        CHECK(native_adreno_alloc_diag[1]==1 && native_adreno_alloc_diag[2]==2);
 +        CHECK(native_adreno_alloc_diag[3]==kIOReturnNoResources && native_adreno_alloc_diag[4]==1);
-+        CHECK(native_adreno_alloc_diag[5]==1024 && native_adreno_alloc_diag[6]==4096);
++        CHECK(native_adreno_alloc_diag[5]==NativeAdrenoClientMaxObjects && native_adreno_alloc_diag[6]==4096);
 +        CHECK(native_adreno_alloc_diag[7]==0x801000 && native_adreno_alloc_diag[8]==(uintptr_t)&p.client);
-+        CHECK(native_adreno_alloc_diag[9]==12 && native_adreno_alloc_diag[10]==0 && native_adreno_alloc_diag[19]==1024);
++        CHECK(native_adreno_alloc_diag[9]==12 && native_adreno_alloc_diag[10]==0 && native_adreno_alloc_diag[19]==NativeAdrenoClientMaxObjects);
 +        uint64_t first[8];for(unsigned i=0;i<8;++i)first[i]=native_adreno_alloc_diag[11+i];
 +        CHECK(p.client.releaseAll(&ringclock,1000)==kIOReturnSuccess);
 +        CHECK(native_adreno_alloc_diag[1]==1); /* close must not erase the refusal */
@@ -122,7 +122,7 @@
 +        CHECK(native_adreno_alloc_diag[1]==3 && native_adreno_alloc_diag[2]==6);
 +        for(unsigned i=0;i<8;++i)CHECK(native_adreno_alloc_diag[11+i]==first[i]);
 +        CHECK(p.client.releaseAll(&ringclock,1000)==kIOReturnSuccess);
-+        std::puts("PASS: terminal BoAlloc diagnostics distinguish 1024 client slots, physical allocation and WC failure; preserve first refusal/respawn evidence; ignore recovered fallback");
++        std::puts("PASS: terminal BoAlloc diagnostics distinguish client-slot saturation, physical allocation and WC failure; preserve first refusal/respawn evidence; ignore recovered fallback");
 +    }
      /* Full client transaction: query, allocate, map, submit, wait, free, close. */
      {

@@ -1,0 +1,28 @@
+--- a/NativeAdrenoUserClient.h
++++ b/NativeAdrenoUserClient.h
+@@ -13,7 +13,7 @@
+  * pointer values. A mapping is retirable only through freeBo, which unmaps
+  * first and then releases the backing object; both steps must succeed.
+  * Up to NativeAdrenoClientMaxObjects live objects and the execbuf's own eight-job limit apply. */
+-enum : size_t {NativeAdrenoClientMaxObjects=1024,NativeAdrenoClientContiguousFirstBytes=65536};
++enum : size_t {NativeAdrenoClientMaxObjects=4096,NativeAdrenoClientContiguousFirstBytes=65536};
+ class NativeAdrenoUserClient final {
+     struct Queue {uint32_t id=0;bool active=false;};
+     struct Entry {
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -151,11 +151,11 @@
+      * unmap a silent no-op, the user PTEs outlived BoCpuUnmap, and BoFree handed pages with a live user mapping to the VM:
+      * pmap_assert_free panicked the freeing core and the panic screen parked it (the "BoFree hang", dead touch). */
+     struct View {uint32_t token;IOMemoryDescriptor *descriptor;};
+-    /* One view per live BO token. The cache must hold every BO the client can have (NativeAdrenoClientMaxObjects = 1024): a BO whose view is not
++    /* One view per live BO token. The cache must hold every BO the client can have (NativeAdrenoClientMaxObjects): a BO whose view is not
+      * cached makes IOConnectUnmapMemory64 (which asks clientMemoryForType again) a no-op, the user mapping outlives BoFree and the freed pages panic
+      * pmap_assert_free. A cache of 64 held until the render server's hundreds of mapped BOs (int-087). */
+-    enum {MaxViews=1024};
+-    View *views_=nullptr;   /* on the heap: 1024 entries would make the client object too big for the kernel allocator's fixed-size classes */
++    enum {MaxViews=NativeAdrenoClientMaxObjects};
++    View *views_=nullptr;   /* on the heap: the entries would make the client object too big for the kernel allocator's fixed-size classes */
+     void dropViews(uint32_t token);
+     static IOReturn action(OSObject *target,void *reference,IOExternalMethodArguments *arguments);
+     IOReturn run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size);

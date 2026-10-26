@@ -1108,3 +1108,7 @@ GPU copy and wait after composition. Successful pipeline creation and fence
 completion establish neither full Metal semantics nor correct shader pixels.
 The retained access, capability and CPU audits are under local
 `work/render-stage7/`; their unresolved checks must not be reported as passed.
+
+### Per-client GPU object exhaustion
+
+The allocation-diagnostic boot on 2026-10-26 recorded a 16 KiB BO refusal with 1024 live client objects (phase 1, `kIOReturnNoResources`), followed by backboardd faulting in Turnip at offset `0x5215c`. The shared VM table was already 4096. `NativeAdreno-client-object-budget.patch` completes the [upstream capacity fix](https://github.com/UniXNU/Adreno740/commit/a9f9ff222a926b22f0f72fc0429ba9d19ce3fafb): the per-client table is 4096 and its CPU view cache derives from the same constant. Physical pool size and GPU VA windows are unchanged. The full user-client test passes under ASan/UBSan; an old 1024-slot control fails allocation 1025. The persistent refusal counters remain available for further exhaustion causes. Hardware validation of the increased limit is pending.

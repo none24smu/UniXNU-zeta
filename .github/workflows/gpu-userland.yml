@@ -38,8 +38,30 @@ jobs:
           path: unixnu
       - name: Check out the GPU submodules
         run: git -C unixnu submodule update --init --depth 1 drivers/NativeAdreno drivers/NativeMetal drivers/NativeMobileDisplay kits/AdrenoPM4 kits/ArmSmmu4K
+      - name: Restore GPU compiler work
+        uses: actions/cache/restore@v4
+        id: gpu_cache
+        with:
+          path: |
+            unixnu/.cache/mesa-work
+            unixnu/build/mesa-tu
+            unixnu/build/mesa-tu-ios
+            unixnu/build/m2v-target
+          key: gpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('unixnu/scripts/data/adreno-compiler-inputs.json', 'unixnu/scripts/data/gpu-metal-vulkan-inputs.json', 'unixnu/patches/mesa/*.patch') }}-${{ github.run_id }}
+          restore-keys: |
+            gpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('unixnu/scripts/data/adreno-compiler-inputs.json', 'unixnu/scripts/data/gpu-metal-vulkan-inputs.json', 'unixnu/patches/mesa/*.patch') }}-
       - name: Build Turnip, the Metal bridge and the plugin
         run: bash zeta/scripts/ci-gpu-userland.sh unixnu zeta "$RUNNER_TEMP/gpu-userland"
+      - name: Save GPU compiler work
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            unixnu/.cache/mesa-work
+            unixnu/build/mesa-tu
+            unixnu/build/mesa-tu-ios
+            unixnu/build/m2v-target
+          key: ${{ steps.gpu_cache.outputs.cache-primary-key }}
       - name: Upload the plugin
         uses: actions/upload-artifact@v4
         with:

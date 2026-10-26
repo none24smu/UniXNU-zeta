@@ -48,6 +48,9 @@ fetch() {  # fetch DIR REPOSITORY COMMIT
   fi
   git -C "$1" fetch -q --depth 1 origin "$3"
   git -C "$1" checkout -q --force "$3"
+  # This is an ephemeral, pinned CI source checkout. Recorded patches add new
+  # untracked files, which checkout --force alone leaves behind on cache reuse.
+  git -C "$1" clean -fd
 }
 
 MESA_PINS=$U/scripts/data/adreno-compiler-inputs.json

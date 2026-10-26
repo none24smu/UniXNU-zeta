@@ -1061,3 +1061,50 @@ software kernel peers use a host atomic fence on Intel; ARM64 keeps the
 original DSB. The diagnostic worker sampler reads native Intel registers
 there and preserves the ARM64 path. These host changes enable the same
 allocation/lifetime tests without claiming host rendering as device proof.
+
+The expanded mapping-table kernel subsequently reached the visible home UI;
+the capped-clock comparison did not remove black wallpaper or slow navigation.
+The stock slot-b vendor_boot/dtbo images still match `proprietary-files.txt`,
+and a fresh MP-tree merge matches the active bin-0 GPU/DDR8 tables (491 MHz,
+bandwidth index 7 is a stock point). This is static configuration evidence,
+not observed Android DVFS behavior.
+
+CPU policy had a separate late-start gap: domains enabled after the early
+probe never received their mode-3 vote when the boot-progress monitor stopped
+polling. The display timer now retries those initial votes. Kernel build
+`40360308500` passed; its RAM image requests domain levels 14/9/8 and L3 14.
+The vendor driver uses `DOMAIN_STATE` for a hardware frequency-limit indication;
+the earlier `zeta-soc` MHz labels were not measurements of delivered clocks.
+Source diagnostics now say `limit`, and `PERF_STATE` readback only establishes
+the requested LUT level. The active test image predates that label correction.
+
+The `cpu_signal` offset is also verified in the compiled kernel, not guessed:
+all eight control cores held `SIGPdisabled` at cpu_data+0x48, with zero IPI
+sends/receives despite advancing timer counters. A config-only test with
+`armcpu-self-ipi=1` clears the bit on every core and produces continuing
+cross-core SGI delivery. Therefore this firmware's ordinary SGI path works;
+the older source comment saying otherwise is not current hardware evidence.
+The combined self-IPI/SPI workaround boot returned to the bootloader after
+about two minutes without a retained cause; the self-SGI test continued until
+an explicit shell reboot. Neither result certifies all SMP/idle paths.
+
+`qcom-userland-cpupoll-sgi1` combines the polling kernel with self-SGIs and the
+same old `gpu-hm2` bundle. USB scanouts show real Settings text and a subset
+of its icons. The user reports slightly faster unlocking, but delayed/missing
+Settings icons and very laggy scrolling. It also caught another backboardd
+SIGSEGV at Turnip+0x4bcc0 after an allocation failure, while mapping-failure
+counters remained zero; the UI respawned. The 4096 mapping-table limit is
+therefore not a complete allocation/crash fix. Heap reuse remains a separate
+candidate, and general command-stream OOM handling is still incomplete.
+
+The graphics access/capability audit found multiple distinct gates and gaps:
+the missing `.clients` file denies every non-backboardd executable; previously
+allowing Mercury did grant slot 1 but reached later layout/archive/allocation
+failures. Three scoped GPU client windows and repeated-open limits also apply.
+The frontend advertises Apple1/2/3 and Common1/2 with recorded feature waivers,
+silently drops indirect resource/heap declarations, and returns zero resource
+IDs without an argument-encoder implementation. Presentation adds a full-frame
+GPU copy and wait after composition. Successful pipeline creation and fence
+completion establish neither full Metal semantics nor correct shader pixels.
+The retained access, capability and CPU audits are under local
+`work/render-stage7/`; their unresolved checks must not be reported as passed.

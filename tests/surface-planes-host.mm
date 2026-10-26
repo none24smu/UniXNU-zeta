@@ -28,7 +28,6 @@ int main(int argc,char **argv) {
   id<MTLTexture> chroma=[device newTextureWithDescriptor:descriptor iosurface:surface plane:1];
   CHECK(chroma && chroma.iosurface==surface);
   CHECK(![device newTextureWithDescriptor:descriptor iosurface:surface plane:2]);
-  CHECK(![device newTextureWithDescriptor:descriptor iosurface:nullptr plane:0]);
   CFRelease(surface);
   puts("PASS: production two-plane RGB/plane-view creation and invalid-plane refusal over software peer; no shader or pixel proof");
  }

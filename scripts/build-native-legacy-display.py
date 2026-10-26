@@ -49,10 +49,10 @@ command += ['-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-deprecated-declar
 (OUT / 'compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 
 
-def compile_unit(source, output, name, extra=(), base=None, check=True):
+def compile_unit(source, output, name, extra=(), base=None, check=True, cwd=None):
     base = base or command
     unit = [str(source) if part == str(SOURCE) else str(output) if part == str(destination) else part for part in base]
-    result = subprocess.run(unit + list(extra), cwd=record['directory'], capture_output=True, text=True, timeout=300)
+    result = subprocess.run(unit + list(extra), cwd=cwd or record['directory'], capture_output=True, text=True, timeout=300)
     (OUT / (name + '.log')).write_text(result.stdout + result.stderr)
     if result.returncode and check:
         raise SystemExit(result.stdout + result.stderr)
@@ -112,8 +112,20 @@ shell_io = OUT / 'ZetaShellIo.o'
 bsd_prefix = [value for at, value in enumerate(c_record['arguments'][1:]) if c_record['arguments'][at] == '-include']
 bsd_prefix = [str(Path(c_record['directory']) / value) if (Path(c_record['directory']) / value).exists() else value for value in bsd_prefix]
 print('zeta shell: BSD prefix ' + ' '.join(bsd_prefix))
-compile_unit(SHELL, shell, 'ZetaShell', [part for value in bsd_prefix for part in ('-include', value)], base=c_command)
-compile_unit(SHELL_IO, shell_io, 'ZetaShellIo')
+# Built where kern_exec.c is (its relative -I and the prefix's angled includes of its sibling config headers resolve there).
+# The shell is a diagnostic: a unit that does not compile is left out with its errors in the build log, and the kernel (weak
+# references) builds without it.
+shell_objects = []
+for unit, obj, name, extra, base, cwd in (
+        (SHELL, shell, 'ZetaShell', ['-I', c_record['directory']] + [part for value in bsd_prefix for part in ('-include', value)],
+         c_command, c_record['directory']),
+        (SHELL_IO, shell_io, 'ZetaShellIo', [], None, None)):
+    if compile_unit(unit, obj, name, extra, base=base, check=False, cwd=cwd):
+        shell_objects.append(str(obj))
+        print('zeta shell: compiled ' + name)
+    else:
+        errors = [line for line in (OUT / (name + '.log')).read_text(errors='replace').splitlines() if 'error' in line]
+        print('zeta shell: NOT compiled ' + name + ':\n  ' + '\n  '.join(errors[:20]))
 # The board's patches to the upstream submodules (kits/zeta/<module>-*.patch, in name order) apply to a copy: the submodules
 # are not ours to change. NativeAdreno-16k-vm.patch: xnu-12377 keeps 16 KiB VM pages over the 4 KiB granule.
 # ArmSmmu4K-fault-slot.patch: the Adreno SMMU's free stream slots fault with non-zero attribute fields.
@@ -211,7 +223,7 @@ if deployment != (2, 26 << 16):
     raise SystemExit(f'NativeLegacyDisplay.o: expected an iOS 26 deployment, not {deployment}')
 archive = OUT / 'libNativeLegacyDisplay.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), str(presenter), str(shell), str(shell_io), *map(str, adreno_objects), str(events_late)],
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), str(presenter), *shell_objects, *map(str, adreno_objects), str(events_late)],
                check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'source_sha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(),

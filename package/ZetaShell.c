@@ -46,8 +46,8 @@ extern unsigned int unixnu_dwc3_read(uint8_t *, unsigned int) __attribute__((wea
 extern unsigned int unixnu_dwc3_backlog(void) __attribute__((weak_import));
 extern volatile uint64_t unixnu_dwc3_received_dropped __attribute__((weak_import));
 // ZetaShellIo.cpp.
-extern int zeta_shell_ioreg(const char *root, unsigned depth);
-extern int zeta_shell_props(const char *name, unsigned index);
+extern int zeta_shell_ioreg(const char *root, unsigned depth) __attribute__((weak_import));
+extern int zeta_shell_props(const char *name, unsigned index) __attribute__((weak_import));
 
 static unsigned reply_id;
 
@@ -458,6 +458,7 @@ static int run(char *text) {
     if (!strcmp(c, "sysctl") && argc >= 2) return sysctl_command(argv[1], argc > 2 ? argv[2] : NULL);
     if ((!strcmp(c, "phys") || !strcmp(c, "mmio")) && argc >= 2) return memory(argv[1], argc > 2 ? argv[2] : NULL, c[0] == 'm');
     if (!strcmp(c, "mmiow") && argc >= 3) return mmio_write(argv[1], argv[2]);
+    if ((!strcmp(c, "ioreg") || !strcmp(c, "props")) && !zeta_shell_ioreg) {zeta_shell_line("ZetaShellIo.cpp was not built"); return ENOTSUP;}
     if (!strcmp(c, "ioreg")) {
         int ok2 = 1;
         const unsigned depth = argc > 2 ? (unsigned)number(argv[2], &ok2) : argc > 1 ? 2 : 3;

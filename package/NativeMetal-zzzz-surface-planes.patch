@@ -1,0 +1,98 @@
+--- a/bridge/NativeMetalObjects.rs
++++ b/bridge/NativeMetalObjects.rs
+@@ -18,7 +18,7 @@
+ };
+ use metal2vulkan_runtime::{
+     BinaryArchive, BinaryArchiveDescriptor, BlitCommandEncoder, FamilyRow, FeatureRow, GpuFamily, RowState, BlitOption, Buffer, ClearColor, CommandBuffer, CommandQueue, ComputeCommandEncoder,
+-    ComputePipelineState, DebugMessage, DepthStencilState, Device, DeviceOptions, MessageSeverity, MessageSink, Event, EventRef, Fence, Function, Heap, HeapDescriptor, HeapType, HostMemory, IoSurfacePlane, Library, LoadAction,
++    ComputePipelineState, DebugMessage, DepthStencilState, Device, DeviceOptions, MessageSeverity, MessageSink, Event, EventRef, Fence, Function, Heap, HeapDescriptor, HeapType, HostMemory, IoSurfacePlane, IoSurfaceYCbCr, Library, LoadAction,
+     MetalLevel, Origin, PipelineOption, PipelineOptions, PurgeableState, PrivateCount, PrivateFlag, PrivateProperties, MAX_COLOR_ATTACHMENTS, Region, RenderCommandEncoder, RenderPassDescriptor, RenderPipelineState, ResourceOptions,
+     SamplerState, ScissorRect, SharedEvent, SharedEventListener, Size, StoreAction, Texture, TextureDescriptor, Viewport, VisibilityResultMode,
+ };
+@@ -757,6 +757,25 @@
+     })
+ }
+ 
++/// `newTextureWithDescriptor:iosurface:plane:` over a surface with planes: `offset` and `bytes_per_row` are the asked plane's, and a
++/// two-plane surface also gives its OSType, the asked plane, its size and plane 1's offset and rows (`chroma`, 0 and 0 for one plane),
++/// which a two-plane texture reads its second plane from.
++#[unsafe(no_mangle)]
++pub extern "C" fn nmb_texture_new_on_surface(buffer: *mut NmbBuffer, descriptor: *const NmbTextureDescriptor, offset: u64,
++                                             bytes_per_row: u64, pixel_format: u32, plane: u64, width: u64, height: u64,
++                                             chroma_offset: u64, chroma_bytes_per_row: u64) -> *mut NmbTexture {
++    guard(std::ptr::null_mut(), || {
++        let descriptor = texture_descriptor(descriptor)?;
++        let buffer = &get(buffer)?.0;
++        let mut surface = IoSurfacePlane::new(offset, bytes_per_row, true);
++        if chroma_bytes_per_row != 0 {
++            surface = surface.with_ycbcr(IoSurfaceYCbCr::new(pixel_format, plane, [width, height], chroma_offset, chroma_bytes_per_row));
++        }
++        let texture = buffer.new_texture_with_iosurface_plane(&descriptor, surface);
++        Ok(boxed(NmbTexture(texture.map_err(e("texture over surface"))?)))
++    })
++}
++
+ /// `newLinearTextureWithDescriptor:offset:bytesPerRow:bytesPerImage:` (Apple SPI).
+ #[unsafe(no_mangle)]
+ pub extern "C" fn nmb_texture_new_linear(buffer: *mut NmbBuffer, descriptor: *const NmbTextureDescriptor, offset: u64, bytes_per_row: u64,
+--- a/bridge/NativeMetalObjects.h
++++ b/bridge/NativeMetalObjects.h
+@@ -14,6 +14,7 @@
+ typedef struct NmbDevice NmbDevice;
+ typedef struct NmbBuffer NmbBuffer;
+ typedef struct NmbHeap NmbHeap;
++struct NmbTextureDescriptor;
+ typedef struct NmbTexture NmbTexture;
+ typedef struct NmbLibrary NmbLibrary;
+ typedef struct NmbFunction NmbFunction;
+@@ -91,6 +92,10 @@
+ NmbTexture *nmb_texture_new(NmbDevice *, const struct NmbTextureDescriptor *);
+ /* A linear texture over a buffer's bytes; iosurface marks the buffer as standing for a surface without planes (Metal's IOSurface rules). */
+ NmbTexture *nmb_texture_new_on_buffer(NmbBuffer *, const struct NmbTextureDescriptor *, uint64_t offset, uint64_t bytes_per_row, bool iosurface);
++// A texture over a surface with planes; a two-plane surface gives its OSType, the asked plane, its size and plane 1's offset and rows.
++NmbTexture *nmb_texture_new_on_surface(NmbBuffer *, const struct NmbTextureDescriptor *, uint64_t offset, uint64_t bytes_per_row,
++                                       uint32_t pixel_format, uint64_t plane, uint64_t width, uint64_t height, uint64_t chroma_offset,
++                                       uint64_t chroma_bytes_per_row);
+ NmbTexture *nmb_texture_new_linear(NmbBuffer *, const struct NmbTextureDescriptor *, uint64_t offset, uint64_t bytes_per_row, uint64_t bytes_per_image);
+ /* whole: a view of every level and slice as format; else levels and slices are {start, count} and kind the view's texture type. */
+ NmbTexture *nmb_texture_new_view(NmbTexture *, uint64_t format, uint64_t kind, const uint64_t levels[2], const uint64_t slices[2], bool whole);
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -419,6 +419,17 @@
+  NBTexture *texture=[NBTexture new];texture.handle=handle;nmb_texture_describe(handle,&descriptor);texture.descriptor=descriptor;
+  texture.buffer=buffer;texture.offset=offset;texture.rowBytes=row;return texture;
+ }
++// A texture over a two-plane surface: the runtime reads plane 1 from the surface's own layout (two-plane RGB and YCbCr formats).
++static NBTexture *textureOnSurface(NBBuffer *buffer,MTLTextureDescriptor *d,IOSurfaceRef surface,NSUInteger plane,NSUInteger offset,NSUInteger row) {
++ NmbTextureDescriptor descriptor;if(!buffer || !textureDescriptor(d,&descriptor))return nil;
++ const uint64_t base=(uintptr_t)IOSurfaceGetBaseAddress(surface),chroma=(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,1);
++ if(chroma<base || chroma-base>=IOSurfaceGetAllocSize(surface) || !IOSurfaceGetBytesPerRowOfPlane(surface,1)){NBLOG(@"native-metal: invalid second surface plane");return nil;}
++ NmbTexture *handle=nmb_texture_new_on_surface(buffer.handle,&descriptor,offset,row,IOSurfaceGetPixelFormat(surface),plane,
++  IOSurfaceGetWidth(surface),IOSurfaceGetHeight(surface),chroma>=base?chroma-base:0,IOSurfaceGetBytesPerRowOfPlane(surface,1));
++ if(!handle){NBLOG(@"native-metal: texture over surface refused: %@",lastError());return nil;}
++ NBTexture *texture=[NBTexture new];texture.handle=handle;nmb_texture_describe(handle,&descriptor);texture.descriptor=descriptor;
++ texture.buffer=buffer;texture.offset=offset;texture.rowBytes=row;return texture;
++}
+ @implementation NBBuffer (Textures)
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d offset:(NSUInteger)offset bytesPerRow:(NSUInteger)row {
+  return (id<MTLTexture>)textureOnBuffer(self,d,offset,row,false);
+@@ -1612,12 +1623,17 @@
+ // The surface's pages are the texels: its mapping in this process is imported without a copy (pinned by the kernel, mapped into the GPU's
+ // 4 KiB context by Turnip), so every process that imports the surface renders and samples the same memory.
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d iosurface:(IOSurfaceRef)surface plane:(NSUInteger)plane {
+- if(!surface || !d || plane || IOSurfaceGetPlaneCount(surface))return nil;
++ const size_t planes=surface?IOSurfaceGetPlaneCount(surface):0;
++ if(!surface || !d || planes>2 || (planes?plane>=planes:plane!=0)){NBLOG(@"native-metal: invalid or unsupported surface plane");return nil;}
+  void *base=IOSurfaceGetBaseAddress(surface);const size_t page=(size_t)getpagesize(),allocation=IOSurfaceGetAllocSize(surface);
+  if(!page || (page&(page-1)) || !base || ((uintptr_t)base&(page-1)) || !allocation || allocation>SIZE_MAX-(page-1))return nil;
++ const uintptr_t start=planes?(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,plane):(uintptr_t)base;
++ const size_t row=planes?IOSurfaceGetBytesPerRowOfPlane(surface,plane):IOSurfaceGetBytesPerRow(surface);
++ if(start<(uintptr_t)base || start-(uintptr_t)base>=allocation || !row)return nil;
+  const size_t bytes=(allocation+page-1)&~(page-1);
+  NBBuffer *buffer=surfaceBuffer(surface,base,bytes);if(!buffer)return nil;
+- NBTexture *texture=textureOnBuffer(buffer,d,0,IOSurfaceGetBytesPerRow(surface),true);if(!texture)return nil;
++ NBTexture *texture=planes==2?textureOnSurface(buffer,d,surface,plane,start-(uintptr_t)base,row):textureOnBuffer(buffer,d,start-(uintptr_t)base,row,true);
++ if(!texture)return nil;
+  texture.surface=(IOSurfaceRef)CFRetain(surface);return (id<MTLTexture>)texture;
+ }
+ - (id<MTLLibrary>)newLibraryWithData:(dispatch_data_t)data error:(NSError **)error {

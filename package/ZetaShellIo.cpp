@@ -73,9 +73,9 @@ extern "C" int zeta_shell_props(const char *name, unsigned index) {
         if (text && value && value->serialize(text)) {
             const char *bytes = text->text();
             const unsigned size = text->getLength();
-            // Long values (a big data blob) are cut at 2000 characters over several lines.
-            for (unsigned at = 0; at < size && at < 2000; at += 400)
-                zeta_shell_line("%s%s%.*s", at ? "    " : key->getCStringNoCopy(), at ? "" : " = ", 400, bytes + at);
+            // Long values (a big data blob) are cut at 2000 characters, 160 a line.
+            for (unsigned at = 0; at < size && at < 2000; at += 160)
+                zeta_shell_line("%s%s%.*s", at ? "    " : key->getCStringNoCopy(), at ? "" : " = ", 160, bytes + at);
         }
         OSSafeReleaseNULL(text);
     }

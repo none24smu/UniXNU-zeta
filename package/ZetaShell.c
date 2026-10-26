@@ -57,14 +57,20 @@ static void wait_for_room(void) {
     for (unsigned i = 0; i < 1000 && unixnu_dwc3_backlog() > 16384; ++i) IOSleep(2);
 }
 
+// The kernel printf keeps 255 bytes of one call and drops the rest, newline included: a longer line goes out in 220-byte pieces.
 __attribute__((format(printf, 1, 2))) void zeta_shell_line(const char *format, ...) {
-    char line[512];
+    char line[1024];
     va_list arguments;
     va_start(arguments, format);
     vsnprintf(line, sizeof line, format, arguments);
     va_end(arguments);
-    wait_for_room();
-    printf("@z%u|%s\n", reply_id, line);
+    const size_t length = strlen(line);
+    size_t at = 0;
+    do {
+        wait_for_room();
+        printf("@z%u|%.220s\n", reply_id, line + at);
+        at += 220;
+    } while (at < length);
 }
 
 static unsigned long long number(const char *text, int *ok) {
@@ -181,7 +187,7 @@ static int list(const char *path, int detail) {
 
 static const char base64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-// cat: text, non-printing bytes as '.'; hex: 16 bytes a line; get: base64, 288 bytes a line, for the host to reassemble.
+// cat: text, non-printing bytes as '.'; hex: 16 bytes a line; get: base64, 168 bytes (224 characters) a line, for the host.
 enum dump_kind {kText, kHex, kBase64};
 static int dump(const char *path, unsigned long long offset, unsigned long long length, enum dump_kind kind) {
     vfs_context_t context = vfs_context_create(NULL);
@@ -193,7 +199,7 @@ static int dump(const char *path, unsigned long long offset, unsigned long long 
     unsigned used = 0;
     unsigned long long done = 0;
     while (done < length) {
-        const int want = (int)((length - done) < (kind == kBase64 ? 288 * 14 : sizeof buffer) ? (length - done) : (kind == kBase64 ? 288 * 14 : sizeof buffer));
+        const int want = (int)((length - done) < (kind == kBase64 ? 168 * 24 : sizeof buffer) ? (length - done) : (kind == kBase64 ? 168 * 24 : sizeof buffer));
         int resid = 0;
         error = vn_rdwr(UIO_READ, vp, buffer, want, (off_t)(offset + done), UIO_SYSSPACE, IO_NOAUTH, vfs_context_ucred(context), &resid,
                         vfs_context_proc(context));
@@ -209,8 +215,8 @@ static int dump(const char *path, unsigned long long offset, unsigned long long 
                 zeta_shell_line("%s", line);
             }
         } else if (kind == kBase64) {
-            for (int at = 0; at < got; at += 288) {
-                const int chunk = got - at < 288 ? got - at : 288;
+            for (int at = 0; at < got; at += 168) {
+                const int chunk = got - at < 168 ? got - at : 168;
                 int n = 0;
                 for (int i = 0; i < chunk; i += 3) {
                     const uint32_t v = ((uint32_t)(uint8_t)buffer[at + i] << 16) | (i + 1 < chunk ? (uint32_t)(uint8_t)buffer[at + i + 1] << 8 : 0) |
@@ -501,7 +507,8 @@ static void shell_thread(void *parameter, wait_result_t result) {
                 while (*text >= '0' && *text <= '9') reply_id = reply_id * 10 + (unsigned)(*text++ - '0');
                 while (*text == ' ') ++text;
             }
-            if (!strncmp(line, "ZETA:", 5)) {length = 0; continue;}
+            // Empty lines (the host sends one first to end any partial line) and console frames get no reply.
+            if (!strncmp(line, "ZETA:", 5) || (!reply_id && !*text)) {length = 0; overflow = 0; continue;}
             int status;
             if (overflow) {zeta_shell_line("line longer than %zu bytes", sizeof line - 1); status = E2BIG;}
             else status = run(text);

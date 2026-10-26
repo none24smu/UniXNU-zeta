@@ -933,10 +933,13 @@ void beatThread(void *, wait_result_t) {
         if (n == 0 || routes != lastRoutes)
             IOLog("zeta-beat: %llu ms routes smr %08x %08x %08x %08x %08x %08x s2cr %08x %08x %08x %08x %08x %08x\n", now / 1000000,
                   smr[0], smr[1], smr[2], smr[3], smr[4], smr[5], s2cr[0], s2cr[1], s2cr[2], s2cr[3], s2cr[4], s2cr[5]);
-        if (n % 8 == 0 || memcmp(r, last, sizeof r))
-            IOLog("zeta-beat: %llu ms gfsr %08x fsr %08x/%08x far %08x%08x fsynr %08x crumb %08x ao %08x g2h %08x sysreset %08x gx %08x "
-                  "cx %08x clients %u/%u rbbm %08x int %08x rb %x/%x hwfault %08x cp-int %08x\n", now / 1000000, r[0], r[1], r[2], r[4],
-                  r[3], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], g[0], g[1], g[2], g[3], g[4], g[5]);
+        if (n % 8 == 0 || memcmp(r, last, sizeof r)) {
+            // Two lines: the kernel printf keeps 255 bytes of a call, and one line would lose its tail and newline.
+            IOLog("zeta-beat: %llu ms gfsr %08x fsr %08x/%08x far %08x%08x fsynr %08x crumb %08x ao %08x g2h %08x sysreset %08x\n",
+                  now / 1000000, r[0], r[1], r[2], r[4], r[3], r[5], r[6], r[7], r[8], r[9]);
+            IOLog("zeta-beat: %llu ms gx %08x cx %08x clients %u/%u rbbm %08x int %08x rb %x/%x hwfault %08x cp-int %08x\n", now / 1000000,
+                  r[10], r[11], r[12], r[13], g[0], g[1], g[2], g[3], g[4], g[5]);
+        }
         if (n % 4 == 0) metalText();
         if (n % 4 == 0) openers();
         memcpy(last, r, sizeof r);

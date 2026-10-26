@@ -51,7 +51,8 @@ class Shell:
             time.sleep(.02)
         start = self.log.stat().st_size
         staging = self.capture / f'.send-{ident}'
-        staging.write_bytes(f'{ident} {text}\n'.encode())
+        # A leading newline ends any partial line left in the phone's buffer (bytes echoed while the port was opened).
+        staging.write_bytes(f'\n{ident} {text}\n'.encode())
         os.replace(staging, send)
         marker, end = f'@z{ident}|', f'@z{ident}.'
         lines, pending, position = [], b'', start

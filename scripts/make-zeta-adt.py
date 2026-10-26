@@ -194,6 +194,10 @@ def main():
     parser.add_argument('--gpu-firmware', type=Path, default=None,
                         help='a directory with the stock vendor image\'s a660_gmu.bin, a660_sqe.fw and a660_zap.elf: /chosen '
                              'zeta-gpu-gmu, -sqe and -zap for GpuPowerProbe modes 7 and 9. Proprietary; local builds only, never CI')
+    parser.add_argument('--text-fixup', action='append', default=[],
+                        help='/chosen/text-fixups entry <file name>,<hex file offset>,<hex original>,<hex replacement> (repeatable, '
+                             'at most 32): signed text the kernel changes after page validation, as text-fixup0..7 without '
+                             'the boot-argument space')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.ipad_identity:
@@ -220,6 +224,8 @@ def main():
         parser.error('--cpu-regs must be integers')
     if not cpu_regs or cpu_regs[0] != 0 or len(set(cpu_regs)) != len(cpu_regs) or not set(cpu_regs) <= set(CPU_REGS):
         parser.error(f'--cpu-regs: distinct values from {",".join(hex(reg) for reg in CPU_REGS)}, boot CPU 0 first')
+    if len(args.text_fixup) > 32 or any(len(f) >= 160 or f.count(',') != 3 for f in args.text_fixup):
+        parser.error('--text-fixup: at most 32 entries of 4 comma-separated fields, each under 160 characters')
     check_board_tree()
 
     cpus = [node('cpu%d' % index, [('state', b'running\0' if index == 0 else b'waiting\0'),
@@ -252,6 +258,8 @@ def main():
                         *([(f'mac-address-{radio}', local_mac(args.unique_chip_id, radio)) for radio in ('wifi0', 'bluetooth0')]
                           if args.unique_chip_id is not None else []),
                         ('osenvironment', b'main\0'),
+                        # Read by the kernel's text fixups (native-text-fixup.patch) before the text-fixup0..7 boot arguments.
+                        *([('text-fixups', b''.join(f.encode() + b'\0' for f in args.text_fixup))] if args.text_fixup else []),
                         # Bootloader contract read by ml_unsafe_kernel_text_init.
                         # This non-Apple platform does not enable Apple CTRR.
                         ('kernel-ctrr-to-be-enabled', struct.pack('<I', 0)),

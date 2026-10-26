@@ -401,6 +401,22 @@ static int memory(const char *address_text, const char *count_text, int device) 
     return 0;
 }
 
+// poke <pa> <value>: one 32-bit device write and nothing else. mmiow reads the register back; the stock watchdog driver
+// (qcom_soc_wdt.c) only writes the APSS watchdog, and every read of it so far faulted (UEFI, zeta-soc bit 4).
+static int poke(const char *address_text, const char *value_text) {
+    int ok, ok2;
+    const unsigned long long address = number(address_text, &ok), value = number(value_text, &ok2);
+    if (!ok || !ok2 || (address & 3)) {zeta_shell_line("usage: poke <address, 4-byte aligned> <value>"); return EINVAL;}
+    struct io_window window;
+    volatile uint32_t *const word = io_open(&window, address, 4);
+    if (!word) {zeta_shell_line("map failed"); return ENOMEM;}
+    *word = (uint32_t)value;
+    __asm__ volatile("dsb sy" ::: "memory");
+    io_close(&window);
+    zeta_shell_line("%010llx <- %08x", address, (uint32_t)value);
+    return 0;
+}
+
 static int mmio_write(const char *address_text, const char *value_text) {
     int ok, ok2;
     const unsigned long long address = number(address_text, &ok), value = number(value_text, &ok2);
@@ -570,6 +586,7 @@ static void help(void) {
         "sysctl <name> [int]        read, or set an integer",
         "phys <pa> [words] | mmio <pa> [words] | mmiow <pa> <value>",
         "spmi <sid> <addr> [n]      PMIC registers (SPMI observer channel)",
+        "poke <pa> <value>          32-bit write without a read back",
         "ioreg [name|class] [depth] I/O Registry service plane",
         "props <name|class> [index] properties of a registry entry",
         "smc <fid> [x1 x2 x3]       one firmware/hypervisor call (hvc! exists but resets the Duo 2)",
@@ -631,6 +648,7 @@ static int run(char *text) {
     if (!strcmp(c, "sysctl") && argc >= 2) return sysctl_command(argv[1], argc > 2 ? argv[2] : NULL);
     if ((!strcmp(c, "phys") || !strcmp(c, "mmio")) && argc >= 2) return memory(argv[1], argc > 2 ? argv[2] : NULL, c[0] == 'm');
     if (!strcmp(c, "mmiow") && argc >= 3) return mmio_write(argv[1], argv[2]);
+    if (!strcmp(c, "poke") && argc >= 3) return poke(argv[1], argv[2]);
     if (!strcmp(c, "spmi") && argc >= 3) return spmi_read(argv[1], argv[2], argc > 3 ? argv[3] : NULL);
     if ((!strcmp(c, "ioreg") || !strcmp(c, "props")) && !zeta_shell_ioreg) {zeta_shell_line("ZetaShellIo.cpp was not built"); return ENOTSUP;}
     if (!strcmp(c, "ioreg")) {
@@ -696,7 +714,30 @@ static void shell_thread(void *parameter, wait_result_t result) {
     }
 }
 
+// zeta-wdog-pet=<ms>: pet the APSS watchdog (0x17c10000, WDT0_RST = 1 at +0x4) every <ms> as stock qcom_soc_wdt.c does,
+// writes only. SMP boots reset about 300 s after launchd started while one core idling alone lives on: a watchdog the
+// bootloader armed and that counts only while the APSS is awake would do that.
+static void wdog_pet_thread(void *parameter, wait_result_t result) {
+    (void)result;
+    const unsigned period = (unsigned)(uintptr_t)parameter;
+    struct io_window window;
+    volatile uint32_t *const wdt = io_open(&window, 0x17c10000, 0x20);
+    if (!wdt) {printf("zeta-wdog: map failed\n"); return;}
+    printf("zeta-wdog: petting WDT0_RST every %u ms\n", period);
+    for (unsigned n = 0;; ++n) {
+        wdt[1] = 1;
+        __asm__ volatile("dsb sy" ::: "memory");
+        if (n < 3 || n % 600 == 0) printf("zeta-wdog: pet %u\n", n);
+        IOSleep(period);
+    }
+}
+
 void zeta_shell_start(void) {
+    unsigned pet = 0;
+    if (PE_parse_boot_argn("zeta-wdog-pet", &pet, sizeof pet) && pet) {
+        thread_t petter = THREAD_NULL;
+        if (kernel_thread_start(wdog_pet_thread, (void *)(uintptr_t)pet, &petter) == KERN_SUCCESS) thread_deallocate(petter);
+    }
     unsigned enabled = 1;
     PE_parse_boot_argn("zeta-shell", &enabled, sizeof enabled);
     if (!enabled || !unixnu_dwc3_read) return;

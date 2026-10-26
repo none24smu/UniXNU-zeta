@@ -9,7 +9,8 @@ sheng: kits/zeta/KeyStoreProbe.cpp (sheng's) and UniXNU drivers/NativeKeyStoreEv
 probe starts it (its initializer leaves __mod_init_func). So do the CPU frequency vote, kits/zeta/CpuFreqProbe.cpp (sheng's on
 the SM8350 windows), the Home input, kits/zeta/HidInputProbe.cpp (the original IOHIDDevice bound by name, like the display),
 the second panel's DSI path, kits/zeta/DsiPanel.cpp, the touch digitizer, kits/zeta/TouchProbe.cpp (with UniXNU
-drivers/NativeGeniSpi), and the Adreno power observation, kits/zeta/GpuPowerProbe.cpp (sheng's, on the stock lahaina facts).
+drivers/NativeGeniSpi), the Adreno power observation, kits/zeta/GpuPowerProbe.cpp (sheng's, on the stock lahaina facts), and the
+command shell on the USB log, kits/zeta/ZetaShell.c and ZetaShellIo.cpp.
 """
 import hashlib
 import json
@@ -101,6 +102,13 @@ touch = OUT / 'TouchProbe.o'
 compile_unit(TOUCH_PROBE, touch, 'TouchProbe')
 GPU_POWER_PROBE = ROOT / 'kits/zeta/GpuPowerProbe.cpp'
 gpupower = OUT / 'GpuPowerProbe.o'
+# The command shell on the USB log (kits/zeta/ZetaShell.c, a BSD unit: processes, vnodes, sysctls) and its I/O Registry half.
+SHELL = ROOT / 'kits/zeta/ZetaShell.c'
+SHELL_IO = ROOT / 'kits/zeta/ZetaShellIo.cpp'
+shell = OUT / 'ZetaShell.o'
+shell_io = OUT / 'ZetaShellIo.o'
+compile_unit(SHELL, shell, 'ZetaShell', base=c_command)
+compile_unit(SHELL_IO, shell_io, 'ZetaShellIo')
 # The board's patches to the upstream submodules (kits/zeta/<module>-*.patch, in name order) apply to a copy: the submodules
 # are not ours to change. NativeAdreno-16k-vm.patch: xnu-12377 keeps 16 KiB VM pages over the 4 KiB granule.
 # ArmSmmu4K-fault-slot.patch: the Adreno SMMU's free stream slots fault with non-zero attribute fields.
@@ -198,12 +206,12 @@ if deployment != (2, 26 << 16):
     raise SystemExit(f'NativeLegacyDisplay.o: expected an iOS 26 deployment, not {deployment}')
 archive = OUT / 'libNativeLegacyDisplay.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), str(presenter), *map(str, adreno_objects), str(events_late)],
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(destination), str(keystore), str(cpufreq), str(hid), str(dsi), str(touch), str(gpupower), str(presenter), str(shell), str(shell_io), *map(str, adreno_objects), str(events_late)],
                check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'source_sha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
     'probe_sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                      for path in (KEYSTORE_PROBE, KEY_EVENTS, CPUFREQ_PROBE, HID_PROBE, DSI_PANEL, TOUCH_PROBE, GPU_POWER_PROBE,
+                      for path in (KEYSTORE_PROBE, KEY_EVENTS, CPUFREQ_PROBE, HID_PROBE, DSI_PANEL, TOUCH_PROBE, GPU_POWER_PROBE, SHELL, SHELL_IO,
                                    PRESENTER_SOURCE / 'NativeGOPPresenter.cpp')},
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,

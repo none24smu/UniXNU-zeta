@@ -44,6 +44,7 @@ extern "C" void zeta_cpufreq_thermal(void);
 extern "C" void zeta_hid_input_probe(void);
 extern "C" void zeta_touch_probe(void);
 extern "C" void sheng_gpu_power_probe(void);
+extern "C" void zeta_shell_start(void);
 extern "C" void zeta_dsi_survey(volatile unsigned char *mdp);
 extern "C" uint64_t mach_continuous_time(void);
 // The GPU hand-off presenter (UniXNU drivers/NativeMobileDisplay/NativeGOPPresenter.cpp, sheng-fb-gpu=1).
@@ -1317,6 +1318,8 @@ IOService *allocateDisplay(Display *slot) {
 // bsd_autoconf, after IOBSD is published (UniXNU offline-legacy-start): the IOSurface root matches the genuine
 // resource, then the GOP nub and the original framebuffer with its overrides start under /arm-io.
 void native_legacy_display_late_probe(void) {
+    // The command shell on the USB log first (ZetaShell.c, zeta-shell=0 leaves it out), so it answers even if a probe below hangs.
+    zeta_shell_start();
     // The state-only AppleKeyStore (sheng KeyStoreProbe.cpp, UniXNU NativeKeyStoreEvents; offline-key-events=1 sheng-aks=1)
     // before launchd: keybagd, SpringBoard and the session daemons open it at their start.
     native_keystore_probe();

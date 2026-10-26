@@ -51,6 +51,7 @@ jobs:
           key: gpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('unixnu/scripts/data/adreno-compiler-inputs.json', 'unixnu/scripts/data/gpu-metal-vulkan-inputs.json', 'unixnu/patches/mesa/*.patch') }}-${{ github.run_id }}
           restore-keys: |
             gpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('unixnu/scripts/data/adreno-compiler-inputs.json', 'unixnu/scripts/data/gpu-metal-vulkan-inputs.json', 'unixnu/patches/mesa/*.patch') }}-
+            gpu-${{ runner.os }}-${{ runner.arch }}-
       - name: Build Turnip, the Metal bridge and the plugin
         run: bash zeta/scripts/ci-gpu-userland.sh unixnu zeta "$RUNNER_TEMP/gpu-userland"
       - name: Save GPU compiler work
@@ -84,6 +85,7 @@ jobs:
             unixnu/build/zeta-display-cache/*.log
             unixnu/build/zeta-surface-planes/*.log
             unixnu/build/zeta-blit-subresources/*.log
+            unixnu/build/zeta-submit-pressure/*.log
             unixnu/build/mesa-tu*/meson-logs/*.txt
           if-no-files-found: ignore
           retention-days: 7

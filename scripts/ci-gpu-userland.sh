@@ -96,6 +96,7 @@ HOST_RUST_TARGET=$(python3 -c 'import platform; print({"arm64":"aarch64-apple-da
 rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios --target "$HOST_RUST_TARGET"
 
 cd "$U"
+python3 scripts/check-turnip-submit-backpressure.py --output build/zeta-submit-pressure
 python3 scripts/build-turnip-darwin.py --target host
 python3 scripts/build-turnip-darwin.py --target ios
 # The priming-cache control links this library, so build it before running the
@@ -117,4 +118,6 @@ cp build/zeta-display-cache/*.log "$OUT/"
 cp build/zeta-surface-planes/host.log "$OUT/surface-planes-host.log"
 cp build/zeta-blit-subresources/host.log "$OUT/blit-subresources-host.log"
 cp build/zeta-blit-subresources/negative-control.log "$OUT/blit-subresources-negative-control.log"
+cp build/zeta-submit-pressure/fixed.log "$OUT/submit-pressure-host.log"
+cp build/zeta-submit-pressure/old.log "$OUT/submit-pressure-negative-control.log"
 (cd "$OUT" && find . -type f | sort > files.txt)

@@ -146,8 +146,11 @@ Passed: 40 sampler representation sanitizer assertions, 12 immutable input/role/
 lifetime sanitizer assertions, 32 unsigned arithmetic boundary cases folded to
 the exact independent integer answer in NIR, and all five CPU-reference pixel/
 refusal cases. The reference explicitly uses softpipe and proves **no hardware
-pixels**. Native AIR artifact compilation and physical results must be recorded
-separately; see the parent's CI/device evidence before claiming this gate passed.
+pixels**. Native AIR artifact compilation and physical results are recorded
+separately. The [physical AIR checkpoint](PHYSICAL-AIR-CHECKPOINT.md) now establishes
+four FD660 hardware draws with zero comparison mismatches and the fifth explicit
+refusal. Its timing, legacy cache boundary and missing fault/UI coverage remain
+explicit; it is not compositor or 60/90 Hz proof.
 
 Reproduce the real corpus offline:
 

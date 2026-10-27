@@ -91,6 +91,11 @@ def main():
                "-fstack-protector-strong", "-Wl,-dead_strip", "-I", ROOT / "include", "-I", include,
                *sources, "-o", executable]
     run(*command)
+    launcher = output / "duo-metal-launcher"
+    cc = read("xcrun", "--sdk", "iphoneos", "--find", "clang")
+    run(cc, "-target", "arm64-apple-ios17.0", "-isysroot", sdk,
+        "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
+        ROOT / "probe-launcher.c", "-o", launcher)
     header = executable.read_bytes()[:16]
     identity = tuple(int.from_bytes(header[offset:offset + 4], "little") for offset in (0, 4, 8))
     if identity != (0xFEEDFACF, 0x100000C, 0):
@@ -99,23 +104,25 @@ def main():
                     "com.apple.security.iokit-user-client-class": ["AGXDeviceUserClient"]}
     entitlement_path = output / "entitlements.plist"
     entitlement_path.write_bytes(plistlib.dumps(entitlements))
-    run("codesign", "--force", "--sign", "-", "--pagesize", "4096",
-        "--identifier", "org.unixnu.zeta.duo-metal-probe", "--entitlements", entitlement_path, executable)
-    run("codesign", "--verify", "--strict", executable)
+    files = {}
+    for product in (executable, launcher):
+        run("codesign", "--force", "--sign", "-", "--pagesize", "4096",
+            "--identifier", "org.unixnu.zeta."+product.name, "--entitlements", entitlement_path, product)
+        run("codesign", "--verify", "--strict", product)
+        detail = subprocess.run(["codesign", "--display", "--verbose=4", str(product)],
+                                capture_output=True, text=True, check=True).stderr
+        cdhash = re.search(r"^CDHash=([a-f0-9]{40})$", detail, re.M)
+        if not cdhash or not re.search(r"^Page size=4096$", detail, re.M):
+            raise ValueError("expected verified CDHash and 4 KiB code-signature pages")
+        files[product.name] = {"cdhash": cdhash[1], "sha256": digest(product), "bytes": product.stat().st_size}
     actual_entitlements = plistlib.loads(subprocess.check_output(
         ["codesign", "-d", "--entitlements", ":-", str(executable)], stderr=subprocess.DEVNULL))
     if actual_entitlements != entitlements:
         raise ValueError("signed entitlement set differs")
-    detail = subprocess.run(["codesign", "--display", "--verbose=4", str(executable)],
-                            capture_output=True, text=True, check=True).stderr
-    cdhash = re.search(r"^CDHash=([a-f0-9]{40})$", detail, re.M)
-    if not cdhash or not re.search(r"^Page size=4096$", detail, re.M):
-        raise ValueError("expected verified CDHash and 4 KiB code-signature pages")
-    files = {"duo-metal-probe": {"cdhash": cdhash[1], "sha256": digest(executable), "bytes": executable.stat().st_size}}
     (output / "trust.json").write_text(json.dumps({"files": files,
         "purpose": "isolated native Vulkan clear/resolve/readback probe; no Metal/presenter replacement",
         "platform_trust_prepared": False}, indent=2) + "\n")
-    inputs = [*sources, *(ROOT / "include/duo_metal").glob("*.hpp"), Path(__file__)]
+    inputs = [*sources, ROOT / "probe-launcher.c", *(ROOT / "include/duo_metal").glob("*.hpp"), Path(__file__)]
     metadata = {
         "target": "arm64-apple-ios17.0", "sdk_version": read("xcrun", "--sdk", "iphoneos", "--show-sdk-version"),
         "compiler": read(compiler, "--version"), "source_sha256": {str(path.relative_to(ROOT)): digest(path) for path in inputs},

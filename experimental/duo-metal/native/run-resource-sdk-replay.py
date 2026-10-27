@@ -40,6 +40,10 @@ subprocess.run(['git', 'clone', '--no-checkout', metadata['repository'], str(sou
 subprocess.run(['git', '-C', str(source), 'checkout', '--detach', metadata['base_commit']], check=True)
 subprocess.run(['git', '-C', str(source), 'apply', '--check', str(patch)], check=True)
 subprocess.run(['git', '-C', str(source), 'apply', str(patch)], check=True)
+configuration = out / 'configuration'
+subprocess.run([sys.executable, str(here / 'build-resource-xnu-config.py'),
+                '--root-commit', a.root_commit, '--output', str(configuration)], check=True)
 subprocess.run([sys.executable, str(here / 'replay-resource-sdk.py'),
                 '--snapshot', str(snapshot), '--source', str(source),
-                '--unixnu', str(kit_root), '--output', str(out / 'objects')], check=True)
+                '--unixnu', str(kit_root), '--output', str(out / 'objects'),
+                '--configuration', str(configuration)], check=True)

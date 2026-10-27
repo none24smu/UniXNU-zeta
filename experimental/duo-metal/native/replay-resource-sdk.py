@@ -67,6 +67,7 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--without-sanitizers', action='store_true',
                    help='explicit diagnostic for old snapshots; changed feature flags, not original kernel instrumentation')
+    p.add_argument('--configuration', type=Path, help='explicit separately recorded real-XNU generated config supplement')
     a = p.parse_args()
     snapshot = a.snapshot.resolve()
     manifest_path = snapshot / 'manifest.json'
@@ -131,6 +132,20 @@ def main():
     for path in manifest['headers']:
         if '/include/c++/v1/' in path:
             implicit.append(mirror(snapshot, path.split('/include/c++/v1/', 1)[0] + '/include/c++/v1'))
+    configuration = None
+    if a.configuration:
+        configuration = a.configuration.resolve()
+        receipt_path = configuration / 'configuration.json'
+        receipt = json.loads(receipt_path.read_text())
+        if receipt['original_config_bytes_verified'] is not False or receipt['xnu_commit'] != 'ac9718fb1af618d5ce8678d0dc6e8a58f252216f':
+            raise ValueError('invalid regenerated-config provenance')
+        for name, digest in receipt['headers'].items():
+            file = configuration / 'include' / name
+            if Path(name).name != name or sha(file) != digest:
+                raise ValueError('generated configuration changed')
+        output['configuration_receipt_sha256'] = sha(receipt_path)
+        output['original_configuration_bytes_verified'] = False
+        output['scope'] = 'retained-header and real XNU regenerated-config object compile; not exact original config byte replay or runtime proof'
     source = a.source.resolve()
     kits = [a.unixnu.resolve() / ('kits/' + name) for name in ('ArmSmmu4K', 'AdrenoPM4', 'AdrenoFirmware')]
     for staging in (0, 1):
@@ -141,7 +156,7 @@ def main():
             command += ['-std=c++23', '-H', '-nostdinc', '-nostdinc++',
                         '-UNATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING',
                         f'-DNATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING={staging}']
-            for include in [source, *kits]:
+            for include in [source, *kits, *([configuration / 'include'] if configuration else [])]:
                 command += ['-I', str(include)]
             for include in dict.fromkeys(implicit):
                 command += ['-isystem', str(include)]
@@ -155,7 +170,7 @@ def main():
             if run.returncode:
                 raise RuntimeError('snapshot-only compile failed; see retained replay logs')
             for header in traced_headers(log, cwd):
-                if not any(header.is_relative_to(root) for root in (snapshot / 'files', source, *kits)):
+                if not any(header.is_relative_to(root) for root in (snapshot / 'files', source, *kits, *([configuration / 'include'] if configuration else []))):
                     raise ValueError('compiler escaped retained snapshot: ' + str(header))
                 if header.name in ('IOLib.h','IOUserClient.h','OSObject.h','IOMemoryDescriptor.h') and not header.is_relative_to(snapshot / 'files'):
                     raise ValueError('critical XNU header escaped retained snapshot: ' + str(header))

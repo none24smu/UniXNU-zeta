@@ -109,6 +109,7 @@ python3 "$Z/scripts/check-zeta-heap-aliasing.py" "$U"
 python3 "$Z/scripts/check-zeta-display-cache.py" "$U"
 python3 "$Z/scripts/check-zeta-surface-planes.py" "$U"
 python3 "$Z/scripts/check-zeta-blit-subresources.py" "$U"
+python3 "$Z/scripts/check-zeta-render-links.py" "$U"
 python3 scripts/build-adreno-metal-plugin.py
 
 cp -R build/adreno-metal-plugin/. "$OUT/"
@@ -118,6 +119,8 @@ cp build/zeta-display-cache/*.log "$OUT/"
 cp build/zeta-surface-planes/host.log "$OUT/surface-planes-host.log"
 cp build/zeta-blit-subresources/host.log "$OUT/blit-subresources-host.log"
 cp build/zeta-blit-subresources/negative-control.log "$OUT/blit-subresources-negative-control.log"
+cp build/zeta-render-links/host.log "$OUT/render-links-host.log"
+cp build/zeta-render-links/negative-control.log "$OUT/render-links-negative-control.log"
 cp build/zeta-submit-pressure/fixed.log "$OUT/submit-pressure-host.log"
 cp build/zeta-submit-pressure/old.log "$OUT/submit-pressure-negative-control.log"
 # Carry the board's verified discovery policy with every later GPU build. Image

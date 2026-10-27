@@ -1,0 +1,219 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -1313,6 +1313,55 @@
+   return text;
+  }
+ };
++// Storage is local to each creation/archive call. Nothing in the C descriptor
++// borrows a temporary vector or an autoreleased UTF8String after conversion.
++struct NBLinkedStorage {
++ std::vector<NmbFunction *> functions,privateFunctions,binaryFunctions;
++ std::vector<std::string> names;
++ std::vector<std::vector<NmbFunction *>> members;
++ std::vector<NmbLinkedFunctionGroup> groups;
++ static bool fill(NSArray *source,std::vector<NmbFunction *> &out,NSError **error) {
++  if(source && ![source isKindOfClass:[NSArray class]]){if(error)*error=nbError(@"invalid linked function list");return false;}
++  for(id function in source) {
++   if(![function isKindOfClass:[NBFunction class]]){if(error)*error=nbError(@"foreign linked function");return false;}
++   out.push_back([(NBFunction *)function handle]);
++  }
++  return true;
++ }
++ bool resolve(MTLLinkedFunctions *source,NmbLinkedFunctions *out,NSError **error) {
++  if(!fill(source.functions,functions,error) || !fill(source.privateFunctions,privateFunctions,error) || !fill(source.binaryFunctions,binaryFunctions,error))return false;
++  NSDictionary *dictionary=source.groups;
++  if(dictionary && ![dictionary isKindOfClass:[NSDictionary class]]){if(error)*error=nbError(@"invalid linked function groups");return false;}
++  for(id key in dictionary)if(![key isKindOfClass:[NSString class]]){if(error)*error=nbError(@"invalid linked function group name");return false;}
++  NSArray *keys=[dictionary.allKeys sortedArrayUsingSelector:@selector(compare:)];
++  names.resize(keys.count);members.resize(keys.count);groups.resize(keys.count);
++  for(NSUInteger i=0;i<keys.count;++i) {
++   NSString *key=keys[i];names[i]=key.UTF8String;
++   if(!fill(dictionary[key],members[i],error))return false;
++   groups[i]={names[i].c_str(),members[i].data(),members[i].size()};
++  }
++  *out={functions.data(),functions.size(),privateFunctions.data(),privateFunctions.size(),binaryFunctions.data(),binaryFunctions.size(),groups.data(),groups.size()};
++  return true;
++ }
++};
++struct NBRenderLinks {NBLinkedStorage vertex,fragment;};
++
++static void journalLinks(std::string &line,const char *stage,MTLLinkedFunctions *links) {
++ auto list=[&](const char *kind,NSArray *functions) {
++  line+=" | ";line+=stage;line+=".";line+=kind;line+="=";line+=std::to_string(functions.count);
++  for(id function in functions) {
++   line+=" [";
++   if([function isKindOfClass:[NBFunction class]]){NBFunction *f=function;line+=f.name.UTF8String;line+=" ";line+=f.constantsText;}
++   else line+="foreign";
++   line+="]";
++  }
++ };
++ list("functions",links.functions);list("private",links.privateFunctions);list("binary",links.binaryFunctions);
++ for(NSString *key in [links.groups.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
++  std::string group="group:";group+=key.UTF8String;list(group.c_str(),links.groups[key]);
++ }
++}
++
+ // One journal line of a render pipeline creation begun at `began` (microseconds), `refused` its refusal or null. The label is the
+ // caller's name for the pipeline (QuartzCore's: its spec's encoded name).
+ static void journalRenderPipeline(MTLRenderPipelineDescriptor *d,uint64_t began,const char *refused,const std::string &cost) {
+@@ -1343,17 +1392,19 @@
+  NBFunction *ff=[(id)d.fragmentFunction isKindOfClass:[NBFunction class]]?(NBFunction *)d.fragmentFunction:nil;
+  line+=" | v ";line+=vf?vf.name.UTF8String:"-";line+=" ";line+=vf?vf.constantsText:"";
+  line+=" | f ";line+=ff?ff.name.UTF8String:"-";line+=" ";line+=ff?ff.constantsText:"";
++ journalLinks(line,"v",d.vertexLinkedFunctions);journalLinks(line,"f",d.fragmentLinkedFunctions);
+  if(refused){line+=" | refused ";line+=refused;}
+  line+=" | ";line+=quartzCoreCallers();
+  for(char &c:line)if(c=='\n')c=' ';
+  journal(line);
+ }
+ // A render pipeline descriptor in the bridge's form; false, with the error, for a function of another device.
+-static bool renderDescriptor(MTLRenderPipelineDescriptor *d,NmbRenderPipelineDescriptor *p,NSError **error) {
++static bool renderDescriptor(MTLRenderPipelineDescriptor *d,NmbRenderPipelineDescriptor *p,NBRenderLinks &links,NSError **error) {
+  if(![(id)d.vertexFunction isKindOfClass:[NBFunction class]] || (d.fragmentFunction && ![(id)d.fragmentFunction isKindOfClass:[NBFunction class]])) {
+   if(error)*error=nbError(@"foreign function");return false;
+  }
+  p->vertex=[(NBFunction *)d.vertexFunction handle];p->fragment=d.fragmentFunction?[(NBFunction *)d.fragmentFunction handle]:nullptr;
++ if(!links.vertex.resolve(d.vertexLinkedFunctions,&p->vertex_linked,error) || !links.fragment.resolve(d.fragmentLinkedFunctions,&p->fragment_linked,error))return false;
+  for(unsigned i=0;i<8;i++) {
+   MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];
+   p->colors[i]={(uint64_t)a.pixelFormat,(uint64_t)a.writeMask,(uint64_t)a.blendingEnabled,(uint64_t)a.sourceRGBBlendFactor,(uint64_t)a.destinationRGBBlendFactor,
+@@ -1468,7 +1519,9 @@
+ - (NSUInteger)options {return 0;}
+ - (BOOL)addRenderPipelineFunctionsWithDescriptor:(MTLRenderPipelineDescriptor *)d error:(NSError **)error {
+  auto *p=new NmbRenderPipelineDescriptor();
+- const bool ok=renderDescriptor(d,p,error) && nmb_binary_archive_add_render(_handle,p);delete p;
++ NBRenderLinks links;
++ if(!renderDescriptor(d,p,links,error)){delete p;return NO;}
++ const bool ok=nmb_binary_archive_add_render(_handle,p);delete p;
+  if(!ok)return failWith<BOOL>(error,@"archive render pipeline",NO);
+  if(error)*error=nil;return YES;
+ }
+@@ -1731,8 +1784,9 @@
+                                                         reflection:(MTLAutoreleasedRenderPipelineReflection *)reflection error:(NSError **)error {
+  if(reflection)*reflection=nil;
+  auto *p=new NmbRenderPipelineDescriptor();
++ NBRenderLinks links;
+  __autoreleasing NSError *refusal=nil;if(!error)error=&refusal;
+- if(!renderDescriptor(d,p,error)){noteRefusal(@"render descriptor",d.fragmentFunction.name?:d.vertexFunction.name,error);delete p;return nil;}
++ if(!renderDescriptor(d,p,links,error)){noteRefusal(@"render descriptor",d.fragmentFunction.name?:d.vertexFunction.name,error);delete p;return nil;}
+  std::vector<NmbBinaryArchive *> archives;
+  if(!pipelineArchives(d.binaryArchives,archives,error)){noteRefusal(@"render archives",d.fragmentFunction.name?:d.vertexFunction.name,error);delete p;return nil;}
+  const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
+--- a/bridge/NativeMetalObjects.h
++++ b/bridge/NativeMetalObjects.h
+@@ -133,6 +133,15 @@
+ };
+ struct NmbVertexAttribute {uint64_t format, offset, buffer;};
+ struct NmbVertexLayout {uint64_t stride, step_function, step_rate;};
++/* Borrowed for the creation/archive call. Each handle retains its own function
++ * constants and compile-to-binary state when cloned into the runtime. */
++struct NmbLinkedFunctionGroup {const char *name; NmbFunction *const *functions; size_t count;};
++struct NmbLinkedFunctions {
++    NmbFunction *const *functions; size_t function_count;
++    NmbFunction *const *private_functions; size_t private_count;
++    NmbFunction *const *binary_functions; size_t binary_count;
++    const struct NmbLinkedFunctionGroup *groups; size_t group_count;
++};
+ struct NmbRenderPipelineDescriptor {
+     NmbFunction *vertex, *fragment;
+     struct NmbColorAttachment colors[8];
+@@ -140,6 +149,7 @@
+     uint64_t vertex_inputs; /* 0: no vertex descriptor */
+     struct NmbVertexAttribute attributes[31];
+     struct NmbVertexLayout layouts[31];
++    struct NmbLinkedFunctions vertex_linked, fragment_linked;
+ };
+ NmbRenderPipeline *nmb_render_pipeline_new(NmbDevice *, const struct NmbRenderPipelineDescriptor *);
+ /* Descriptor binaryArchives and MTLPipelineOption bits. NULL options means defaults.
+--- a/bridge/NativeMetalObjects.rs
++++ b/bridge/NativeMetalObjects.rs
+@@ -14,7 +14,7 @@
+ };
+ use metal2vulkan::pipeline::{
+     ColorAttachmentDescriptor, ComputePipelineDescriptor, RenderPipelineDescriptor, StageSource, VertexAttributeDescriptor, VertexBufferLayoutDescriptor,
+-    VertexDescriptor,
++    VertexDescriptor, LinkedFunction, LinkedFunctions,
+ };
+ use metal2vulkan_runtime::{
+     BinaryArchive, BinaryArchiveDescriptor, BlitCommandEncoder, FamilyRow, FeatureRow, GpuFamily, RowState, BlitOption, Buffer, ClearColor, CommandBuffer, CommandQueue, ComputeCommandEncoder,
+@@ -1138,6 +1138,55 @@
+ }
+ 
+ #[repr(C)]
++pub struct NmbLinkedFunctionGroup {
++    pub name: *const c_char,
++    pub functions: *const *mut NmbFunction,
++    pub count: usize,
++}
++
++#[repr(C)]
++pub struct NmbLinkedFunctions {
++    pub functions: *const *mut NmbFunction,
++    pub function_count: usize,
++    pub private_functions: *const *mut NmbFunction,
++    pub private_count: usize,
++    pub binary_functions: *const *mut NmbFunction,
++    pub binary_count: usize,
++    pub groups: *const NmbLinkedFunctionGroup,
++    pub group_count: usize,
++}
++
++// SAFETY: the frontend owns each counted array and its live handles through the
++// entire call. Clone the runtime functions before that storage can disappear.
++unsafe fn linked_array(pointer: *const *mut NmbFunction, count: usize) -> Result<Vec<LinkedFunction>, String> {
++    if count == 0 { return Ok(Vec::new()); }
++    if pointer.is_null() || count > isize::MAX as usize / std::mem::size_of::<*mut NmbFunction>() {
++        return Err("invalid linked function array".into());
++    }
++    unsafe { std::slice::from_raw_parts(pointer, count) }.iter()
++        .map(|&function| Ok(get(function)?.0.linked_function())).collect()
++}
++
++unsafe fn linked_functions(d: &NmbLinkedFunctions) -> Result<LinkedFunctions, String> {
++    let mut out = LinkedFunctions::new();
++    out.functions = unsafe { linked_array(d.functions, d.function_count)? };
++    out.private_functions = unsafe { linked_array(d.private_functions, d.private_count)? };
++    out.binary_functions = unsafe { linked_array(d.binary_functions, d.binary_count)? };
++    if d.group_count > 0 {
++        if d.groups.is_null() || d.group_count > isize::MAX as usize / std::mem::size_of::<NmbLinkedFunctionGroup>() {
++            return Err("invalid linked function groups".into());
++        }
++        for group in unsafe { std::slice::from_raw_parts(d.groups, d.group_count) } {
++            if group.name.is_null() { return Err("null linked function group name".into()); }
++            let name = unsafe { CStr::from_ptr(group.name) }.to_str().map_err(e("linked group name"))?;
++            if out.groups.contains_key(name) { return Err("duplicate linked function group name".into()); }
++            out.groups.insert(name.to_owned(), unsafe { linked_array(group.functions, group.count)? });
++        }
++    }
++    Ok(out)
++}
++
++#[repr(C)]
+ pub struct NmbRenderPipelineDescriptor {
+     pub vertex: *mut NmbFunction,
+     pub fragment: *mut NmbFunction,
+@@ -1150,6 +1199,8 @@
+     pub vertex_inputs: u64,
+     pub attributes: [NmbVertexAttribute; 31],
+     pub layouts: [NmbVertexLayout; 31],
++    pub vertex_linked: NmbLinkedFunctions,
++    pub fragment_linked: NmbLinkedFunctions,
+ }
+ 
+ fn optional_format(value: u64) -> Result<Option<PixelFormat>, String> {
+@@ -1203,9 +1254,13 @@
+ 
+ fn render_descriptor(descriptor: *const NmbRenderPipelineDescriptor) -> Result<RenderPipelineDescriptor, String> {
+         let d = get(descriptor)?;
+-        let mut out = RenderPipelineDescriptor::new(StageSource::Function(get(d.vertex)?.0.function_descriptor()));
++        let vertex = get(d.vertex)?.0.function_descriptor().with_linked(unsafe { linked_functions(&d.vertex_linked)? });
++        let mut out = RenderPipelineDescriptor::new(StageSource::Function(vertex));
+         if !d.fragment.is_null() {
+-            out.fragment = Some(StageSource::Function(get(d.fragment)?.0.function_descriptor()));
++            let fragment = get(d.fragment)?.0.function_descriptor().with_linked(unsafe { linked_functions(&d.fragment_linked)? });
++            out.fragment = Some(StageSource::Function(fragment));
++        } else if !unsafe { linked_functions(&d.fragment_linked)? }.is_empty() {
++            return Err("fragment linked functions without a fragment function".into());
+         }
+         for (slot, c) in out.color_attachments.iter_mut().zip(d.colors.iter()) {
+             if c.format == 0 {

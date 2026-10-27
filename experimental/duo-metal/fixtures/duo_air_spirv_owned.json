@@ -1,0 +1,40 @@
+{
+  "scope": "owned AIR2.9 vertex/fragment -> candidateAIRNIR -> unmodifiedMesa25.0.7ZinkSPIRV serializer; externalspirv-val passed; no nativeexecutionyet",
+  "target_env": "vulkan1.2",
+  "spirv_version": "1.5",
+  "entry_point": "main",
+  "stages": {
+    "triangle": {
+      "air_sha256": "b77b415a1ea7cf8d538e8e2cecdf2727b0da2f84d10f0192520b0bbc5bbbc5a1",
+      "spirv_sha256": "82b49633668905609ec79e84c220a151fa793b598664b6851accfb2291ea5f59",
+      "words": 165,
+      "stage": "vertex",
+      "descriptor_bindings": [],
+      "push_constants": [],
+      "specialization_constants": [],
+      "vertex_attributes": [],
+      "varyings": [],
+      "required_subgroup_size": null,
+      "required_features": [
+        "Shader"
+      ],
+      "shader_output": "Builtin Position"
+    },
+    "solid": {
+      "air_sha256": "ec06566083119c9aecba9f09abdf77420984aabdfbbb6a9c1ad965e25682ae8b",
+      "spirv_sha256": "5f3f25a3dcb8be992786ec1e9ba73257a38ff2180a07682a651e0c1eec5ad0f4",
+      "words": 98,
+      "stage": "fragment",
+      "descriptor_bindings": [],
+      "push_constants": [],
+      "specialization_constants": [],
+      "vertex_attributes": [],
+      "varyings": [],
+      "required_subgroup_size": null,
+      "required_features": [
+        "Shader"
+      ],
+      "shader_output": "Location0 RGBA32Float"
+    }
+  }
+}

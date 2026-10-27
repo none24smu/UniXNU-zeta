@@ -7,7 +7,31 @@
 #include <sys/sysproto.h>
 #include <sys/fcntl.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
 #include <pexpert/pexpert.h>
+
+// The original consolidated job cache takes precedence over LaunchDaemons.
+// An explicit RAM probe profile supplies the original xpc support files without
+// launchd.plist, so launchd can discover the owner job in its existing disk path.
+// This is opt-in; the normal graphics control retains its original cache/view.
+extern volatile int native_bindfs_boot_mount __attribute__((weak_import));
+static int zeta_air_disk_jobs(proc_t p, uint64_t scratch) {
+ int enabled=0;
+ if(!PE_parse_boot_argn("zeta-air-probe",&enabled,sizeof(enabled)) || enabled!=1)return 0;
+ if(!&native_bindfs_boot_mount)return ENOTSUP;
+ const char *source="/private/var/ngpu/xpc",*point="/System/Library/xpc";
+ struct mount_args request={.type=scratch+0x800,.path=scratch+0x820,
+   .flags=MNT_RDONLY,.data=scratch+0x900};
+ int error;int32_t result=0;
+ if((error=copyout("bindfs",request.type,7)) ||
+    (error=copyout(point,request.path,strlen(point)+1)) ||
+    (error=copyout(source,request.data,strlen(source)+1)))return error;
+ native_bindfs_boot_mount=1;
+ error=mount(p,&request,&result);
+ native_bindfs_boot_mount=0;
+ printf("zeta-air: disk job view mount status %d (consolidated launchd cache hidden in RAM)\n",error);
+ return error;
+}
 
 static const char policy_head[] =
  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -80,7 +104,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   return error;
  }
  if(setup==1)printf("sheng setup flags reset: Hello page on this boot\n");
- if(!enabled && !jobs[0] && !lite)return 0;
+ if(!enabled && !jobs[0] && !lite)return zeta_air_disk_jobs(p,scratch);
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));
  if(lite)for(const char *c=lite_jobs;*c;) {if((error=append_job(&c)))return error;}
@@ -132,6 +156,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    else if(error==EEXIST)error=0;
   }
  }
+ if(!error)error=zeta_air_disk_jobs(p,scratch);
  sheng_watchdog_policy_status=error;
  printf("sheng bring-up watchdogd launch policy: %d (hardware watchdog not implemented)\n",error);
  return error;

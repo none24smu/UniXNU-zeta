@@ -1,0 +1,150 @@
+{
+  "scope": "14 real XNU retained-header plus real generated-configuration ARM64 object compilations; no final linking or native execution qualification",
+  "ci_run": "https://github.com/none24smu/UniXNU-zeta/actions/runs/40594628254",
+  "board_commit": "9b5e7b27659c5e2b665dee7c21e50a558db38c34",
+  "source_commit": "8ff8a3e313a95587f6ecd6231e96ab565749c576",
+  "compiler_sha256": "d2e4bf622758eee1bf7267c060497fb2c41e098d37b0fca8be73898dc7e14eda",
+  "original_instrumentation_preserved": true,
+  "original_configuration_bytes_verified": false,
+  "configuration_generator": "real pinned XNU SETUP/config + doconf, DEVELOPMENT_ARM64_BCM2837 iPhoneOS",
+  "configuration_receipt_sha256": "aede3bfd9129298c9a1326f2f6c4b2cb7584ad245d6f1f5f62cd44aaa3d0d43f",
+  "configuration_headers": {
+    "iokitcpp.h": "09da9be8942ea8ec0f176e304998f408834bf53d4c6f03c91d7195f10e89da81",
+    "crypto.h": "f539558eeb8cb90cb31c83651d0a990de9aba2c86b2b0e1dc680ced5a30d3a57",
+    "kdebug.h": "63e021288b7e70888d209ffbec5c526f483d39019eb6e68fcc619824435fe9a0",
+    "meta_features.h": "d157200a4e0481e11d6b148a049da72ade3206a14c6b77e0c69661c78f2c00b8",
+    "config_dtrace.h": "f8c1ac08c61f8115dc74a10c8cf23803d5d1ba6db06dbdad96562c66f60832c9",
+    "mach_assert.h": "a39983b09d4fab2f28a22ecaa9c8da5d4b991552aa9302967aa300d596ceb179",
+    "networking.h": "18f691a09f699bfdadf0c5c78601bda0f5392bd38e4b088ffd0abe4cfce4787d",
+    "hibernation.h": "74e3720b223356e924a95605d1d4e5b5f2828de147cd9a01af5e869efd83b969"
+  },
+  "retained_replay_sha256": "424c32372b9d91696c56eed15cdd42c58f85a42482abbe7555c539a80f86d364",
+  "official_hash_exact_recoveries": 62,
+  "recovery_record_sha256": "040832b0e5a6952ea7f61fa970d5abd1d09733463191a069b1caa7086ea51f07",
+  "object_count": 14,
+  "objects": [
+    {
+      "source": "NativeAdrenoPublish.cpp",
+      "staging": 0,
+      "source_sha256": "59d009f69e826e324ce7d1f844544e82fc7e0be7f2801c8990a5f84512e57075",
+      "object_sha256": "e60a7d52f097912e00d72517c19902381f119f39f02cf055e5bd3db9ac048daf",
+      "bytes": 382376,
+      "header_count": 380
+    },
+    {
+      "source": "NativeAdrenoUserClient.cpp",
+      "staging": 0,
+      "source_sha256": "d4ab4391a95b4a36d1dbd429839ea564a5d486d2dd622313d5c49e4997c0c717",
+      "object_sha256": "1081eece4f6ba9bef5c7d1fab4a5f7bc1d7e7bb3c45078fb077178efafac069a",
+      "bytes": 78832,
+      "header_count": 320
+    },
+    {
+      "source": "NativeAdrenoVm.cpp",
+      "staging": 0,
+      "source_sha256": "5beba649f23bd4af085247978a3cf11505a463760be9ada0dceba48e841401e4",
+      "object_sha256": "4b6b077503b450777231f2089fea03c70df3044aa49ae9ebf5e202a5b446964a",
+      "bytes": 76240,
+      "header_count": 312
+    },
+    {
+      "source": "NativeAdrenoResources.cpp",
+      "staging": 0,
+      "source_sha256": "d99bd0d744d3d15e70b78fd27099ec06d1d4f420bc35beada712d6485f387d36",
+      "object_sha256": "f7cd1e5aa3f036ea5376a67e1941a1a771f69c633b5f48b835f8afc6290b5d4b",
+      "bytes": 25800,
+      "header_count": 22
+    },
+    {
+      "source": "NativeAdrenoResourceTransaction.cpp",
+      "staging": 0,
+      "source_sha256": "e2bf370c333ecb8ac27b0325fb86364ad4364bbdfa38ef789f23caf5d6f9893f",
+      "object_sha256": "a8b0676ad2ec90d816470e154804d97f743a6d1704cb0a1d0a53ce607d5425ae",
+      "bytes": 39552,
+      "header_count": 74
+    },
+    {
+      "source": "NativeAdrenoMemory.cpp",
+      "staging": 0,
+      "source_sha256": "618e2c59de90619af683c0f79564a18d7cc7c975ea752e802ec74cd5f7ca9379",
+      "object_sha256": "8c12588e2c97a60286291e8b63c55ddee859e114c6e61cb1040c525666185d86",
+      "bytes": 118904,
+      "header_count": 333
+    },
+    {
+      "source": "NativeAdrenoResourceQueue.cpp",
+      "staging": 0,
+      "source_sha256": "16b3824e44bd17c5de6ae17263babfecacb8406afa439e72e8f556e3886dd032",
+      "object_sha256": "889fdb39a510c1f49464916bcb9715e1bb0ef016e2ce503a711069d8d0581a58",
+      "bytes": 39736,
+      "header_count": 294
+    },
+    {
+      "source": "NativeAdrenoPublish.cpp",
+      "staging": 1,
+      "source_sha256": "59d009f69e826e324ce7d1f844544e82fc7e0be7f2801c8990a5f84512e57075",
+      "object_sha256": "1e8beae2d4d408633813e51368657cbebe81640866f09e25b5eb6659143f0c48",
+      "bytes": 396304,
+      "header_count": 380
+    },
+    {
+      "source": "NativeAdrenoUserClient.cpp",
+      "staging": 1,
+      "source_sha256": "d4ab4391a95b4a36d1dbd429839ea564a5d486d2dd622313d5c49e4997c0c717",
+      "object_sha256": "dc339393d668a2b2ec1438d09052d1b2fdfceec113521895c4838d63cda1a0db",
+      "bytes": 96192,
+      "header_count": 320
+    },
+    {
+      "source": "NativeAdrenoVm.cpp",
+      "staging": 1,
+      "source_sha256": "5beba649f23bd4af085247978a3cf11505a463760be9ada0dceba48e841401e4",
+      "object_sha256": "4b6b077503b450777231f2089fea03c70df3044aa49ae9ebf5e202a5b446964a",
+      "bytes": 76240,
+      "header_count": 312
+    },
+    {
+      "source": "NativeAdrenoResources.cpp",
+      "staging": 1,
+      "source_sha256": "d99bd0d744d3d15e70b78fd27099ec06d1d4f420bc35beada712d6485f387d36",
+      "object_sha256": "f7cd1e5aa3f036ea5376a67e1941a1a771f69c633b5f48b835f8afc6290b5d4b",
+      "bytes": 25800,
+      "header_count": 22
+    },
+    {
+      "source": "NativeAdrenoResourceTransaction.cpp",
+      "staging": 1,
+      "source_sha256": "e2bf370c333ecb8ac27b0325fb86364ad4364bbdfa38ef789f23caf5d6f9893f",
+      "object_sha256": "a8b0676ad2ec90d816470e154804d97f743a6d1704cb0a1d0a53ce607d5425ae",
+      "bytes": 39552,
+      "header_count": 74
+    },
+    {
+      "source": "NativeAdrenoMemory.cpp",
+      "staging": 1,
+      "source_sha256": "618e2c59de90619af683c0f79564a18d7cc7c975ea752e802ec74cd5f7ca9379",
+      "object_sha256": "8c12588e2c97a60286291e8b63c55ddee859e114c6e61cb1040c525666185d86",
+      "bytes": 118904,
+      "header_count": 333
+    },
+    {
+      "source": "NativeAdrenoResourceQueue.cpp",
+      "staging": 1,
+      "source_sha256": "16b3824e44bd17c5de6ae17263babfecacb8406afa439e72e8f556e3886dd032",
+      "object_sha256": "889fdb39a510c1f49464916bcb9715e1bb0ef016e2ce503a711069d8d0581a58",
+      "bytes": 39736,
+      "header_count": 294
+    }
+  ],
+  "passed": true,
+  "final_link_passed": false,
+  "native_execution_passed": false,
+  "default_staging": 0,
+  "selected_profile_changed": false,
+  "critical_header_provenance": {
+    "driverkit_osobject": "actual IIG DriverKit440 generated OSObject.iig header, includes real libkern OSObject under KERNEL",
+    "generated_osobject_sha256": "f7a089df798052ebde3f2372e6ac39806042329c6b771d629a98988280af4d1c",
+    "real_libkern_osobject_sha256": "cde117af53211f8f5736f48f477f8821becd478c7310e42ce73f310f0efa1014",
+    "authored_declaration_stubs_used": false
+  }
+}

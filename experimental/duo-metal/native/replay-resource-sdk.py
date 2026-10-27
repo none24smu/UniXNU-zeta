@@ -180,7 +180,8 @@ def main():
             item['sha256'] = sha(obj)
     output['passed'] = True
     (out / 'replay.json').write_text(json.dumps(output, indent=2) + '\n')
-    print(f"PASS: {len(output['objects'])} snapshot-only ARM64 objects; input scope retained; no kernel/runtime claim")
+    label = "actual XNU retained/generated-config" if configuration else "snapshot-only"
+    print(f"PASS: {len(output['objects'])} {label} ARM64 objects; no kernel/link/runtime claim")
 
 
 if __name__ == '__main__':

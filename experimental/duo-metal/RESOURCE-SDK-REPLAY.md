@@ -1,35 +1,44 @@
-# Compile-only iteration using retained real headers
+# Compile-only iteration with actual XNU headers
 
-The actual-XNU object gate now retains every Clang-traced header as bytes, each
-lookup path/hash, the original compile record, compiler binary hash, resource
-include path, native kit header hashes and the actual sanitizer ignorelist.
-Relative generated IIG paths resolve against the compiler's real working directory.
-A post-check failure therefore preserves useful compilation inputs for diagnosis.
+CI [40594628254](https://github.com/none24smu/UniXNU-zeta/actions/runs/40594628254)
+compiled all fourteen integrated device objects: Publish, UserClient, VM,
+Resources, Transaction, Memory and Queue with staging0/1. The
+[checkpoint](evidence/resource-xnu-object-checkpoint.json) records each actual
+ARM64 Mach-O/source hash. The original Xcode26.6 compiler binary and sanitizer
+flags were preserved. The selected driver, profile and phone image were untouched.
+This qualifies these source/header compilations; final kernel linking, physical
+queue execution, CPU ownership/import aliases and rendering remain separate gates.
 
-`native/replay-resource-sdk.py` can replay object compilation against that closure
-without rebuilding the kernel. It remaps original absolute/relative header paths
-into the snapshot, disables default system includes, verifies the exact compiler
-binary and kit header identities, and rejects header escapes. Current candidate
-source remains separate, so a targeted driver fix can be compiled quickly. This
-is not a final kernel link, hardware execution, resource lifetime or renderer gate.
+The original CI3 artifact omitted50 source headers because their lookup paths
+contained `.cache`, and retained hashes but no bytes for12 untraced native kit
+headers. Recovery downloads immutable official XNU/AvailabilityVersions sources
+and the original root's exact kit submodules, accepting bytes only when their
+SHA256 matches the sealed original manifest. No original hash is relaxed.
+
+The original clang trace also omitted the forced `meta_features.h` configuration
+preinclude and its seven feature headers. Those bytes have no original sealed
+identity. The replay therefore explicitly generates a **separate supplement**
+with pinned XNU's actual SETUP/config tool and doconf, using the original root's
+configuration patches, DEVELOPMENT_ARM64_BCM2837 and iPhoneOS. Its source,
+commands, host generator and generated-header hashes are recorded. It is actual
+XNU-generated configuration, not authored declarations. Its identity to the
+omitted original configuration bytes remains unverified; the result must not be
+called an exact original-header snapshot replay. `replay.json` says so explicitly.
+
+Reproduce this bounded postcheck without rebuilding a kernel:
 
 ```sh
-python3 "$DEVICE_DIR/experimental/duo-metal/native/replay-resource-sdk.py" \
-  --snapshot "$ARTIFACT/objects/header-snapshot" \
-  --source "$ARTIFACT/source" --unixnu "$PINNED_UNIXNU" \
-  --output "$OUTPUT/resource-replay"
+gh workflow run air-probe.yml --ref port/ios27-userspace \
+  -f resource_snapshot_run=40588059062
 ```
 
-Replay itself still needs qualification against an actual retained XNU closure.
-The local helper smoke test used **owned synthetic headers**, disabled the original
-include tree, and produced ARM64 Mach-O objects; that proves path relocation and
-refusal mechanics, not native SDK compatibility. The parent kernel build and
-real-header object records remain authoritative until real replay succeeds.
+The workflow reconstructs the tracked isolated candidate and uses the original
+root run's source commit. Strict replay remaps original header paths, disables
+implicit system headers, verifies compiler/header/kit identities and rejects
+include escapes. A different compiler is a refusal. The new capture helper now
+retains complete kit bytes and actual generated configuration headers explicitly.
+Artifact uploads must include hidden files to preserve `.cache` lookup spellings.
 
-CI2's earlier snapshot format lacks the sanitizer file, compiler resource path
-and complete kit set. Strict mode refuses incomplete inputs. For diagnosis only,
-`--without-sanitizers` explicitly removes sanitizer flags, binds the actually
-observed kit headers and queries the exact same compiler binary's resource path.
-Its output records `original_kernel_instrumentation_preserved:false`. Compiler
-feature macros can differ in that mode; it must not be presented as the original
-kernel compile configuration or substitute for its required native build gate.
+The older owned-header relocation smoke test remains tooling evidence only.
+`--without-sanitizers` is an explicit older-snapshot diagnostic and changes
+instrumentation; it is never the original native configuration gate.

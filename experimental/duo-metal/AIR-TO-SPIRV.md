@@ -70,9 +70,7 @@ checks those facts. Runtime Vulkan module creation is also private and consumes
 linked pipeline artifacts. Replacing words while retaining an unrelated binding
 plan or fabricating a cache frame is not an integration.
 
-A checked compiler-provider/import boundary inside the translator/runtime can
-reuse the existing Metal objects and Vulkan binder. Resource-free stages make a
-small first integration contract. General shaders additionally need linked IO
+A [checked resource-free import boundary](EXTERNAL-SPIRV-IMPORT.md) is now implemented and tested in an isolated translator patch. It constructs actual CompiledFunction values and exercises the ordinary linker, binder and cache; the current native C bridge still selects its existing AIR backend. Resource-free stages provide the first bounded contract. General shaders additionally need linked IO
 locations/types, actual function constants, descriptor set/binding planning,
 inline/combined sampler semantics, resource layouts, requirements, specialization,
 precision/reconvergence facts and driver/profile keyed cache identities. Zink's

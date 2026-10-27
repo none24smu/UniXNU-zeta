@@ -1,0 +1,62 @@
+{
+  "scope": "isolated checked resource-free external SPIR-V importer into actual existing CompiledFunction/StageSource::Compiled linker/planner; no runtime provider selection",
+  "repository": "https://github.com/steelbrain/metal2vulkan.git",
+  "base_commit": "720ef1ce9ae2a2068999a8675717418b9416283e",
+  "source_commit": "7fbc993d13ff9668aeb98c5cd71eba4cb582db9c",
+  "patch_sha256": "f5a41fb61fe25bc535ab38b556ae45121c71f456d92c75a61d4dfccc73baec42",
+  "semantics_version": 1699,
+  "default_backend_changed": false,
+  "selected_profile_changed": false,
+  "native_device_execution_proven": false,
+  "synthetic_test_producer_identity_used": true,
+  "source_air_equivalence_attestation": false,
+  "accepted_interfaces": [
+    "VertexIndex uint32 -> Position vec4f32",
+    "OriginUpperLeft -> Location0/Index0 vec4f32"
+  ],
+  "unsupported": [
+    "resources",
+    "specialization",
+    "vertex attributes",
+    "varyings",
+    "unknown instructions",
+    "general control flow",
+    "unproven color-format conversion"
+  ],
+  "verified_pipeline_attachment": "RGBA32Float",
+  "rgba8_without_lowering": "existing linker NeedsInput(ColorWrites)",
+  "tests_release_passed": 7,
+  "accepted_mutations_spirv_val_passed": 130,
+  "api_surface_checks_passed": 4,
+  "clippy_all_features_passed": true,
+  "clippy_default_passed": true,
+  "rustdoc_all_features_passed": true,
+  "remaining": [
+    "selected NativeMetal bridge compiler-provider handoff",
+    "real renderer resource/sampler and attachment semantics",
+    "native imported-stage frontend/encode/readback test",
+    "real IOSurface CPU/GPU ownership and queue retirement",
+    "compositor wallpaper/frame pacing/60-90Hz measurements"
+  ],
+  "release_log_sha256": "3e805ac016dcf6c67877c4ccfe283a37995f144e953b81a4ececf4561a4c816a",
+  "test_profile": "committed vk12-bare with DevicePolicy::default, not a physical profile",
+  "mutation_attempts": 1315,
+  "release_max_words": 4094,
+  "release_batch32_with_L3_us": 10898,
+  "release_slowest_import_us": 293,
+  "release_suite_wall_seconds": 0.64,
+  "release_suite_peak_rss_kib": 20964,
+  "release_current_sha256": "3e805ac016dcf6c67877c4ccfe283a37995f144e953b81a4ececf4561a4c816a",
+  "measured_current_sha256": "5cb911664ec61d190616916c8b0f4542a557be52e856d9e796347b1122c7bd5d",
+  "clippy_final_sha256": "4855682470de594e6be57344b8346ab48d693fc672645d96a2b41e1ff8a1c937",
+  "owned_fixture_header_sha256": "51c876ab51d2136126503c452afb6aa776f9872ca2a4b49b452b9ce733ead1bb",
+  "source_sha256": {
+    "crates/metal2vulkan/src/pipeline/external_spirv.rs": "3cd8e4d998a663781931e5320b27768b3f640ea21bb5b72dc0534dd14ea2c28f",
+    "crates/metal2vulkan/src/pipeline/external_spirv/tests.rs": "6a4a7278694496f39ccf0e161912130d07800ec74e47fb5415b91c78182c4c14",
+    "crates/metal2vulkan/src/pipeline/external_spirv/fixtures.rs": "f105aaf1112083c2918fe756976f29bd3d60f015b29a31a700c92d74c7b15cf2",
+    "crates/metal2vulkan/tests/api_surface.rs": "831a4cefad581d57980633affe474541d990786a63348a7c94e92cd639295f88"
+  },
+  "clean_base_patch_reconstruction_passed": true,
+  "rustdoc_final_sha256": "53e7ce360052ecb4ed1e14496a4dd101b994750c0ddd67d6aee785e52aca237a",
+  "clippy_default_final_sha256": "d6ad8b4c24e2dddcbb3f745b5daa7e88391c07c60511723004c7df71b1dad571"
+}

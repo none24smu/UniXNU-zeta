@@ -75,7 +75,7 @@ scattered-first allocation, persistent import, address-window and cache-batch
 fixes. Allocation diagnostics and fresh resource identities coexist. Both normal
 and deferred retirement retain the old producer slot until display drain runs
 outside the GPU lock. The integrated actual core/queue bodies pass the same
-source sanitizer tests; the IOKit wrapper still needs the SDK gate.
+source sanitizer tests. The [actual XNU object gate](evidence/resource-xnu-object-checkpoint.json) now passes all14 units (seven sources, staging off/on), including the IOKit wrapper; final linking and physical queue qualification remain open.
 
 The [device source checkpoint](evidence/resource-device-source.json) binds its
 combined patch and all driver source hashes. The [first SDK attempt](evidence/resource-sdk-attempt1.json)

@@ -1,0 +1,1113 @@
+diff --git a/crates/metal2vulkan/src/cache/mod.rs b/crates/metal2vulkan/src/cache/mod.rs
+index 0af8abe..ae92ad7 100644
+--- a/crates/metal2vulkan/src/cache/mod.rs
++++ b/crates/metal2vulkan/src/cache/mod.rs
+@@ -60,7 +60,7 @@ mod tests;
+ /// unchanged version, and its bless records the version. Independent of the crate's version and of
+ /// [`ARTIFACT_FORMAT_VERSION`]. The commit that bumps it says what changed; this comment keeps no
+ /// history.
+-pub const SEMANTICS_VERSION: u32 = 1698;
++pub const SEMANTICS_VERSION: u32 = 1699;
+ 
+ /// The byte-layout version of encoded artifacts (`CompiledFunction::to_bytes` and the
+ /// [`PipelineArtifact`] encodings). Every encoded artifact carries it, and a decode under another
+diff --git a/crates/metal2vulkan/src/pipeline/external_spirv.rs b/crates/metal2vulkan/src/pipeline/external_spirv.rs
+new file mode 100644
+index 0000000..e662bda
+--- /dev/null
++++ b/crates/metal2vulkan/src/pipeline/external_spirv.rs
+@@ -0,0 +1,602 @@
++//! Checked import of a bounded resource-free external SPIR-V stage.
++//!
++//! The first contract is deliberately small: straight-line 32-bit vertex-index
++//! to position, or a resource-free vec4 float color0 fragment. Unknown resources,
++//! specialization, attributes, interfaces and instructions are typed refusals.
++//! Existing AIR compilation is unchanged. Imported words become an ordinary
++//! `CompiledFunction`, so the existing linker, planner and consumer remain in use.
++
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++use std::sync::Arc;
++
++use sha2::{Digest, Sha256};
++
++use crate::cache::Hash256;
++use crate::device::requirements::{ApiVersion, Requirements, SpirvCapability};
++use crate::device::subgroup::SubgroupRequirement;
++use crate::device::DeviceProfile;
++use crate::library::compiled::{FunctionArtifact, KernelFacts};
++use crate::library::{CompiledFunction, FunctionCompileKey};
++use crate::pipeline::artifact::{Reconvergence, StrategyCensus, StrategyUse};
++use crate::pipeline::interface::{PushPlacement, StageInterface};
++use crate::pipeline::stage_io::{IoNumeric, IoRole, IoType, IoVariable, StageBuiltin, StageIo};
++use crate::pipeline::sym::{Stage, Symbol, VaryingKey};
++use crate::spirv::serialize::RelocatableModule;
++
++/// The complete interface accepted by this importer, never a caller-provided binding plan.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ExternalStageInterface {
++    /// One uint VertexIndex input and one vec4 f32 Position output.
++    VertexIndexPosition,
++    /// No inputs, one vec4 f32 output at color0/index0, OriginUpperLeft.
++    FragmentColor0,
++}
++
++/// Immutable provenance and the interface the producer declares.
++#[derive(Clone, Debug)]
++pub struct ExternalStageFacts {
++    pub stage: Stage,
++    pub interface: ExternalStageInterface,
++    pub entry_point: String,
++    pub profile: Hash256,
++    pub source_air_sha256: Hash256,
++    pub compiler_sha256: Hash256,
++    pub spirv_sha256: Hash256,
++}
++
++/// A copied, immutable external stage. Construction alone grants no trust.
++#[derive(Clone, Debug)]
++pub struct ExternalSpirvStage {
++    words: Arc<[u32]>,
++    facts: ExternalStageFacts,
++}
++
++impl ExternalSpirvStage {
++    pub fn new(words: Vec<u32>, facts: ExternalStageFacts) -> Self {
++        Self {
++            words: words.into(),
++            facts,
++        }
++    }
++}
++
++/// A bounded import refusal; malformed modules never enter the linker.
++#[non_exhaustive]
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum ExternalSpirvError {
++    Bounds,
++    Profile,
++    Digest,
++    Interface,
++    Resources,
++    Specialization,
++    Instruction(u16),
++    Invalid(&'static str),
++}
++impl fmt::Display for ExternalSpirvError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "external resource-free SPIR-V: {self:?}")
++    }
++}
++impl std::error::Error for ExternalSpirvError {}
++type Result<T> = std::result::Result<T, ExternalSpirvError>;
++fn invalid(why: &'static str) -> ExternalSpirvError {
++    ExternalSpirvError::Invalid(why)
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++enum Ty {
++    Void,
++    Bool,
++    Int(bool),
++    Float,
++    Vector(u32, u32),
++    Pointer(u32, u32),
++    Function(u32),
++}
++#[derive(Clone, Copy, Debug)]
++enum Def {
++    Type(Ty),
++    Value(u32),
++    Global(u32, u32),
++    Import,
++    Function,
++    Label,
++}
++#[derive(Clone, Debug, Default)]
++struct Decorations {
++    builtin: Option<u32>,
++    location: Option<(u32, u32)>,
++    index: Option<u32>,
++}
++struct Checked {
++    words: Vec<u32>,
++    relocs: Vec<(Symbol, u32)>,
++}
++struct Validator {
++    defs: BTreeMap<u32, Def>,
++    types: BTreeSet<Ty>,
++    decorations: BTreeMap<u32, Decorations>,
++    globals: BTreeSet<u32>,
++    stored: BTreeSet<u32>,
++    names: Vec<u32>,
++    bound: u32,
++}
++impl Validator {
++    fn define(&mut self, id: u32, def: Def) -> Result<()> {
++        if id == 0 || id >= self.bound || self.defs.insert(id, def).is_some() {
++            return Err(invalid("duplicate/out-of-bound id"));
++        }
++        Ok(())
++    }
++    fn ty(&self, id: u32) -> Result<Ty> {
++        match self.defs.get(&id) {
++            Some(Def::Type(t)) => Ok(*t),
++            _ => Err(invalid("undefined type")),
++        }
++    }
++    fn value(&self, id: u32) -> Result<u32> {
++        match self.defs.get(&id) {
++            Some(Def::Value(t)) => Ok(*t),
++            _ => Err(invalid("undefined numeric value")),
++        }
++    }
++    fn numeric(&self, id: u32) -> Result<bool> {
++        Ok(matches!(self.ty(id)?, Ty::Int(_) | Ty::Float))
++    }
++    fn add_type(&mut self, id: u32, ty: Ty) -> Result<()> {
++        if !self.types.insert(ty) {
++            return Err(invalid("duplicate type"));
++        }
++        self.define(id, Def::Type(ty))
++    }
++}
++fn string(words: &[u32]) -> Result<(String, usize)> {
++    let mut bytes = Vec::new();
++    for (index, word) in words.iter().enumerate() {
++        let encoded = word.to_le_bytes();
++        for (at, byte) in encoded.iter().enumerate() {
++            if *byte == 0 {
++                if encoded.iter().skip(at + 1).any(|b| *b != 0) {
++                    return Err(invalid("string padding"));
++                }
++                return Ok((
++                    String::from_utf8(bytes).map_err(|_| invalid("string UTF8"))?,
++                    index + 1,
++                ));
++            }
++            if bytes.len() >= 127 {
++                return Err(ExternalSpirvError::Bounds);
++            }
++            bytes.push(*byte);
++        }
++    }
++    Err(invalid("unterminated string"))
++}
++fn validate(words: &[u32], facts: &ExternalStageFacts) -> Result<Checked> {
++    let [magic, version, _generator, bound, schema, ..] = words else {
++        return Err(ExternalSpirvError::Bounds);
++    };
++    if words.len() > 4096 || *bound == 0 || *bound > 512 {
++        return Err(ExternalSpirvError::Bounds);
++    }
++    if *magic != 0x07230203 || *version != 0x00010500 || *schema != 0 {
++        return Err(invalid("header/version"));
++    }
++    let vertex = facts.interface == ExternalStageInterface::VertexIndexPosition;
++    if facts.entry_point != "main"
++        || facts.stage
++            != if vertex {
++                Stage::Vertex
++            } else {
++                Stage::Fragment
++            }
++    {
++        return Err(ExternalSpirvError::Interface);
++    }
++    let mut v = Validator {
++        defs: BTreeMap::new(),
++        types: BTreeSet::new(),
++        decorations: BTreeMap::new(),
++        globals: BTreeSet::new(),
++        stored: BTreeSet::new(),
++        names: Vec::new(),
++        bound: *bound,
++    };
++    let mut at = 5;
++    let mut rank = 0;
++    let mut capability = false;
++    let mut memory = false;
++    let mut entry = None;
++    let mut interface = BTreeSet::new();
++    let mut origin = false;
++    let mut function = false;
++    let mut ended = false;
++    let mut block = false;
++    let mut terminal = false;
++    let mut next_label = None;
++    let mut returned = false;
++    while at < words.len() {
++        let header = *words.get(at).ok_or(ExternalSpirvError::Bounds)?;
++        let count = (header >> 16) as usize;
++        let op = (header & 0xffff) as u16;
++        if count == 0 || count > words.len() - at {
++            return Err(ExternalSpirvError::Bounds);
++        }
++        let a = words
++            .get(at + 1..at + count)
++            .ok_or(ExternalSpirvError::Bounds)?;
++        let current = match op {
++            17 => 0,
++            11 => 1,
++            14 => 2,
++            15 => 3,
++            16 => 4,
++            3 | 5 => 5,
++            71 => 6,
++            19 | 20 | 21 | 22 | 23 | 32 | 33 | 41 | 42 | 43 | 59 => 7,
++            _ => 8,
++        };
++        if current < rank || ended {
++            return Err(invalid("logical instruction order"));
++        }
++        rank = current;
++        match (op, a) {
++            (17, [1]) if !capability => capability = true,
++            (11, [id, rest @ ..]) => {
++                let (name, n) = string(rest)?;
++                if name != "GLSL.std.450" || n != rest.len() {
++                    return Err(ExternalSpirvError::Instruction(op));
++                }
++                v.define(*id, Def::Import)?;
++            }
++            (14, [0, 1]) if !memory => memory = true,
++            (15, [model, id, rest @ ..]) if entry.is_none() => {
++                let (name, n) = string(rest)?;
++                if *model != if vertex { 0 } else { 4 }
++                    || name != facts.entry_point
++                    || *id == 0
++                    || *id >= *bound
++                {
++                    return Err(ExternalSpirvError::Interface);
++                }
++                entry = Some(*id);
++                for value in rest.iter().skip(n) {
++                    if !interface.insert(*value) {
++                        return Err(invalid("duplicate entry interface"));
++                    }
++                }
++            }
++            (16, [id, 7]) if !vertex && Some(*id) == entry && !origin => origin = true,
++            (3, [0, 0]) => {}
++            (5, [id, rest @ ..]) => {
++                let (_, n) = string(rest)?;
++                if n != rest.len() {
++                    return Err(invalid("name operands"));
++                }
++                v.names.push(*id);
++            }
++            (71, [id, decoration, value]) => {
++                if *id == 0 || *id >= *bound {
++                    return Err(ExternalSpirvError::Bounds);
++                }
++                let d = v.decorations.entry(*id).or_default();
++                match *decoration {
++                    11 if d.builtin.is_none() => d.builtin = Some(*value),
++                    30 if d.location.is_none() => d.location = Some((*value, (at + 3) as u32)),
++                    32 if d.index.is_none() => d.index = Some(*value),
++                    1 => return Err(ExternalSpirvError::Specialization),
++                    33 | 34 => return Err(ExternalSpirvError::Resources),
++                    _ => return Err(ExternalSpirvError::Interface),
++                }
++            }
++            (19, [id]) => v.add_type(*id, Ty::Void)?,
++            (20, [id]) => v.add_type(*id, Ty::Bool)?,
++            (21, [id, 32, sign]) if *sign <= 1 => v.add_type(*id, Ty::Int(*sign == 1))?,
++            (22, [id, 32]) => v.add_type(*id, Ty::Float)?,
++            (23, [id, base, n]) if (2..=4).contains(n) && v.numeric(*base)? => {
++                v.add_type(*id, Ty::Vector(*base, *n))?
++            }
++            (32, [id, storage, pointee]) if matches!(*storage, 1 | 3) => {
++                if !matches!(v.ty(*pointee)?, Ty::Int(_) | Ty::Float | Ty::Vector(_, _)) {
++                    return Err(ExternalSpirvError::Interface);
++                }
++                v.add_type(*id, Ty::Pointer(*storage, *pointee))?;
++            }
++            (33, [id, ret]) if v.ty(*ret)? == Ty::Void => v.add_type(*id, Ty::Function(*ret))?,
++            (41 | 42, [ty, id]) if v.ty(*ty)? == Ty::Bool => v.define(*id, Def::Value(*ty))?,
++            (43, [ty, id, _]) if v.numeric(*ty)? => v.define(*id, Def::Value(*ty))?,
++            (59, [ty, id, storage]) => {
++                if !matches!(*storage, 1 | 3) {
++                    return Err(ExternalSpirvError::Resources);
++                }
++                if !matches!(v.ty(*ty)?,Ty::Pointer(s,_) if s==*storage) {
++                    return Err(invalid("variable pointer type"));
++                }
++                v.define(*id, Def::Global(*ty, *storage))?;
++                v.globals.insert(*id);
++            }
++            (54, [ret, id, 0, signature])
++                if !function
++                    && Some(*id) == entry
++                    && v.ty(*ret)? == Ty::Void
++                    && v.ty(*signature)? == Ty::Function(*ret) =>
++            {
++                v.define(*id, Def::Function)?;
++                function = true;
++            }
++            (248, [id]) if function && (!block || terminal) && !returned => {
++                if let Some(expected) = next_label.take() {
++                    if *id != expected {
++                        return Err(invalid("branch target/linear CFG"));
++                    }
++                } else if block {
++                    return Err(invalid("unreachable block"));
++                }
++                v.define(*id, Def::Label)?;
++                block = true;
++                terminal = false;
++            }
++            (61, [ty, id, pointer]) if block && !terminal => {
++                let Some(Def::Global(ptr, 1)) = v.defs.get(pointer) else {
++                    return Err(invalid("load source"));
++                };
++                if v.ty(*ptr)? != Ty::Pointer(1, *ty) {
++                    return Err(invalid("load type"));
++                }
++                v.define(*id, Def::Value(*ty))?;
++            }
++            (62, [pointer, value]) if block && !terminal => {
++                let Some(Def::Global(ptr, 3)) = v.defs.get(pointer) else {
++                    return Err(invalid("store destination"));
++                };
++                if v.ty(*ptr)? != Ty::Pointer(3, v.value(*value)?) {
++                    return Err(invalid("store type"));
++                }
++                if !v.stored.insert(*pointer) {
++                    return Err(invalid("repeated output store"));
++                }
++            }
++            (80, [ty, id, values @ ..]) if block && !terminal => {
++                let Ty::Vector(base, n) = v.ty(*ty)? else {
++                    return Err(invalid("composite type"));
++                };
++                if values.len() != n as usize
++                    || values.iter().any(|id| v.value(*id).ok() != Some(base))
++                {
++                    return Err(invalid("composite operands"));
++                }
++                v.define(*id, Def::Value(*ty))?;
++            }
++            (124, [ty, id, value]) if block && !terminal => {
++                if !v.numeric(*ty)? || !v.numeric(v.value(*value)?)? {
++                    return Err(invalid("bitcast type"));
++                }
++                v.define(*id, Def::Value(*ty))?;
++            }
++            (170, [ty, id, left, right]) if block && !terminal => {
++                let lt = v.value(*left)?;
++                if v.ty(*ty)? != Ty::Bool
++                    || !matches!(v.ty(lt)?, Ty::Int(_))
++                    || v.value(*right)? != lt
++                {
++                    return Err(invalid("integer equality type"));
++                }
++                v.define(*id, Def::Value(*ty))?;
++            }
++            (169, [ty, id, condition, yes, no]) if block && !terminal => {
++                if !v.numeric(*ty)?
++                    || v.ty(v.value(*condition)?)? != Ty::Bool
++                    || v.value(*yes)? != *ty
++                    || v.value(*no)? != *ty
++                {
++                    return Err(invalid("select type"));
++                }
++                v.define(*id, Def::Value(*ty))?;
++            }
++            (249, [target]) if block && !terminal => {
++                if *target == 0 || *target >= *bound || v.defs.contains_key(target) {
++                    return Err(invalid("backwards/invalid branch"));
++                }
++                terminal = true;
++                next_label = Some(*target);
++            }
++            (253, []) if block && !terminal => {
++                terminal = true;
++                returned = true;
++            }
++            (56, []) if function && terminal && returned && next_label.is_none() => ended = true,
++            (48..=52, _) => return Err(ExternalSpirvError::Specialization),
++            (25..=29, _) => return Err(ExternalSpirvError::Resources),
++            _ => return Err(ExternalSpirvError::Instruction(op)),
++        }
++        at += count;
++    }
++    if !capability
++        || !memory
++        || !ended
++        || (!vertex && !origin)
++        || interface != v.globals
++        || v.names.iter().any(|id| !v.defs.contains_key(id))
++    {
++        return Err(invalid("module completeness"));
++    }
++    if v.decorations.keys().any(|id| !v.globals.contains(id)) {
++        return Err(ExternalSpirvError::Interface);
++    }
++    let mut inputs = 0;
++    let mut outputs = 0;
++    let mut relocs = Vec::new();
++    for id in &v.globals {
++        let Some(Def::Global(pointer, storage)) = v.defs.get(id) else {
++            return Err(invalid("global definition"));
++        };
++        let Ty::Pointer(_, pointee) = v.ty(*pointer)? else {
++            return Err(invalid("global pointer"));
++        };
++        let d = v.decorations.get(id).ok_or(ExternalSpirvError::Interface)?;
++        let vec4 = matches!(v.ty(pointee)?,Ty::Vector(base,4) if v.ty(base).ok()==Some(Ty::Float));
++        match (*storage, vertex) {
++            (1, true)
++                if v.ty(pointee)? == Ty::Int(false)
++                    && d.builtin == Some(42)
++                    && d.location.is_none()
++                    && d.index.is_none() =>
++            {
++                inputs += 1
++            }
++            (3, true)
++                if vec4 && d.builtin == Some(0) && d.location.is_none() && d.index.is_none() =>
++            {
++                outputs += 1
++            }
++            (3, false)
++                if vec4
++                    && d.builtin.is_none()
++                    && matches!(d.location, Some((0, _)))
++                    && d.index == Some(0) =>
++            {
++                outputs += 1;
++                let (_, offset) = d.location.ok_or(ExternalSpirvError::Interface)?;
++                relocs.push((Symbol::Location(VaryingKey::color(0, 0)), offset));
++            }
++            _ => return Err(ExternalSpirvError::Interface),
++        }
++    }
++    if inputs != usize::from(vertex) || outputs != 1 || v.stored.len() != 1 {
++        return Err(ExternalSpirvError::Interface);
++    }
++    Ok(Checked {
++        words: words.to_vec(),
++        relocs,
++    })
++}
++
++impl DeviceProfile {
++    /// Import a bounded external stage only after validating words, interface,
++    /// profile and immutable source/compiler identities. This is not a general
++    /// SPIR-V importer. The normal linker still checks attachment/vertex inputs.
++    pub fn import_resource_free_spirv(
++        &self,
++        input: &ExternalSpirvStage,
++    ) -> Result<CompiledFunction> {
++        if input.words.len() > 4096 {
++            return Err(ExternalSpirvError::Bounds);
++        }
++        let facts = &input.facts;
++        if facts.profile != self.fingerprint() {
++            return Err(ExternalSpirvError::Profile);
++        }
++        let mut digest = Sha256::new();
++        for word in input.words.iter() {
++            digest.update(word.to_le_bytes());
++        }
++        let actual: Hash256 = digest.finalize().into();
++        if actual != facts.spirv_sha256
++            || facts.compiler_sha256 == [0; 32]
++            || facts.source_air_sha256 == [0; 32]
++        {
++            return Err(ExternalSpirvError::Digest);
++        }
++        let checked = validate(&input.words, facts)?;
++        let mut requirements = Requirements {
++            api_version: Some(ApiVersion::V1_2),
++            ..Requirements::default()
++        };
++        requirements
++            .spirv_capabilities
++            .insert(SpirvCapability::from_raw(1));
++        self.check(&requirements)
++            .map_err(|_| ExternalSpirvError::Profile)?;
++        let mut io = StageIo::default();
++        match facts.interface {
++            ExternalStageInterface::VertexIndexPosition => {
++                io.builtins = vec![
++                    StageBuiltin::VertexIndex,
++                    StageBuiltin::Position { invariant: false },
++                ]
++            }
++            ExternalStageInterface::FragmentColor0 => io.outputs.push(IoVariable {
++                key: VaryingKey::color(0, 0),
++                role: IoRole::Color {
++                    attachment: 0,
++                    index: 0,
++                },
++                ty: IoType {
++                    numeric: IoNumeric::Float,
++                    components: 4,
++                    source_bits: 32,
++                    bits: 32,
++                },
++            }),
++        }
++        let interface = StageInterface {
++            stage: facts.stage,
++            slots: BTreeMap::new(),
++            threadgroup: Vec::new(),
++            push: PushPlacement {
++                stage: facts.stage,
++                fields: Vec::new(),
++                push_range: None,
++                argument_table_size: 0,
++            },
++            descriptors: Vec::new(),
++            spec: Vec::new(),
++            needs_pointer_translation: false,
++            needs_handle_translation: false,
++            io,
++            tessellation: None,
++            writes_memory: false,
++            mesh_records: None,
++            emulated_payload: None,
++            reaches_command_buffers: false,
++            writes_textures: false,
++            numbered_samplers: Vec::new(),
++        };
++        let mut hash = Sha256::new();
++        hash.update(b"external-resource-free-spirv-v1");
++        hash.update(crate::cache::SEMANTICS_VERSION.to_le_bytes());
++        hash.update(facts.profile);
++        hash.update(facts.source_air_sha256);
++        hash.update(facts.compiler_sha256);
++        hash.update(actual);
++        hash.update([u8::from(facts.stage == Stage::Fragment)]);
++        let key: Hash256 = hash.finalize().into();
++        let mut strategies = StrategyCensus::default();
++        strategies.entries.insert(
++            "external.resource_free_spirv".into(),
++            StrategyUse {
++                uses: 1,
++                words: checked.words.len() as u64,
++            },
++        );
++        Ok(CompiledFunction::new(Arc::new(FunctionArtifact {
++            key: FunctionCompileKey::new(key),
++            module: RelocatableModule {
++                words: checked.words,
++                relocs: checked.relocs,
++                requirements: requirements.clone(),
++            },
++            interface,
++            facts: Vec::new(),
++            subgroup: SubgroupRequirement::NONE,
++            reconvergence: Reconvergence::Guaranteed,
++            precision: Vec::new(),
++            strategies,
++            blob: None,
++            requirements,
++            variant_bits: 0,
++            profile: facts.profile,
++            kernel: KernelFacts::default(),
++            reflection: Some(crate::reflection::StageReflection {
++                bindings: Vec::new(),
++                attributes: BTreeSet::new(),
++            }),
++            specialized: Vec::new(),
++        })))
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/metal2vulkan/src/pipeline/external_spirv/fixtures.rs b/crates/metal2vulkan/src/pipeline/external_spirv/fixtures.rs
+new file mode 100644
+index 0000000..c1eb94d
+--- /dev/null
++++ b/crates/metal2vulkan/src/pipeline/external_spirv/fixtures.rs
+@@ -0,0 +1,39 @@
++// Owned AIR fixtures serialized by pinned Mesa 25.0.7 Zink; no Apple shader bytes.
++pub(super) const VERTEX: &[u32] = &[
++    0x07230203, 0x00010500, 0x00000000, 0x0000001e, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
++    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
++    0x0007000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x00000008, 0x00000014, 0x00030003,
++    0x00000000, 0x00000000, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00030005, 0x00000008,
++    0x0074756f, 0x00050005, 0x00000014, 0x565f6c67, 0x65747265, 0x00644978, 0x00040047, 0x00000008,
++    0x0000000b, 0x00000000, 0x00040047, 0x00000014, 0x0000000b, 0x0000002a, 0x00020013, 0x00000002,
++    0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000005, 0x00000020, 0x00040017, 0x00000006,
++    0x00000005, 0x00000004, 0x00040020, 0x00000007, 0x00000003, 0x00000006, 0x0004003b, 0x00000007,
++    0x00000008, 0x00000003, 0x00040015, 0x0000000b, 0x00000020, 0x00000001, 0x0004002b, 0x0000000b,
++    0x0000000c, 0x00000001, 0x0004002b, 0x0000000b, 0x0000000d, 0x00000002, 0x0004002b, 0x00000005,
++    0x0000000e, 0x40400000, 0x0004002b, 0x00000005, 0x0000000f, 0xbf800000, 0x0004002b, 0x00000005,
++    0x00000010, 0x00000000, 0x0004002b, 0x00000005, 0x00000011, 0x3f800000, 0x00040015, 0x00000012,
++    0x00000020, 0x00000000, 0x00040020, 0x00000013, 0x00000001, 0x00000012, 0x0004003b, 0x00000013,
++    0x00000014, 0x00000001, 0x00020014, 0x00000017, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
++    0x00000003, 0x000200f8, 0x0000000a, 0x000200f9, 0x00000009, 0x000200f8, 0x00000009, 0x0004003d,
++    0x00000012, 0x00000015, 0x00000014, 0x0004007c, 0x0000000b, 0x00000016, 0x00000015, 0x000500aa,
++    0x00000017, 0x00000018, 0x00000016, 0x0000000c, 0x0004007c, 0x0000000b, 0x00000019, 0x00000015,
++    0x000500aa, 0x00000017, 0x0000001a, 0x00000019, 0x0000000d, 0x000600a9, 0x00000005, 0x0000001b,
++    0x00000018, 0x0000000e, 0x0000000f, 0x000600a9, 0x00000005, 0x0000001c, 0x0000001a, 0x0000000e,
++    0x0000000f, 0x00070050, 0x00000006, 0x0000001d, 0x0000001b, 0x0000001c, 0x00000010, 0x00000011,
++    0x0003003e, 0x00000008, 0x0000001d, 0x000100fd, 0x00010038,
++];
++pub(super) const FRAGMENT: &[u32] = &[
++    0x07230203, 0x00010500, 0x00000000, 0x0000000f, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
++    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
++    0x0006000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000008, 0x00030010, 0x00000004,
++    0x00000007, 0x00030003, 0x00000000, 0x00000000, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000,
++    0x00030005, 0x00000008, 0x0074756f, 0x00040047, 0x00000008, 0x0000001e, 0x00000000, 0x00040047,
++    0x00000008, 0x00000020, 0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002,
++    0x00030016, 0x00000005, 0x00000020, 0x00040017, 0x00000006, 0x00000005, 0x00000004, 0x00040020,
++    0x00000007, 0x00000003, 0x00000006, 0x0004003b, 0x00000007, 0x00000008, 0x00000003, 0x0004002b,
++    0x00000005, 0x0000000b, 0x3e800000, 0x0004002b, 0x00000005, 0x0000000c, 0x3f000000, 0x0004002b,
++    0x00000005, 0x0000000d, 0x3e000000, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003,
++    0x000200f8, 0x0000000a, 0x000200f9, 0x00000009, 0x000200f8, 0x00000009, 0x00070050, 0x00000006,
++    0x0000000e, 0x0000000b, 0x0000000c, 0x0000000d, 0x0000000b, 0x0003003e, 0x00000008, 0x0000000e,
++    0x000100fd, 0x00010038,
++];
+diff --git a/crates/metal2vulkan/src/pipeline/external_spirv/tests.rs b/crates/metal2vulkan/src/pipeline/external_spirv/tests.rs
+new file mode 100644
+index 0000000..321cb34
+--- /dev/null
++++ b/crates/metal2vulkan/src/pipeline/external_spirv/tests.rs
+@@ -0,0 +1,340 @@
++use super::*;
++use crate::budget::Budget;
++use crate::device::{Device, DeviceDescription, DevicePolicy};
++use crate::metal::PixelFormat;
++use crate::pipeline::descriptor::{
++    ColorAttachmentDescriptor, RenderPipelineDescriptor, StageSource,
++};
++#[path = "fixtures.rs"]
++mod fixtures;
++use fixtures::{FRAGMENT, VERTEX};
++
++fn device() -> Device {
++    let json = include_str!("../../../../metal2vulkan-validation/profiles/vk12-bare.json");
++    Device::new(
++        DeviceDescription::from_khronos_json(json, None).unwrap(),
++        DevicePolicy::default(),
++    )
++    .unwrap()
++}
++fn sha(words: &[u32]) -> Hash256 {
++    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
++    Sha256::digest(bytes).into()
++}
++fn hex(s: &str) -> Hash256 {
++    std::array::from_fn(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
++}
++fn input(device: &Device, words: &[u32], vertex: bool) -> ExternalSpirvStage {
++    ExternalSpirvStage::new(
++        words.to_vec(),
++        ExternalStageFacts {
++            stage: if vertex {
++                Stage::Vertex
++            } else {
++                Stage::Fragment
++            },
++            interface: if vertex {
++                ExternalStageInterface::VertexIndexPosition
++            } else {
++                ExternalStageInterface::FragmentColor0
++            },
++            entry_point: "main".into(),
++            profile: device.profile().fingerprint(),
++            source_air_sha256: hex(if vertex {
++                "b77b415a1ea7cf8d538e8e2cecdf2727b0da2f84d10f0192520b0bbc5bbbc5a1"
++            } else {
++                "ec06566083119c9aecba9f09abdf77420984aabdfbbb6a9c1ad965e25682ae8b"
++            }),
++            // A caller-owned producer identity is provenance, not proof of AIR equivalence.
++            compiler_sha256: Sha256::digest(b"owned-test-external-producer-v1").into(),
++            spirv_sha256: sha(words),
++        },
++    )
++}
++fn descriptor(device: &Device, format: PixelFormat) -> RenderPipelineDescriptor {
++    let import = |words, vertex| {
++        device
++            .profile()
++            .import_resource_free_spirv(&input(device, words, vertex))
++            .unwrap()
++    };
++    let mut d = RenderPipelineDescriptor::new(StageSource::Compiled(import(VERTEX, true)));
++    d.fragment = Some(StageSource::Compiled(import(FRAGMENT, false)));
++    d.color_attachments[0] = Some(ColorAttachmentDescriptor::new(format));
++    d
++}
++fn instruction(words: &[u32], opcode: u16) -> usize {
++    let mut at = 5;
++    while at < words.len() {
++        if words[at] & 0xffff == u32::from(opcode) {
++            return at;
++        }
++        at += (words[at] >> 16) as usize;
++    }
++    panic!("missing opcode {opcode}")
++}
++#[test]
++fn owned_identities_and_actual_pipeline_and_binding_planner() {
++    assert_eq!(VERTEX.len(), 165);
++    assert_eq!(FRAGMENT.len(), 98);
++    assert_eq!(
++        sha(VERTEX),
++        hex("82b49633668905609ec79e84c220a151fa793b598664b6851accfb2291ea5f59")
++    );
++    assert_eq!(
++        sha(FRAGMENT),
++        hex("5f3f25a3dcb8be992786ec1e9ba73257a38ff2180a07682a651e0c1eec5ad0f4")
++    );
++    let device = device();
++    let pipeline = device
++        .compile_render_pipeline(
++            &descriptor(&device, PixelFormat::RGBA32Float),
++            &Budget::standard(),
++        )
++        .unwrap();
++    assert_eq!(pipeline.stages.len(), 2);
++    assert_eq!(&*pipeline.stages[0].spirv, VERTEX);
++    assert_eq!(&*pipeline.stages[1].spirv, FRAGMENT);
++    for stage in &pipeline.stages {
++        assert_eq!(stage.entry_point, "main");
++        assert!(stage.specialization.constants.is_empty());
++        assert!(stage.required_subgroup_size.is_none());
++        assert!(stage.precision_notes.is_empty());
++        assert_eq!(
++            stage.strategies.entries["external.resource_free_spirv"].uses,
++            1
++        );
++        crate::spirv::testing::check_words_valid(
++            &stage.spirv,
++            &pipeline.requirements,
++            device.profile(),
++        )
++        .unwrap();
++    }
++    let plan = pipeline
++        .plan(&device, &crate::bind::BindShape::default())
++        .unwrap();
++    assert!(plan.descriptors.is_empty());
++    assert!(plan.vertex_buffers.is_empty());
++    assert!(plan.uses.is_empty());
++}
++#[test]
++fn actual_linker_keeps_unsupported_attachment_conversion_refusal() {
++    let device = device();
++    let result = device.compile_render_pipeline(
++        &descriptor(&device, PixelFormat::RGBA8Unorm),
++        &Budget::standard(),
++    );
++    assert!(matches!(
++        result,
++        Err(crate::error::Error::NeedsInput(
++            crate::error::RuntimeInput::ColorWrites
++        ))
++    ));
++}
++#[test]
++fn immutable_words_profiles_and_provenance_keys() {
++    let device = device();
++    let original = input(&device, VERTEX, true);
++    let compile = |stage: &ExternalSpirvStage| device.profile().import_resource_free_spirv(stage);
++    let first = compile(&original).unwrap();
++    let mut other = original.clone();
++    other.facts.compiler_sha256[0] ^= 1;
++    assert_ne!(first.key(), compile(&other).unwrap().key());
++    other = original.clone();
++    other.facts.source_air_sha256[0] ^= 1;
++    assert_ne!(first.key(), compile(&other).unwrap().key());
++    other = original.clone();
++    other.facts.profile[0] ^= 1;
++    assert_eq!(compile(&other).unwrap_err(), ExternalSpirvError::Profile);
++    other = original.clone();
++    other.facts.spirv_sha256[0] ^= 1;
++    assert_eq!(compile(&other).unwrap_err(), ExternalSpirvError::Digest);
++    other = original.clone();
++    other.facts.stage = Stage::Fragment;
++    assert_eq!(compile(&other).unwrap_err(), ExternalSpirvError::Interface);
++    other = original.clone();
++    other.facts.entry_point = "other".into();
++    assert_eq!(compile(&other).unwrap_err(), ExternalSpirvError::Interface);
++    other = original.clone();
++    other.facts.compiler_sha256 = [0; 32];
++    assert_eq!(compile(&other).unwrap_err(), ExternalSpirvError::Digest);
++}
++#[test]
++fn unknown_resource_specialization_attribute_and_bad_ir_refuse() {
++    let device = device();
++    let reject = |words: Vec<u32>, vertex: bool| {
++        device
++            .profile()
++            .import_resource_free_spirv(&input(&device, &words, vertex))
++            .unwrap_err()
++    };
++    for decoration in [33, 34] {
++        let mut words = FRAGMENT.to_vec();
++        let at = instruction(&words, 71);
++        words[at + 2] = decoration;
++        assert_eq!(reject(words, false), ExternalSpirvError::Resources);
++    }
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 71);
++    words[at + 2] = 1;
++    assert_eq!(reject(words, false), ExternalSpirvError::Specialization);
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 43);
++    words[at] = (words[at] & 0xffff0000) | 50;
++    assert_eq!(reject(words, false), ExternalSpirvError::Specialization);
++    let mut words = VERTEX.to_vec();
++    let at = instruction(&words, 71);
++    words[at + 2] = 30;
++    assert_eq!(reject(words, true), ExternalSpirvError::Interface);
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 71);
++    words[at + 3] = 1;
++    assert_eq!(reject(words, false), ExternalSpirvError::Interface);
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 59);
++    words[at + 3] = 2;
++    assert_eq!(reject(words, false), ExternalSpirvError::Resources);
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 22);
++    words[at + 2] = 64;
++    assert!(matches!(
++        reject(words, false),
++        ExternalSpirvError::Instruction(22)
++    ));
++    let mut words = VERTEX.to_vec();
++    let at = instruction(&words, 249);
++    words[at + 1] = 10;
++    assert_eq!(reject(words, true), invalid("backwards/invalid branch"));
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 62);
++    words[at + 2] = 11;
++    assert_eq!(reject(words, false), invalid("store type"));
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 62);
++    words.drain(at..at + 3);
++    assert_eq!(reject(words, false), ExternalSpirvError::Interface);
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 80);
++    words[at] = (words[at] & 0xffff0000) | 999;
++    assert_eq!(reject(words, false), ExternalSpirvError::Instruction(999));
++    let mut words = FRAGMENT.to_vec();
++    words[3] = 513;
++    assert_eq!(reject(words, false), ExternalSpirvError::Bounds);
++    let mut words = FRAGMENT.to_vec();
++    words[5] = 17;
++    assert_eq!(reject(words, false), ExternalSpirvError::Bounds);
++    let mut words = FRAGMENT.to_vec();
++    words.pop();
++    assert!(matches!(
++        reject(words, false),
++        ExternalSpirvError::Invalid(_)
++    ));
++}
++
++#[test]
++fn bounded_largest_module_batch() {
++    let device = device();
++    let mut words = FRAGMENT.to_vec();
++    let at = instruction(&words, 71);
++    // Valid forward OpName references stress the whole 4096-word budget.
++    let names = vec![[0x00030005, 4, 0]; (4096 - words.len()) / 3].concat();
++    words.splice(at..at, names);
++    assert!(words.len() <= 4096 && words.len() >= 4094);
++    let largest = input(&device, &words, false);
++    let start = std::time::Instant::now();
++    let mut slowest = std::time::Duration::ZERO;
++    for _ in 0..32 {
++        let row = std::time::Instant::now();
++        let compiled = device
++            .profile()
++            .import_resource_free_spirv(&largest)
++            .unwrap();
++        assert_eq!(compiled.artifact().module.words.len(), words.len());
++        slowest = slowest.max(row.elapsed());
++    }
++    crate::spirv::testing::check_words_valid(
++        &words,
++        &device
++            .profile()
++            .import_resource_free_spirv(&largest)
++            .unwrap()
++            .requirements(),
++        device.profile(),
++    )
++    .unwrap();
++    assert!(slowest < std::time::Duration::from_secs(20));
++    eprintln!(
++        "external import batch=32 words={} elapsed_us={} slowest_us={}",
++        words.len(),
++        start.elapsed().as_micros(),
++        slowest.as_micros()
++    );
++    words.resize(4097, 0);
++    assert_eq!(
++        device
++            .profile()
++            .import_resource_free_spirv(&input(&device, &words, false))
++            .unwrap_err(),
++        ExternalSpirvError::Bounds
++    );
++}
++
++#[test]
++fn accepted_single_word_mutations_remain_real_valid_spirv() {
++    let device = device();
++    let mut accepted = 0;
++    for (original, vertex) in [(VERTEX, true), (FRAGMENT, false)] {
++        for index in 0..original.len() {
++            for value in [
++                0,
++                1,
++                u32::MAX,
++                original[index] ^ 1,
++                original[index] ^ 0x10000,
++            ] {
++                let mut words = original.to_vec();
++                words[index] = value;
++                if let Ok(compiled) = device
++                    .profile()
++                    .import_resource_free_spirv(&input(&device, &words, vertex))
++                {
++                    crate::spirv::testing::check_words_valid(&compiled.artifact().module.words,compiled.requirements(),device.profile())
++                        .unwrap_or_else(|e|panic!("accepted invalid stage vertex={vertex} index={index} value={value:#x}: {e}"));
++                    accepted += 1;
++                }
++            }
++        }
++    }
++    assert!(accepted > 100);
++    eprintln!("external mutation L3 checks accepted={accepted}");
++}
++
++#[test]
++fn imported_stage_uses_the_existing_cache_contract() {
++    let device = device();
++    let original = device
++        .profile()
++        .import_resource_free_spirv(&input(&device, FRAGMENT, false))
++        .unwrap();
++    let bytes = original.to_bytes();
++    let restored = CompiledFunction::from_bytes_for_key(&bytes, original.key(), &device).unwrap();
++    assert_eq!(original, restored);
++    let foreign = FunctionCompileKey::new([7; 32]);
++    assert!(CompiledFunction::from_bytes_for_key(&bytes, &foreign, &device).is_err());
++    let mut corrupt = bytes;
++    let end = corrupt.len() - 1;
++    corrupt[end] ^= 1;
++    assert!(CompiledFunction::from_bytes_for_key(&corrupt, original.key(), &device).is_err());
++    let mut descriptor = descriptor(&device, PixelFormat::RGBA32Float);
++    let direct = device
++        .compile_render_pipeline(&descriptor, &Budget::standard())
++        .unwrap();
++    descriptor.fragment = Some(StageSource::Compiled(restored));
++    assert_eq!(
++        direct,
++        device
++            .compile_render_pipeline(&descriptor, &Budget::standard())
++            .unwrap()
++    );
++}
+diff --git a/crates/metal2vulkan/src/pipeline/mod.rs b/crates/metal2vulkan/src/pipeline/mod.rs
+index 4254025..7206816 100644
+--- a/crates/metal2vulkan/src/pipeline/mod.rs
++++ b/crates/metal2vulkan/src/pipeline/mod.rs
+@@ -154,3 +154,6 @@ pub use vertex::{PulledAttribute, VertexAttribute, VertexBinding, VertexInputSta
+ 
+ #[cfg(test)]
+ mod api_tests;
++
++/// Checked bounded external resource-free SPIR-V import.
++pub mod external_spirv;
+diff --git a/crates/metal2vulkan/tests/api_surface.rs b/crates/metal2vulkan/tests/api_surface.rs
+index fbd1043..b2cae42 100644
+--- a/crates/metal2vulkan/tests/api_surface.rs
++++ b/crates/metal2vulkan/tests/api_surface.rs
+@@ -306,7 +306,14 @@ surface! {
+         struct ThreadgroupBinding N;
+         struct UnwrittenFragmentInputs N;
+     }
++    "pipeline::external_spirv" => metal2vulkan::pipeline::external_spirv {
++        enum ExternalStageInterface E;
++        struct ExternalStageFacts E;
++        struct ExternalSpirvStage O;
++        enum ExternalSpirvError N;
++    }
+     "pipeline" => metal2vulkan::pipeline {
++        mod external_spirv;
+         fn heap_unused_while_pending;
+         struct ComputePipeline N;
+         struct ComputePipelineMetalInfo N;
+@@ -2126,6 +2133,7 @@ fn scanned_modules() -> Vec<&'static str> {
+         "library",
+         "reflection",
+         "pipeline",
++        "pipeline::external_spirv",
+         "bind",
+         "bind::indirect_commands",
+         "cache",
+diff --git a/docs/API.md b/docs/API.md
+index 1eabd65..f27698c 100644
+--- a/docs/API.md
++++ b/docs/API.md
+@@ -18,15 +18,15 @@ differences from Metal. The runtime's own guide is [its README](../crates/metal2
+ - **No feature needed.** Feature `ash` adds conversions to `ash::vk` and
+   `DeviceDescription::query`; `serde` serializes the plain-data values; `cli` builds the command.
+ - **Frozen names, additive changes.** The surface is the items at the roots of `error`, `device`,
+-  `library`, `reflection`, `pipeline`, `bind`, `cache`, `metal` (with `metal::{format, sampler,
++  `library`, `reflection`, `pipeline` (including `pipeline::external_spirv`), `bind`, `cache`, `metal` (with `metal::{format, sampler,
+   state, vertex}`), `vk` and `ash_interop`, plus `Budget` and `CancelToken` at the crate root.
+   `tests/api_surface.rs` pins every name. Structs and enums are `#[non_exhaustive]` or opaque, so
+   build values with `new`, `Default` or constants, assign fields, and match with a wildcard arm.
+   The exceptions are exhaustive on purpose: keys and Vulkan structs (`SlotRef`, `ResourceSlot`,
+-  `ApiVersion`, ...), and the enums a consumer must interpret completely to bind and draw
++  `ApiVersion`, `ExternalStageFacts`, ...), and the enums a consumer must interpret completely to bind and draw
+   correctly (`StageSource`, `PushHole`, `HeapSource`, `ImageSource`, `SamplerSource`,
+   `UseTarget`, `SlotClass`, `StorageAttachmentView`, `VertexStride`, `TileMapping`, `CopySource`,
+-  `DrawCommand`, `PrecisionNote`, and Metal's `PrimitiveType`, `IndexType`, `CullMode`, `Winding`
++  `DrawCommand`, `PrecisionNote`, `ExternalStageInterface`, and Metal's `PrimitiveType`, `IndexType`, `CullMode`, `Winding`
+   and `TextureType`), where a new variant breaks your build on purpose.
+ - **Semver** covers this surface from 0.2.0 (still `0.x`: a breaking change bumps the minor
+   version).
+@@ -2150,3 +2150,27 @@ each item named states the rule in full.
+   buffer's length.
+ - **A physical size past the map's layers has width 0.**
+ - **A rate-mapped pass draws region by region, and refuses a cutting scissor.**
++
++### Bounded external resource-free SPIR-V stages
++
++`DeviceProfile::import_resource_free_spirv` accepts an immutable `ExternalSpirvStage`
++(`pipeline::external_spirv`). It returns the ordinary opaque `CompiledFunction` for
++`StageSource::Compiled`; the existing pipeline linker and binding planner stay in use.
++The existing AIR compiler remains the default and is unchanged.
++
++This experimental import is a strict subset: SPIR-V 1.5, `main`, 32-bit straight-line
++vertex-index/position or resource-free float4 color0 fragment stages. Its bounded typed
++validator checks IDs, instruction order, linear control flow, operands, stores and the
++complete declared interface. It refuses descriptors, push constants, specialization,
++vertex attributes, varyings, other outputs and unknown instructions. The fragment's
++location is a real linker relocation. Attachment conversions that require compiler
++lowering still refuse through the ordinary `ColorWrites` contract; importing does not
++claim the conversion happened. No runtime compiler provider selects this path yet.
++
++Facts bind the profile and little-endian word digest, plus nonzero source-AIR and
++producer identities, into a separate semantics-versioned compile key. Those last two
++identities are caller provenance, not an attestation of AIR/SPIR-V semantic equivalence;
++the producer remains trusted for translation semantics. There is no caller-supplied
++cache key, resource layout, reflection or unknown precision claim. External tools run
++only in tests, never on the library path. Callers must impose the normal isolated-worker
++20-second/500-MiB budget around the external compiler and validator.
+diff --git a/docs/FAST-PATHS.md b/docs/FAST-PATHS.md
+index 2951be2..b676b60 100644
+--- a/docs/FAST-PATHS.md
++++ b/docs/FAST-PATHS.md
+@@ -266,3 +266,7 @@ driver's. Each is open work.
+   (`DriverFact::InterlockedPassSplitNoSlower`), the faster form on the M3 Max (about a quarter
+   faster, wall and GPU). The M4 measured that pass faster kept whole (wall 1383 µs against 1499),
+   a cost its shared identity does not take; its answers are exact either way.
++
++The experimental external resource-free SPIR-V importer adds no fast/accurate policy
++choice. It accepts only the documented typed subset, preserves the existing linker
++checks, and refuses attachment conversions for which it has no lowering evidence.

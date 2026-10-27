@@ -48,8 +48,8 @@ is off; staging metadata restoration is checked explicitly.
 
 Six plain ARMv8-A Mach-O objects compile for core/Job/transaction with the flag
 off/on. Authored declarations were used because no local Xcode SDK was available.
-This is **not an XNU SDK build**, linking or runtime ABI proof; the wrapper was
-not SDK-compiled. Before profile selection require real kernel SDK compilation,
+That early six-object check is **not an XNU SDK build**. The later integrated
+18-patch device candidate now passes the [14-object actual XNU gate](evidence/resource-xnu-object-checkpoint.json), including the wrapper, with a separately recorded real generated-config supplement. Neither result proves final linking or runtime ABI behavior. Before profile selection require
 native queue/context and all-resource VM pins, canonical import aliases, scoped
 cache/dirty ownership, completion/retirement hooks, capability negotiation and
 recoverable physical validation.

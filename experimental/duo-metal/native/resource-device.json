@@ -6,7 +6,7 @@
   "patch_sha256": "48dbcf6b66e547dc52dbd6df0076c6cd6c6116330631273bfe199708afe7c499",
   "default_staging": 0,
   "execution_available": false,
-  "actual_sdk_compilation_qualified": false,
+  "actual_sdk_compilation_qualified": true,
   "sdk_compile_units": 14,
   "board_base_commit": "35a4f120c2f8a5f567329f17378a73bd5287fd2b",
   "board_patches": [
@@ -86,5 +86,7 @@
   "board_integration": "all18devicepatches preserved; manual conflicts resolved; host core queue off/on passes; wrapper SDK gate pending",
   "snapshot_capture_supports_auxiliary": true,
   "snapshot_replay_qualified": false,
-  "sdk_failure_fixed": "real XNU placement-new declaration and enqueue macro collision; forced-preinclude/kit capture now complete; actual SDK rerun pending"
+  "sdk_failure_fixed": "kernel placement-new declaration, XNU enqueue macro collision, complete kit/forced-preinclude capture",
+  "actual_sdk_compilation_scope": "14 actual retained-XNU/generated-config ARM64 objects; original config bytes unverified, no link/runtime qualification",
+  "actual_sdk_checkpoint": "experimental/duo-metal/evidence/resource-xnu-object-checkpoint.json"
 }

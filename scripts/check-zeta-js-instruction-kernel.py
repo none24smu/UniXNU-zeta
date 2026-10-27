@@ -195,7 +195,7 @@ int main(void){
 results=[]
 for sme in [0,1]:
  exe=out/f'adapter-test-sme{sme}'
- command=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wsign-conversion','-fsanitize=address,undefined','-fno-omit-frame-pointer',f'-DHAS_ARM_FEAT_SME={sme}','-I',str(headers),'-I',str(BOARD/'package'),str(BOARD/'package/ZetaJsConvert.c'),str(BOARD/'package/ZetaJsInstructionKernel.c'),str(out/'adapter-test.c'),'-o',str(exe)]
+ command=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wsign-conversion','-fsanitize=address,undefined','-fno-omit-frame-pointer','-DMACH_KERNEL_PRIVATE=1',f'-DHAS_ARM_FEAT_SME={sme}','-I',str(headers),'-I',str(BOARD/'package'),str(BOARD/'package/ZetaJsConvert.c'),str(BOARD/'package/ZetaJsInstructionKernel.c'),str(BOARD/'package/ZetaJsUserFpState.c'),str(out/'adapter-test.c'),'-o',str(exe)]
  (out/f'command-sme{sme}.json').write_text(json.dumps(command,indent=2)+'\n')
  r=subprocess.run(command,capture_output=True,text=True);(out/f'build-sme{sme}.log').write_text(r.stdout+r.stderr)
  if r.returncode:raise RuntimeError(r.stdout+r.stderr)
@@ -203,5 +203,5 @@ for sme in [0,1]:
  if r.returncode:raise RuntimeError(r.stdout+r.stderr)
  print(r.stdout,end='');m=re.search(r'cases: (\d+)',r.stdout);assert m
  results.append(dict(sme=sme,passed=True,cases=int(m.group(1)),binary_sha256=hashlib.sha256(exe.read_bytes()).hexdigest()))
-report=dict(schema='zeta-js-production-adapter-host-v1',passed=True,results=results,scope='production adapter source against explicit host mocks; actual XNU headers/native ABI/runtime NOT qualified',signed_register_t=True,neon64_storage_layout_checked=True,all_32_sources_and_destinations=True,all_saved_state_bytes_compared=True,asan_ubsan=True,no_phone_commands=True,native_kernel_compilation=False,phone_execution=False,sources_sha256={s:hashlib.sha256((BOARD/s).read_bytes()).hexdigest() for s in ['package/ZetaJsInstructionKernel.c','package/ZetaJsConvert.c','package/ZetaJsConvert.h','scripts/check-zeta-js-instruction-kernel.py']})
+report=dict(schema='zeta-js-production-adapter-host-v1',passed=True,results=results,scope='production adapter source against explicit host mocks; actual XNU headers/native ABI/runtime NOT qualified',signed_register_t=True,neon64_storage_layout_checked=True,all_32_sources_and_destinations=True,all_saved_state_bytes_compared=True,asan_ubsan=True,no_phone_commands=True,native_kernel_compilation=False,phone_execution=False,sources_sha256={s:hashlib.sha256((BOARD/s).read_bytes()).hexdigest() for s in ['package/ZetaJsInstructionKernel.c','package/ZetaJsUserFpState.c','package/ZetaJsUserFpState.h','package/ZetaJsConvert.c','package/ZetaJsConvert.h','scripts/check-zeta-js-instruction-kernel.py']})
 (out/'result.json').write_text(json.dumps(report,indent=2)+'\n')

@@ -4,12 +4,11 @@
 #include <sys/proc.h>
 #include <sys/codesign.h>
 #include <sys/systm.h>
-#include <kern/thread.h>
-#include <arm/thread.h>
 #include <mach/arm/thread_status.h>
 #include <arm/proc_reg.h>
 #include <pexpert/pexpert.h>
 #include "ZetaJsConvert.h"
+#include "ZetaJsUserFpState.h"
 
 #if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error The saved low D lane requires the selected little-endian ARM64 ABI
@@ -73,16 +72,8 @@ int zeta_js_instruction_compat(arm_saved_state_t *saved, uint32_t instruction) {
     // by the ordinary Q snapshot experiment, even when userspace SME is hidden.
     count(Unsupported); return 0;
 #else
-    thread_t thread = current_thread();
-    if (!thread || !thread->machine.contextData || !thread->machine.uNeon ||
-        saved != thread->machine.upcb || saved != &thread->machine.contextData->ss ||
-        thread->machine.uNeon != &thread->machine.contextData->ns) {
-        count(BadState); return 0;
-    }
-    arm_neon_saved_state_t *saved_neon = thread->machine.uNeon;
-    if (!is_neon_saved_state64(saved_neon) ||
-        saved_neon->nsh.count != ARM_NEON_SAVED_STATE64_COUNT) { count(BadState); return 0; }
-    arm_neon_saved_state64_t *neon = neon_state64(saved_neon);
+    arm_neon_saved_state64_t *neon = zeta_js_user_neon_snapshot(saved);
+    if (!neon) { count(BadState); return 0; }
     unsigned source = (instruction >> 5) & 31u;
     unsigned destination = instruction & 31u;
     uint64_t double_bits = 0;

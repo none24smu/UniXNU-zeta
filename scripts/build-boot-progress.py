@@ -75,7 +75,8 @@ if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
         units += [('ZetaUserInstructionCompat', bsd_record),
                   ('ZetaUserInstructionKernel', bsd_record)]
         if js_compat:
-            units += [('ZetaJsConvert', bsd_record), ('ZetaJsInstructionKernel', bsd_record)]
+            units += [('ZetaJsConvert', bsd_record), ('ZetaJsInstructionKernel', bsd_record),
+                      ('ZetaJsUserFpState', startup)]
 objects = []
 commands = {}
 for name, record in units:
@@ -105,7 +106,7 @@ archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), *map(str, objects)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted(KIT.glob('BootProgress*')) + sorted(KIT.glob('BootUiTrace*.h')) + sorted(KIT.glob('ZetaUserInstruction*.h')) + ([KIT / 'ZetaJsConvert.h'] if js_compat else []) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
+                for path in sorted(KIT.glob('BootProgress*')) + sorted(KIT.glob('BootUiTrace*.h')) + sorted(KIT.glob('ZetaUserInstruction*.h')) + ([KIT / 'ZetaJsConvert.h', KIT / 'ZetaJsUserFpState.h'] if js_compat else []) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
     'js_compat_compiled': js_compat,
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,

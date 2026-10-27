@@ -40,6 +40,19 @@
   }
   if(!attachment(d.depthAttachment,pass.depth) || !attachment(d.stencilAttachment,pass.stencil)){[self refuse:@"foreign depth/stencil attachment"];return nil;}
   pass.depth.clear[0]=d.depthAttachment.clearDepth;pass.stencil.clear[0]=d.stencilAttachment.clearStencil;
+@@ -1063,7 +1083,11 @@
+   [_resourceOwners addObject:d.visibilityResultBuffer];
+   pass.visibility=[(NBBuffer *)d.visibilityResultBuffer handle];
+  }
+- return [self encoder:[[NBRenderEncoder alloc] initWithCommandBuffer:self] handle:self.committed?nullptr:nmb_render_encoder_new(_handle,&pass) what:@"renderCommandEncoder"];
++ // Validate before constructing Apple's encoder base: rejected descriptors
++ // must not destroy an encoder which never reached endEncoding.
++ NmbEncoder *handle=self.committed?nullptr:nmb_render_encoder_new(_handle,&pass);
++ if(!handle)return [self encoder:nil handle:nullptr what:@"renderCommandEncoder"];
++ return [self encoder:[[NBRenderEncoder alloc] initWithCommandBuffer:self] handle:handle what:@"renderCommandEncoder"];
+ }
+ - (void)addScheduledHandler:(MTLCommandBufferHandler)block {if(block)@synchronized(self){[_scheduledHandlers addObject:[block copy]];}}
+ - (void)addCompletedHandler:(MTLCommandBufferHandler)block {if(block)@synchronized(self){[_completedHandlers addObject:[block copy]];}}
 --- a/bridge/NativeMetalObjects.h
 +++ b/bridge/NativeMetalObjects.h
 @@ -227,6 +227,8 @@

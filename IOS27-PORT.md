@@ -11,11 +11,11 @@ builds. Tests invoke the actual configured tool and compare its CPU, GIC, PSCI,
 button and default nodes with the control tree. The real hardware remains the
 Surface Duo 2; product identity does not implement Apple's GPU feature set or
 fold/hinge services. No APPLE11 capability is added by this profile.
-`hw.machine`/`hw.product` derive from root model. The generic upstream platform
-expert derives `hw.model`/`hw.target` from compatible strings, so coherent V68AP
-readouts through that provider and MobileGestalt remain a separate validation
-and implementation gate. Generating the V68 target properties alone does not
-prove those interfaces return an Apple board model.
+`hw.machine`/`hw.product` derive from root model. The board-local
+`drivers/ArmDTPlatform` now reads explicit target-sub-type/target-type for
+`hw.model`/`hw.target`, preserving real compatible strings. Production method
+bodies and board overlay selection pass sanitizer checks with the actual ADT;
+native kernel ABI compilation and runtime readouts remain required.
 
 Provide the archive explicitly using `--ipsw /path/to/archive.ipsw` or
 `UNIXNU_IPSW`; no assumed download URL is embedded. The V68 DeviceTree SHA-256
@@ -70,6 +70,11 @@ integration. Host tests and Vulkan descriptor capture do not establish graphics
 or performance on the phone. Keep the current iOS 26 image as a comparison
 while these gates are developed.
 
+The first physical gate now passes: the new encoder produced exact 32x32
+clear, 2x resolve and 4x resolve readbacks with actual completion fences on the
+Duo 2. See `experimental/duo-metal/HARDWARE-CHECKPOINT.md`. This does not qualify
+shader translation, full compositor output, fault-free operation or 60/90 Hz.
+
 The retained local iOS 27 shader corpus includes a format-validated QuartzCore
 AIR slice (249 functions), Metal BVH/ECBE libraries (229 kernels), and RenderBox
 AIR (109 functions). Those 587 module hashes match their container metadata;
@@ -78,3 +83,24 @@ container with separate AIR and GPU archive slices; RenderBox's GPU archive is
 not an alternate AIR source. A replacement compiler must distinguish these
 containers and consume their real metadata. Successful inventory is not shader
 translation, compilation or rendering proof.
+
+The independent C++ container reader now validates those actual 587 records,
+hashes and wrappers. It does not translate their LLVM/AIR instructions yet.
+
+## Complete stock payload and initial setup
+
+`scripts/zeta_ios27_payload_inventory.py` inventories and compares complete
+MainOS/SystemOS/AppOS namespaces. The retained source archives match every
+stock file hash, bundle identity, launchd plist and observed metadata. The
+gate rejects missing apps, modified services, added launchd suppression/cache
+overrides, unrelated setup-domain changes and legacy lite/disabled-job bootargs.
+
+The full-stock `make-zeta-data-seed.py` includes all 52 staged stock apps by
+default, checks capacity, uses case-sensitive APFS and copies the original
+Data root's numeric ownership. It creates only three minimal setup/migration
+preference domains using the actual source build; the generic payload setup
+postprocessor is deliberately not selected. A verified 4 GiB raw host Data
+image exists. The 256 MiB packed-loader limit requires persistent writable
+Data integration; this image is not qualified for RAM deployment. Native
+timestamps/xattrs and actual app registration, service startup and setup
+bypass remain integration/runtime gates. The running control remains iOS 26.

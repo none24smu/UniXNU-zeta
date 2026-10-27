@@ -43,3 +43,6 @@ __pycache__/
 *.key
 .env
 local.toml
+
+# Generated shader-corpus observations are retained locally, not source inputs.
+/experimental/duo-metal/evidence/*results.jsonl

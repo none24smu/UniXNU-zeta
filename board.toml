@@ -67,7 +67,9 @@ size_mib = 192
 loader = "firmware"                 # DarwinBoot is in the uefi-zeta firmware volume
 title = "zeta experimental: iPhone Duo iOS 27.1 24A94425"
 dram_size = "0x200000000"           # 0x80000000..0x280000000; ABL /memory read on the phone (zetaPkg PORTING.md)
-skip_setup_tool = "scripts/seed-data-skip-setup.py"   # base UniXNU script, used by --skip-setup
+# The full-stock Data builder generates the three minimal completion plists by
+# default. Do not reapply the generic payload --skip-setup postprocessor: that
+# older helper also writes SpringBoard/watchdog and managed-configuration keys.
 # panic_screen needs scripts/patch-xnu-entry-probe.py, which only sheng has; it is off until the kernel step.
 # Trust material must match the converted userspace, not the untouched IPSW.
 kernel_args = ["-v", "serial=3", "debug=0x14e"]

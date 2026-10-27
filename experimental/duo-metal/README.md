@@ -9,9 +9,11 @@ Implemented components: `planRenderPass`, a C++17 attachment contract/planner,
 and a real Vulkan render-pass/framebuffer encoder using the Khronos Vulkan API.
 The encoder creates exact mip/slice image views, creates render passes and
 framebuffers, records tracked image barriers and render-pass begin/end, and hands
-resource ownership to a fence-driven completion queue. There is no Metal device
-registration, draw pipeline/shader compilation, IOKit submission, or physical GPU
-execution evidence here. See [the Vulkan interface](VULKAN.md).
+resource ownership to a fence-driven completion queue. Its initial clear/resolve
+path now passes exact physical A660 readback/fence tests; see the
+[hardware checkpoint](HARDWARE-CHECKPOINT.md). Metal device registration,
+draw pipeline/shader compilation and full OS integration remain incomplete.
+See [the Vulkan interface](VULKAN.md).
 
 An [isolated native probe](PROBE.md) now binds this encoder to an explicit real
 Turnip driver for clear/resolve/readback/fence validation. Its iOS build is a
@@ -81,9 +83,9 @@ pixels; the capture dispatch does not execute GPU work.
 1. Bind the implemented encoder to an actual Turnip device and owned native image
    allocations; use physical-device capability queries and tracked image states.
    Add the full command submission resource list alongside the attachment list.
-2. Run a standalone A660 Vulkan offscreen control: GPU clear/copy, triangle, and
-   compute readback; confirm exact expected pixels, GPU-written completion
-   fences, and no GPU MMU fault. Keep the existing scanout path unchanged.
+2. Extend the passing physical clear/resolve control to triangle and compute
+   readback. Separately establish fault accounting/recovery; current passing
+   pixel results do not establish zero MMU faults. Keep the existing scanout path.
 3. Exercise this new planner/encoder with 2x/4x MSAA source discard + resolve,
    distinct mip/slice destinations, alpha blend/sRGB, source store-and-resolve,
    and release of caller resource references while work remains in flight.

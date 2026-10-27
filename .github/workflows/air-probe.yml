@@ -23,8 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build signed baseline ARM64 instruction probe
-        run: python3 experimental/isa-compat/build-probe.py --output isa-probe
+        run: python3 experimental/isa-compat/build-probe.py --native-host-smoke --output isa-probe
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: isa-probe
           path: isa-probe/

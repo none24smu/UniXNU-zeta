@@ -19,6 +19,7 @@ def sha(path):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--native-host-smoke', action='store_true', help='Also verify the new state fixtures on an actual ARM64 macOS host')
     a = p.parse_args()
     out = a.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -56,4 +57,22 @@ def main():
         'files': files, 'cssc_cases': len(cases), 'hardware_execution_performed': False,
         'limits': ['Signals report actual guest behavior, not physical CPU feature identity.',
                    'No TCHANGE instructions or EL1 register reads.', 'Host signing is not runtime trust proof.']}, indent=2)+'\n')
+    if a.native_host_smoke:
+        import platform
+        assert platform.system() == 'Darwin' and platform.machine() == 'arm64'
+        host = out / 'host-smoke'
+        host_sdk = read('xcrun', '--sdk', 'macosx', '--show-sdk-path')
+        host_flags = ['-target', 'arm64-apple-macos14.0', '-march=armv8-a', '-isysroot', host_sdk,
+                      '-std=c11', '-O2', '-g', '-Wall', '-Wextra', '-Wpedantic', '-Werror']
+        run(cc, *host_flags, '-I', out / 'fixtures', ROOT / 'probe.c', out / 'fixtures/cases.S', '-o', host)
+        result = subprocess.run([str(host)], capture_output=True, text=True, timeout=60)
+        (out / 'host-smoke.log').write_text(result.stdout + result.stderr)
+        records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+        states = [x for x in records if x.get('kind') == 'js-state' and x['fpcr'] == 0]
+        summary = {'scope': 'Actual Apple ARM64 host fixture verification; not Duo kernel/emulation proof',
+                   'expected_nonflushing_states': 28, 'observed_nonflushing_states': len(states),
+                   'passed': result.returncode == 0 and len(states) == 28 and all(x['passed'] and not x['mismatches'] and not x['signal'] and x['q_registers_compared'] == 32 for x in states),
+                   'returncode': result.returncode, 'fz_semantics_qualified': False}
+        (out / 'host-smoke.json').write_text(json.dumps(summary, indent=2) + '\n')
+        assert summary['passed'], 'Native host state fixture mismatch; inspect host-smoke.log'
 if __name__ == '__main__': main()

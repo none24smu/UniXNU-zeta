@@ -94,6 +94,36 @@ static void benchmark(const char *name, instruction_fn fn) {
            name, caught, completed, failures, end >= start ? end - start : 0,
            start && end >= start ? "true" : "false");
 }
+typedef void (*js_state_fn)(uint64_t, uint64_t, uint64_t, uint64_t *);
+static void js_state_case(const char *name, js_state_fn fn, unsigned destination,
+                          uint64_t bits, uint32_t fpcr, uint32_t prior_fpsr,
+                          uint32_t value, uint32_t nzcv, uint32_t raised) {
+    uint64_t original_fpcr, original_fpsr;
+    __asm__ volatile("mrs %0,fpcr\n\tmrs %1,fpsr" : "=r"(original_fpcr), "=r"(original_fpsr));
+    uint64_t snapshot[73] = {0};
+    unsigned mismatches = 0;
+    caught = 0;
+    if (!sigsetjmp(jump, 1)) { armed = 1; fn(bits, fpcr, prior_fpsr, snapshot); armed = 0; }
+    // A SIGILL can leave the assembly frame via siglongjmp before its normal
+    // restore. Restore the caller's FP controls explicitly on both paths.
+    __asm__ volatile("msr fpcr,%0\n\tmsr fpsr,%1" :: "r"(original_fpcr), "r"(original_fpsr));
+    if (!caught) {
+        uint64_t want[] = {0x1111, 0x1313, 0x1616, 0x1717, 0x2929, 0x3030};
+        if (destination == 0) want[0] = value;
+        else if (destination == 29) want[4] = value;
+        else if (destination == 30) want[5] = value;
+        for (unsigned i = 0; i < 6; ++i) mismatches += snapshot[i] != want[i];
+        mismatches += snapshot[6] != nzcv;
+        mismatches += snapshot[7] != (prior_fpsr | raised);
+        mismatches += snapshot[72] != fpcr;
+        for (unsigned n = 0; n < 32; ++n) {
+            mismatches += snapshot[8 + 2*n] != (n == 31 ? bits : 0x100u+n);
+            mismatches += snapshot[9 + 2*n] != 0x900u+n;
+        }
+    }
+    printf("{\"kind\":\"js-state\",\"name\":\"%s\",\"destination\":%u,\"fpcr\":%u,\"signal\":%d,\"mismatches\":%u,\"passed\":%s,\"q_registers_compared\":%u}\n",
+           name, destination, fpcr, caught, mismatches, !caught && !mismatches ? "true" : "false", caught ? 0 : 32);
+}
 int main(int argc, char **argv, char **envp, char **apple) {
     (void)argc; (void)argv; (void)envp;
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -183,6 +213,18 @@ int main(int argc, char **argv, char **envp, char **apple) {
     capability("fjcvtzs-modulo32", zeta_cap_fjcvtzs, UINT64_C(0x41f0000000100000), 0, 1, 1);
     capability("fjcvtzs-qnan", zeta_cap_fjcvtzs, UINT64_C(0x7ff8000000000000), 0, 1, 0);
     capability("fjcvtzs-infinity", zeta_cap_fjcvtzs, UINT64_C(0x7ff0000000000000), 0, 1, 0);
+    const js_state_fn js_functions[] = {zeta_js_state_r0, zeta_js_state_r29, zeta_js_state_r30, zeta_js_state_r31};
+    const unsigned js_destinations[] = {0, 29, 30, 31};
+    for (unsigned i = 0; i < 4; ++i) {
+        js_state_case("exact-sticky-fpsr", js_functions[i], js_destinations[i], UINT64_C(0x402a000000000000), 0, 0x08000001, 13, 0x40000000, 0);
+        js_state_case("negative-zero", js_functions[i], js_destinations[i], UINT64_C(0x8000000000000000), 0, 0x08000000, 0, 0, 0);
+        js_state_case("positive-fraction", js_functions[i], js_destinations[i], UINT64_C(0x400e000000000000), 0, 0x08000000, 3, 0, 0x10);
+        js_state_case("negative-fraction", js_functions[i], js_destinations[i], UINT64_C(0xc006000000000000), 0, 0x08000000, UINT32_C(0xfffffffe), 0, 0x10);
+        js_state_case("modulo32", js_functions[i], js_destinations[i], UINT64_C(0x41f0000000100000), 0, 0x08000000, 1, 0, 1);
+        js_state_case("qnan", js_functions[i], js_destinations[i], UINT64_C(0x7ff8000000000000), 0, 0x08000000, 0, 0, 1);
+        js_state_case("subnormal", js_functions[i], js_destinations[i], 1, 0, 0x08000000, 0, 0, 0x10);
+        js_state_case("refuse-fz", js_functions[i], js_destinations[i], 1, 0x01000000, 0x08000000, 0, 0, 0);
+    }
     capability("pauth-pacia-autia", zeta_cap_pauth, 17, 25, 1, 17);
     capability("pauth-lr-paired-leaf", zeta_cap_pauth_lr, 17, 0, 1, 17);
     capability("unallocated", zeta_cap_unallocated, 0, 0, 0, 0);

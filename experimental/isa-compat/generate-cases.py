@@ -50,6 +50,33 @@ def generate(out):
     asm += [f'.globl _{name}', f'_{name}:', 'stp x29,x30,[sp,#-16]!',
             'mov x9,#0xa0000000', 'msr nzcv,x9', 'rbit x0,x0', 'clz x0,x0',
             'mrs x9,nzcv', 'str x9,[x2]', 'ldp x29,x30,[sp],#16', 'ret']
+    # Full Q-bank and saved-FP return test. The source is D31, including a
+    # distinct upper Q31 sentinel; destinations include FP/LR and WZR.
+    for rd in (0, 29, 30, 31):
+        name = f'zeta_js_state_r{rd}'
+        declarations.append(f'extern void {name}(uint64_t,uint64_t,uint64_t,uint64_t*);')
+        asm += [f'.globl _{name}', f'_{name}:', 'sub sp,sp,#0x300']
+        for n in range(0, 32, 2): asm.append(f'stp q{n},q{n+1},[sp,#{16*n}]')
+        asm += ['str x29,[sp,#0x200]', 'str x30,[sp,#0x208]', 'str x0,[sp,#0x210]', 'str x3,[sp,#0x218]',
+                'mrs x9,fpcr', 'mrs x10,fpsr', 'str x9,[sp,#0x220]', 'str x10,[sp,#0x228]',
+                'msr fpcr,x1', 'msr fpsr,x2']
+        for n in range(32):
+            asm += [f'mov x9,#{0x100+n}', f'mov x10,#{0x900+n}', f'fmov d{n},x9', f'ins v{n}.d[1],x10']
+        asm += ['fmov d31,x0', 'mov x0,#0x1111', 'mov x13,#0x1313', 'mov x16,#0x1616',
+                'mov x17,#0x1717', 'mov x29,#0x2929', 'mov x30,#0x3030',
+                'mov x9,#0xa0000000', 'msr nzcv,x9', f'.inst 0x{0x1e7e0000 | (31<<5) | rd:08x}',
+                'str x0,[sp,#0x240]', 'str x13,[sp,#0x248]', 'str x16,[sp,#0x250]', 'str x17,[sp,#0x258]',
+                'str x29,[sp,#0x260]', 'str x30,[sp,#0x268]', 'mrs x9,nzcv', 'mrs x10,fpsr',
+                'str x9,[sp,#0x270]', 'str x10,[sp,#0x278]', 'ldr x8,[sp,#0x218]']
+        for n in range(0, 32, 2): asm.append(f'stp q{n},q{n+1},[x8,#{64+16*n}]')
+        # Scalars0..5 are GPR sentinels,6NZCV,7FPSR. FPCR is unchanged and is
+        # checked before restoring the caller's FP state in the final scalar.
+        for off in range(0, 64, 16):
+            asm += [f'ldr x9,[sp,#{0x240+off}]', f'ldr x10,[sp,#{0x248+off}]', f'stp x9,x10,[x8,#{off}]']
+        asm += ['mrs x9,fpcr', 'str x9,[x8,#576]', 'ldr x9,[sp,#0x220]', 'ldr x10,[sp,#0x228]',
+                'msr fpcr,x9', 'msr fpsr,x10']
+        for n in range(0, 32, 2): asm.append(f'ldp q{n},q{n+1},[sp,#{16*n}]')
+        asm += ['ldr x29,[sp,#0x200]', 'ldr x30,[sp,#0x208]', 'add sp,sp,#0x300', 'ret']
     header = declarations + ['static const Test tests[] = {']
     for r in rows:
         header.append('    {"%(name)s","%(operation)s",%(bits)d,%(destination)d,%(immediate)d,0x%(instruction)08x,%(name)s},' % r)

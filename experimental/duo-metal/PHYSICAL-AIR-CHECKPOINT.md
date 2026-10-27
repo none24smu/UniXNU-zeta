@@ -99,3 +99,48 @@ cache-batched/CSSC kernel, separating cold and repeated warm measurements. A
 kernel/profile/CPU ISA change is a confounder; timing differences alone cannot
 isolate cache batching. See the [integration plan](RENDERER-INTEGRATION.md) for
 required ownership and counters before UI integration.
+
+## Same artifact on the source-built diagnostic kernel
+
+A second RAM-only run at 2026-10-27 20:28:33 UTC passed the same four draws
+(16,384 components, zero mismatches) and sampler refusal on the new source-built
+cache-batched/CSSC diagnostic kernel. All four paused client instances were
+successfully resumed, and the saved client-admission policy was restored.
+The same library, probe, launcher and shader fixture hashes were read back again.
+
+The [second checkpoint](evidence/native-air-checkpoint2.json) retains raw events,
+artifact identities and restoration results. Its kernel candidate SHA-256 is
+`ec2a39c3800afe118f8de964223808a764573f5597f2929949422d88e1c6030d`.
+The verifier maps the recorded 128-byte runtime VA to exact candidate Mach-O file
+bytes and verifies their hash; this does not hash the complete running kernel.
+The raw log also retains earlier CPU instruction runs: the verifier selects all
+seven `probe=duo_air_shader` records and records the other JSON count explicitly.
+
+```sh
+python3 experimental/duo-metal/evidence/review-native-air.py \
+  --result ../isa-compat/native-air-result2.json \
+  --log ../isa-compat/native-air-probe2.log \
+  --kernel-log ../isa-compat/native-air-kernel2.log \
+  --artifacts ../isa-compat/air-artifact \
+  --kernel-image ../../../UniXNU-zeta/build/bringup/native-usb/qcom-ios27-compat-probe1/kernel.macho \
+  --output /tmp/native-air-checkpoint2.json
+cmp /tmp/native-air-checkpoint2.json experimental/duo-metal/evidence/native-air-checkpoint2.json
+```
+
+| Case | Compile µs | Draw + wait µs | Readback µs |
+|---|---:|---:|---:|
+| AIR triangle | 3,435 | 26,197 | 12,348 |
+| Premultiplied source-over | 771 | 10,934 | 10,229 |
+| sRGB RGBA8 | 711 | 11,141 | 12,102 |
+| Two-word sampler | 946 | 25,198 | 23,275 |
+
+The first run's 1.75-second cold outlier did not recur. Other timings are mixed:
+the source-over draw was faster, whereas sRGB and sampler draws were slower.
+There was no controlled affinity, clock, OS load or repeated warm sampling, and
+the kernels differ beyond cache work. These samples establish preserved small
+shader correctness, not a causal performance improvement. No GPU timestamp,
+complete fault coverage, system compositor, wallpaper or 60/90 Hz result follows.
+
+The native resource receiver remains default-off and validation-only. Its actual
+IOKit wrapper still requires compilation against generated XNU headers, then
+real mapping pins/cache ownership/completion and producer capability negotiation.

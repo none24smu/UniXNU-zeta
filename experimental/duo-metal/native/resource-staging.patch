@@ -1,0 +1,2302 @@
+diff --git a/NativeAdrenoMemory.cpp b/NativeAdrenoMemory.cpp
+index cec75a7..30f1eb1 100644
+--- a/NativeAdrenoMemory.cpp
++++ b/NativeAdrenoMemory.cpp
+@@ -115,7 +115,13 @@ IOReturn NativeAdrenoMemory::allocate(size_t bytes,unsigned bits,bool contiguous
+                 mapping_=pool.virt+offset;bytes_=bytes;pooled_=true;pool_offset_=offset;prepared_=true;
+                 bzero(mapping_,bytes);
+                 /* Through a write-combined pool's own mapping the zeros go to DRAM; the barrier completes them. */
+-                if(pool.write_combined)__asm__ volatile("dsb sy":::"memory");
++                if(pool.write_combined) {
++#if defined(__aarch64__) || defined(__arm64__)
++                    __asm__ volatile("dsb sy":::"memory");
++#else
++                    __atomic_thread_fence(__ATOMIC_SEQ_CST); // host peer only
++#endif
++                }
+                 else status=NativeAdrenoMaintainOwnedPages(mapping_,bytes,NativeAdrenoClean);
+                 if(status!=kIOReturnSuccess) {(void)release();return status;}
+                 native_adreno_pool_stats[1]=native_adreno_pool_stats[1]+1;
+diff --git a/NativeAdrenoPublish.cpp b/NativeAdrenoPublish.cpp
+index 1d74546..ce43d50 100644
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -76,6 +76,9 @@ class AGXDeviceUserClient;
+ static AGXDeviceUserClient *gMailboxOwner=nullptr;
+ void nativeAdrenoMailboxPoller(void *,wait_result_t);
+ static IOReturn runCore(AGXDeviceUserClient *,uint32_t method,const void *input,size_t input_size,void *output,size_t output_size);
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++static void pollResourceRetirements();
++#endif
+ 
+ /* The two sandbox gates IOServiceOpen applies after newUserClient (XNU IOUserClient.cpp is_io_service_open_extended): the MACF open check on
+  * the client object and the sandbox's filter resolver. They are run here for the caller too, only to record which one refuses it. */
+@@ -141,6 +144,19 @@ class AGXDeviceUserClient : public IOUserClient {
+     bool handoffOnly_=false;
+     bool kernel_=false;
+     NativeAdrenoUserClient *core_=nullptr;   /* own core; deleted in free(), so a call that raced the close sees live_ false, never freed memory */
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    bool resource_retiring_=false;
++    void retainResourceRetirementLocked();
++    friend void pollResourceRetirements();
++#endif
++    bool callableLocked() const {
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++        return live_ && !resource_retiring_;
++#else
++        return live_;
++#endif
++    }
++    IOReturn finishCloseLocked(uint32_t timeout_us);
+     unsigned slot_=NativeAdrenoMaxClients;
+     char name_[20]{};
+     /* One user-view descriptor per BO token, reused by every clientMemoryForType call. IOConnectUnmapMemory64 asks clientMemoryForType for
+@@ -174,6 +190,9 @@ void nativeAdrenoMailboxPoller(void *,wait_result_t)
+     uint32_t last=0;
+     for(;;) {
+         IOSleep(1);
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++        pollResourceRetirements();
++#endif
+         if(!gMailboxOwner || !gMailboxWords)continue;
+         const uint32_t request=gMailboxWords[1];
+         if(request==last || request==gMailboxWords[2])continue;
+@@ -278,24 +297,65 @@ IOReturn AGXDeviceUserClient::clientClose()
+     AGXDeviceUserClient *mailbox=nullptr;
+     if(gMailboxOwner==this) {mailbox=gMailboxOwner;gMailboxOwner=nullptr;}
+     if(live_) {
+-        const uint64_t peak=core_->windowPeak();
+-        status=core_->releaseAll(&g.clock,2000000);
+-        /* A failed teardown leaves the objects live and the slot taken: nothing is forced or reused. */
+-        if(!status) {
+-            live_=false;
+-            if(kernel_)g.kernel_client=false;else if(slot_<NativeAdrenoMaxClients)g.slots[slot_]=false;
+-            ++g.closed;native_adreno_metal_diag.closes=native_adreno_metal_diag.closes+1;
+-            if(NativeAdrenoClientRecord *record=clientRecord(name_)) {
+-                record->closes=record->closes+1;record->slot=0xff;
+-                if(peak>>20>record->peak_mib)record->peak_mib=uint32_t(peak>>20);
+-            }
+-        }
++        status=core_->closeResourceStaging();
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++        if(status)retainResourceRetirementLocked();
++#endif
++        if(!status)status=finishCloseLocked(2000000);
+     }
+     IOLockUnlock(g.lock);
+     if(mailbox)mailbox->release();
+     if(!status)terminate();
+     return status;
+ }
++IOReturn AGXDeviceUserClient::finishCloseLocked(uint32_t timeout_us)
++{
++    if(!live_)return kIOReturnSuccess;
++    const uint64_t peak=core_->windowPeak();
++    const IOReturn status=core_->releaseAll(&g.clock,timeout_us);
++    // Failed teardown keeps BOs/core/slot. Resource retirement additionally owns
++    // an actual OSObject reference, so its callback context cannot disappear.
++    if(!status) {
++        live_=false;
++        if(kernel_)g.kernel_client=false;else if(slot_<NativeAdrenoMaxClients)g.slots[slot_]=false;
++        ++g.closed;native_adreno_metal_diag.closes=native_adreno_metal_diag.closes+1;
++        if(NativeAdrenoClientRecord *record=clientRecord(name_)) {
++            record->closes=record->closes+1;record->slot=0xff;
++            if(peak>>20>record->peak_mib)record->peak_mib=uint32_t(peak>>20);
++        }
++    }
++    return status;
++}
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++// One slot per possible mounted native connection, including the kernel client.
++static AGXDeviceUserClient *resource_retirements[NativeAdrenoMaxClients+1]{};
++void AGXDeviceUserClient::retainResourceRetirementLocked()
++{
++    if(resource_retiring_)return;
++    retain();resource_retiring_=true;
++    for(auto &slot:resource_retirements)if(!slot) {slot=this;break;}
++    // The mounted-client limit guarantees a free slot. On an invariant failure
++    // the retained object still cannot be freed unsafely; no forced release.
++    if(!gPollerStarted) {
++        thread_t thread=nullptr;
++        if(kernel_thread_start(nativeAdrenoMailboxPoller,nullptr,&thread)==KERN_SUCCESS) {
++            thread_deallocate(thread);gPollerStarted=true;
++        }
++    }
++}
++static void pollResourceRetirements()
++{
++    for(auto &slot:resource_retirements) {
++        AGXDeviceUserClient *done=nullptr;
++        IOLockLock(g.lock);
++        if(slot && !slot->core_->pollResourceStagingRetirement() && !slot->finishCloseLocked(0)) {
++            done=slot;slot=nullptr;done->resource_retiring_=false;
++        }
++        IOLockUnlock(g.lock);
++        if(done) {done->terminate();done->release();}
++    }
++}
++#endif
+ void AGXDeviceUserClient::free()
+ {
+     dropViews(0);
+@@ -339,7 +399,7 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
+         IOLockUnlock(g.lock);
+         return kIOReturnSuccess;
+     }
+-    NativeAdrenoMemory *backing=live_?core_->memoryForToken(type):nullptr;
++    NativeAdrenoMemory *backing=callableLocked()?core_->memoryForToken(type):nullptr;
+     if(backing) {
+         /* The BO's pages are cached in the kernel and the GPU's PTEs are non-cacheable, so the client needs an uncached
+          * view. A mapping of the buffer descriptor with a different cache mode is not reliable, so describe the same raw
+@@ -414,7 +474,7 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
+         for(;;) {
+             /* The connection's own core while it is live; a close that ran between two polls ends the wait. */
+             IOLockLock(g.lock);
+-            status=connection->live_?connection->core_->dispatch(method,&poll,sizeof(poll),output,output_size,&g.clock):kIOReturnNotReady;
++            status=connection->callableLocked()?connection->core_->dispatch(method,&poll,sizeof(poll),output,output_size,&g.clock):kIOReturnNotReady;
+             IOLockUnlock(g.lock);
+             waited=g.clock.now_us(g.clock.cookie)-began;
+             if(status!=kIOReturnTimeout || waited>=timeout_us)break;
+@@ -425,7 +485,7 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
+         if(waited>native_adreno_wait_outer[3])native_adreno_wait_outer[3]=waited;
+     } else {
+         IOLockLock(g.lock);
+-        status=connection->live_?connection->core_->dispatch(method,input,input_size,output,output_size,&g.clock):kIOReturnNotReady;
++        status=connection->callableLocked()?connection->core_->dispatch(method,input,input_size,output,output_size,&g.clock):kIOReturnNotReady;
+         if(method==NativeAdrenoMethodBoMap && !status && connection->live_ && !connection->kernel_)
+             if(NativeAdrenoClientRecord *record=clientRecord(connection->name_))
+                 if(connection->core_->windowPeak()>>20>record->peak_mib)record->peak_mib=uint32_t(connection->core_->windowPeak()>>20);
+@@ -466,7 +526,7 @@ IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input
+         NativeAdrenoAbiBoAllocReply reply{};
+         native_adreno_metal_diag.inflight=method+1;
+         IOLockLock(g.lock);
+-        const IOReturn status=live_?core_->importBo(&request,current_task(),&reply):kIOReturnNotReady;
++        const IOReturn status=callableLocked()?core_->importBo(&request,current_task(),&reply):kIOReturnNotReady;
+         IOLockUnlock(g.lock);
+         native_adreno_metal_diag.inflight=0;
+         native_adreno_metal_diag.calls=native_adreno_metal_diag.calls+1;
+@@ -487,6 +547,15 @@ IOReturn AGXDeviceUserClient::action(OSObject *target,void *,IOExternalMethodArg
+ IOReturn AGXDeviceUserClient::externalMethod(uint32_t selector,IOExternalMethodArguments *arguments,
+     IOExternalMethodDispatch *,OSObject *target,void *reference)
+ {
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    if(selector==NativeAdrenoExperimentalResourceStaging || selector==NativeAdrenoExperimentalResourceMapping) {
++        if(!arguments || arguments->scalarInputCount || arguments->scalarOutputCount ||
++           arguments->structureInputSize!=NativeAdrenoUserClient::inputSize(selector) ||
++           arguments->structureOutputSize!=NativeAdrenoUserClient::outputSize(selector))return kIOReturnBadArgument;
++        return run(selector,arguments->structureInput,arguments->structureInputSize,
++                   arguments->structureOutput,arguments->structureOutputSize);
++    }
++#endif
+     /* One entry per ABI method; sizes are the exact wire records. */
+     static const IOExternalMethodDispatch table[]={
+         {&action,0,0,0,sizeof(NativeAdrenoAbiParams)},
+diff --git a/NativeAdrenoResourceIntegration.h b/NativeAdrenoResourceIntegration.h
+new file mode 100644
+index 0000000..6e86cf2
+--- /dev/null
++++ b/NativeAdrenoResourceIntegration.h
+@@ -0,0 +1,21 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef NATIVE_ADRENO_RESOURCE_INTEGRATION_H
++#define NATIVE_ADRENO_RESOURCE_INTEGRATION_H
++#include "NativeAdrenoResourceTransaction.h"
++/* Source-only staging opt-in. This is NOT execution readiness or an ABI-v1 flag.
++ * Default kernels refuse all experimental methods, including generation query. */
++#ifndef NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++#define NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING 0
++#endif
++enum : uint32_t {
++    NativeAdrenoExperimentalResourceStaging = 0x52540001,
++    NativeAdrenoExperimentalResourceMapping = 0x52540002
++};
++struct NativeAdrenoResourceMappingRequest { uint64_t handle; };
++struct NativeAdrenoResourceMappingReply {
++    uint64_t handle,generation,iova,bytes;
++    uint32_t permissions,reserved;
++};
++static_assert(sizeof(NativeAdrenoResourceMappingRequest)==8,"mapping request layout");
++static_assert(sizeof(NativeAdrenoResourceMappingReply)==40,"mapping reply layout");
++#endif
+diff --git a/NativeAdrenoResourceTransaction.cpp b/NativeAdrenoResourceTransaction.cpp
+new file mode 100644
+index 0000000..8f1b967
+--- /dev/null
++++ b/NativeAdrenoResourceTransaction.cpp
+@@ -0,0 +1,186 @@
++/* SPDX-License-Identifier: MIT */
++#include "NativeAdrenoResourceTransaction.h"
++#include <new>
++#include <string.h>
++#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
++#error Resource transaction wire schema requires little endian
++#endif
++namespace NativeAdrenoResources {
++namespace Transaction {
++Schema schema() { return {Magic,Version,RequestBytes,ReplyBytes,MaxResources,MaxIbs,
++                         CompleteSet|RetainUntilCompletion|ScopedCache,0}; }
++static bool zero(const uint8_t *p,size_t n) {
++    for(size_t i=0;i<n;++i)if(p[i])return false;
++    return true;
++}
++Session::Session(uint64_t owner,uint64_t incarnation,const Capabilities &caps,
++                 const Allocator &allocator,const Hooks &hooks):
++    owner_(owner),incarnation_(incarnation),caps_(caps),allocator_(allocator),hooks_(hooks) {}
++Error Session::create(uint64_t owner,uint64_t incarnation,const Capabilities &caps,
++                      const Allocator &a,const Hooks &h,Session **out) {
++    if(!out)return Error::Invalid;
++    *out=nullptr;
++    if(!supported(caps))return Error::Unsupported;
++    if(!owner || !incarnation || !a.allocate || !a.free || !h.lookup || !h.hold ||
++       !h.release || !h.publish || !h.enqueue || !h.completion || !h.acquire || !h.quiesce)
++        return Error::Invalid;
++    void *p=a.allocate(a.context,sizeof(Session));
++    if(!p)return Error::NoMemory;
++    *out=new(p) Session(owner,incarnation,caps,a,h);return Error::Ok;
++}
++Error Session::createValidationOnly(uint64_t owner,uint64_t incarnation,size_t maximum,
++    const Allocator &a,void *context,Error (*lookup)(void *,uint64_t,Mapping *),Session **out) {
++    // Internal Job flags enable its immutable validator only; none are advertised
++    // as native execution readiness. Private Job storage never escapes Session.
++    Hooks h{context,lookup,
++        [](void *,const Mapping &){return Error::Unsupported;},
++        [](void *,const Mapping &,Release){},
++        [](void *,const CacheSpan *,size_t){return Error::Unsupported;},
++        [](void *,uint64_t,uint64_t,const Use *,size_t,const Command *,size_t){
++            return SubmitResult{Error::Unsupported,Acceptance::Rejected,0};},
++        [](void *,uint64_t){return Completion::Uncertain;},
++        [](void *,const CacheSpan *,size_t){return Error::Unsupported;},
++        [](void *){return false;}};
++    const Error error=create(owner,incarnation,{1,7,maximum,MaxIbs},a,h,out);
++    if(error==Error::Ok)(*out)->validation_only_=true;
++    return error;
++}
++State Session::state() const {
++    if(closed_)return State::Closed;
++    if(job_)switch(job_->state()) {
++    case Job::State::Prepared:return State::Sealed;
++    case Job::State::Rejected:return State::Rejected;
++    case Job::State::InFlight:return State::InFlight;
++    case Job::State::Uncertain:return State::Uncertain;
++    case Job::State::Completed:return State::Completed;
++    }
++    return active_.generation?State::Uploading:State::Idle;
++}
++Reply Session::reply(Status s,Error detail,bool identity) const {
++    return {uint32_t(s),uint32_t(state()),identity?active_.id:0,
++            identity?active_.generation:0,identity?next_sequence_:0,uint32_t(detail)};
++}
++bool Session::matches(Token t) const {
++    return active_.id && t.id==active_.id && t.generation==active_.generation;
++}
++void Session::discardUpload() {
++    if(resources_)allocator_.free(allocator_.context,resources_,resource_total_*sizeof(Resource));
++    if(ibs_)allocator_.free(allocator_.context,ibs_,ib_total_*sizeof(Ib));
++    resources_=nullptr;ibs_=nullptr;
++}
++Reply Session::begin(const Request &r) {
++    if(r.token || r.generation || r.sequence || r.count || r.payload_bytes!=8 ||
++       !r.total_resources || r.total_resources>caps_.max_resources ||
++       !r.total_ibs || r.total_ibs>caps_.max_ibs ||
++       !zero(r.payload+8,sizeof(r.payload)-8))return reply(Status::BadPacket);
++    if(active_.generation || job_)return reply(Status::Busy);
++    if(generation_==UINT64_MAX)return reply(Status::Unsupported);
++    // Burn generations even on allocation failure; no issued token can recur.
++    const uint64_t generation=++generation_;
++    auto *resources=static_cast<Resource *>(allocator_.allocate(allocator_.context,r.total_resources*sizeof(Resource)));
++    auto *ibs=static_cast<Ib *>(allocator_.allocate(allocator_.context,r.total_ibs*sizeof(Ib)));
++    if(!resources || !ibs) {
++        if(resources)allocator_.free(allocator_.context,resources,r.total_resources*sizeof(Resource));
++        if(ibs)allocator_.free(allocator_.context,ibs,r.total_ibs*sizeof(Ib));
++        return reply(Status::NoMemory);
++    }
++    resources_=resources;ibs_=ibs;
++    resource_total_=r.total_resources;ib_total_=r.total_ibs;
++    resource_count_=ib_count_=0;next_sequence_=1;
++    memcpy(&queue_,r.payload,8);
++    active_={incarnation_,generation};return reply(Status::Ok);
++}
++Reply Session::append(const Request &r,bool resources) {
++    if(job_)return reply(Status::Busy);
++    const size_t stride=resources?sizeof(Resource):sizeof(Ib);
++    const size_t maximum=resources?ResourcePageCount:IbPageCount;
++    if(!r.count || r.count>maximum || r.payload_bytes!=r.count*stride ||
++       !zero(r.payload+r.payload_bytes,sizeof(r.payload)-r.payload_bytes))return reply(Status::BadPacket);
++    if(resources) {
++        if(ib_count_ || r.count>resource_total_-resource_count_)return reply(Status::BadPacket);
++        Resource page[ResourcePageCount];memcpy(page,r.payload,r.payload_bytes);
++        for(size_t i=0;i<r.count;++i) {
++            const Resource &p=page[i];
++            if(!p.handle || !p.generation || p.offset || !p.bytes || p.reserved ||
++               !(p.access&(Read|Write)) || (p.access&~uint32_t(Read|Write|Execute)) ||
++               ((p.access&Execute) && !(p.access&Read)))return reply(Status::BadPacket);
++        }
++        memcpy(resources_+resource_count_,page,r.payload_bytes);resource_count_+=r.count;
++    } else {
++        if(resource_count_!=resource_total_ || r.count>ib_total_-ib_count_)return reply(Status::BadPacket);
++        Ib page[IbPageCount];memcpy(page,r.payload,r.payload_bytes);
++        for(size_t i=0;i<r.count;++i)if(!page[i].handle || !page[i].generation ||
++            !page[i].bytes || (page[i].offset&3) || (page[i].bytes&3))return reply(Status::BadPacket);
++        memcpy(ibs_+ib_count_,page,r.payload_bytes);ib_count_+=r.count;
++    }
++    ++next_sequence_;return reply(Status::Ok);
++}
++Reply Session::seal() {
++    if(job_)return reply(Status::Busy);
++    if(resource_count_!=resource_total_ || ib_count_!=ib_total_)return reply(Status::BadPacket);
++    // Version1 carries full BOs only; independently check the declared extent.
++    // Lookup is read-only. Job creation then validates ownership/ranges/IBs and
++    // copies all bytes. No hold, cache operation or GPU enqueue occurs at seal.
++    for(size_t i=0;i<resource_total_;++i) {
++        Mapping m{};
++        const Error e=hooks_.lookup(hooks_.context,resources_[i].handle,&m);
++        if(e!=Error::Ok)return reply(Status::Validation,e);
++        if(m.owner!=owner_)return reply(Status::Validation,Error::Ownership);
++        if(m.generation!=resources_[i].generation)return reply(Status::Validation,Error::Stale);
++        if(resources_[i].bytes!=m.bytes)return reply(Status::Validation,Error::Bounds);
++    }
++    const Error e=Job::create(caps_,owner_,queue_,resources_,resource_total_,ibs_,ib_total_,
++                              allocator_,hooks_,&job_);
++    if(e!=Error::Ok)return reply(e==Error::NoMemory?Status::NoMemory:Status::Validation,e);
++    discardUpload();++next_sequence_;return reply(Status::Ok);
++}
++Reply Session::process(uint64_t owner,const void *bytes,size_t size) {
++    if(owner!=owner_)return reply(Status::Ownership,Error::Ownership,false);
++    if(closed_)return reply(Status::Closed,Error::Busy,false);
++    if(!bytes || size!=sizeof(Request))return reply(Status::BadPacket);
++    Request r;memcpy(&r,bytes,sizeof(r));
++    if(r.magic!=Magic || r.version!=Version || r.flags || r.reserved ||
++       r.payload_bytes>sizeof(r.payload))return reply(Status::BadPacket);
++    const Operation op=Operation(r.operation);
++    if(op==Operation::Begin)return begin(r);
++    if(op!=Operation::Resources && op!=Operation::Ibs && op!=Operation::Seal && op!=Operation::Abort)
++        return reply(Status::Unsupported);
++    if(!matches({r.token,r.generation}))return reply(Status::Stale);
++    if(r.total_resources!=resource_total_ || r.total_ibs!=ib_total_)return reply(Status::BadPacket);
++    if(r.sequence!=next_sequence_)return reply(Status::Sequence);
++    if(op==Operation::Resources || op==Operation::Ibs)return append(r,op==Operation::Resources);
++    if(r.count || r.payload_bytes || !zero(r.payload,sizeof(r.payload)))return reply(Status::BadPacket);
++    if(op==Operation::Seal)return seal();
++    if(job_) {
++        const Error e=Job::destroy(job_);
++        if(e!=Error::Ok)return reply(Status::Busy,e);
++        job_=nullptr;
++    }
++    discardUpload();active_={};resource_total_=ib_total_=resource_count_=ib_count_=0;next_sequence_=0;
++    return reply(Status::Ok);
++}
++Error Session::submitSealed(uint64_t owner,Token token) {
++    if(owner!=owner_)return Error::Ownership;
++    if(validation_only_)return Error::Unsupported;
++    if(closed_ || !matches(token) || !job_)return Error::Stale;
++    return job_->submit();
++}
++Error Session::poll() { return job_?job_->poll():Error::Busy; }
++Error Session::recover() { return job_?job_->recover():Error::Busy; }
++Error Session::close() {
++    closed_=true;discardUpload();
++    if(job_) {
++        const Error e=Job::destroy(job_);if(e!=Error::Ok)return e;
++        job_=nullptr;
++    }
++    active_={};resource_total_=ib_total_=resource_count_=ib_count_=0;next_sequence_=0;
++    return Error::Ok;
++}
++Error Session::destroy(Session *session) {
++    if(!session)return Error::Invalid;
++    const Error e=session->close();if(e!=Error::Ok)return e;
++    const Allocator a=session->allocator_;
++    session->~Session();a.free(a.context,session,sizeof(Session));return Error::Ok;
++}
++}
++}
+diff --git a/NativeAdrenoResourceTransaction.h b/NativeAdrenoResourceTransaction.h
+new file mode 100644
+index 0000000..58058b2
+--- /dev/null
++++ b/NativeAdrenoResourceTransaction.h
+@@ -0,0 +1,97 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef NATIVE_ADRENO_RESOURCE_TRANSACTION_H
++#define NATIVE_ADRENO_RESOURCE_TRANSACTION_H
++#include "NativeAdrenoResources.h"
++
++namespace NativeAdrenoResources {
++namespace Transaction {
++/* Experimental fixed inline schema. No published ABI/runtime capability selects
++ * it; the integration header reserves default-off staging selectors only.
++ * Authenticated owner/connection identity is OUT OF BAND. */
++enum : uint32_t { Magic=0x31524d4e, Version=1, RequestBytes=408, ReplyBytes=32,
++                 ResourcePageCount=8, IbPageCount=11 };
++enum class Operation : uint32_t { Begin=1, Resources=2, Ibs=3, Seal=4, Abort=5 };
++enum class Status : uint32_t { Ok=0, Unsupported=1, BadPacket=2, Ownership=3,
++                              Stale=4, Sequence=5, Busy=6, NoMemory=7,
++                              Validation=8, Closed=9 };
++enum class State : uint32_t { Idle=0, Uploading=1, Sealed=2, InFlight=3,
++                             Uncertain=4, Completed=5, Rejected=6, Closed=7 };
++struct Token { uint64_t id,generation; };
++struct Request {
++    uint32_t magic,version,operation,flags;
++    uint64_t token,generation;
++    uint32_t sequence,count,total_resources,total_ibs,payload_bytes,reserved;
++    uint8_t payload[352];
++};
++struct Reply {
++    uint32_t status,state;
++    uint64_t token,generation;
++    uint32_t next_sequence,detail; /* detail is internal Error, never a GPU claim */
++};
++/* Schema description, NOT a readiness/capability advertisement. A future exact
++ * query method may publish readiness only after real VM/cache/pins implement it. */
++struct Schema {
++    uint32_t magic,version,request_bytes,reply_bytes;
++    uint32_t max_resources,max_ibs,required_job_flags,reserved;
++};
++Schema schema();
++static_assert(sizeof(Resource)==40,"resource record layout");
++static_assert(sizeof(Ib)==32,"IB record layout");
++static_assert(sizeof(Request)==408,"inline transaction request layout");
++static_assert(offsetof(Request,payload)==56,"inline transaction payload offset");
++static_assert(sizeof(Reply)==32,"transaction reply layout");
++static_assert(offsetof(Reply,token)==8 && offsetof(Reply,detail)==28,"transaction reply offsets");
++static_assert(sizeof(Schema)==32,"schema layout");
++
++class Session final {
++public:
++    /* incarnation is a nonzero kernel-issued connection cookie, never reused for
++     * that owner across close/reconnect, never derived from a userspace fd. One transaction per
++     * session, finite monotonic generation, no implicit eviction. */
++    static Error create(uint64_t owner,uint64_t incarnation,const Capabilities &,
++                        const Allocator &,const Hooks &,Session **);
++    /* Kernel staging receiver: real read-only lookup, no executable capability.
++     * Both the Session submit guard and all execution hooks refuse GPU work. */
++    static Error createValidationOnly(uint64_t owner,uint64_t incarnation,size_t max_resources,
++        const Allocator &,void *lookup_context,Error (*lookup)(void *,uint64_t,Mapping *),Session **);
++    Reply process(uint64_t authenticated_owner,const void *,size_t);
++    /* Future kernel submit integration, deliberately not a wire operation. */
++    Error submitSealed(uint64_t authenticated_owner,Token);
++    Error poll();
++    Error recover();
++    Error close();
++    static Error destroy(Session *); /* Busy retains unresolved job AND session */
++    State state() const;
++    Token token() const { return active_; }
++    size_t receivedResources() const { return resource_count_; }
++    size_t receivedIbs() const { return ib_count_; }
++private:
++    Session(uint64_t,uint64_t,const Capabilities &,const Allocator &,const Hooks &);
++    ~Session()=default;
++    Session(const Session &)=delete;
++    Session &operator=(const Session &)=delete;
++    Reply reply(Status,Error detail=Error::Ok,bool identity=true) const;
++    Reply begin(const Request &);
++    Reply append(const Request &,bool resources);
++    Reply seal();
++    void discardUpload();
++    bool matches(Token) const;
++    uint64_t owner_,incarnation_,generation_=0,queue_=0;
++    Capabilities caps_;
++    Allocator allocator_;
++    Hooks hooks_;
++    Token active_{};
++    Resource *resources_=nullptr;
++    Ib *ibs_=nullptr;
++    size_t resource_total_=0,ib_total_=0,resource_count_=0,ib_count_=0;
++    uint32_t next_sequence_=0;
++    Job *job_=nullptr;
++    bool closed_=false;
++    bool validation_only_=false;
++};
++/* All operations and namespace mutation require the same external serialization.
++ * On close Busy, retirement infrastructure must own this Session, Hooks.context
++ * and allocator until actual completion/quiescence; never free with the client. */
++}
++}
++#endif
+diff --git a/NativeAdrenoResources.cpp b/NativeAdrenoResources.cpp
+new file mode 100644
+index 0000000..ab8d12e
+--- /dev/null
++++ b/NativeAdrenoResources.cpp
+@@ -0,0 +1,152 @@
++/* SPDX-License-Identifier: MIT */
++#include "NativeAdrenoResources.h"
++#include <new>
++
++namespace NativeAdrenoResources {
++static bool fits(uint64_t offset,uint64_t bytes,uint64_t limit) {
++    return bytes && offset<=limit && bytes<=limit-offset;
++}
++static bool sameMapping(const Mapping &a,const Mapping &b) {
++    return a.generation==b.generation && a.owner==b.owner && a.backing==b.backing &&
++           a.mapping==b.mapping && a.iova==b.iova && a.bytes==b.bytes &&
++           a.backing_offset==b.backing_offset && a.permissions==b.permissions;
++}
++bool supported(const Capabilities &c) {
++    return c.version==1 && c.flags==(CompleteSet|RetainUntilCompletion|ScopedCache) &&
++           c.max_resources && c.max_resources<=MaxResources && c.max_ibs && c.max_ibs<=MaxIbs;
++}
++Job::Job(const Allocator &a,const Hooks &h):allocator_(a),hooks_(h) {}
++Error Job::create(const Capabilities &caps,uint64_t owner,uint64_t queue,const Resource *resources,size_t n,
++                  const Ib *ibs,size_t ni,const Allocator &a,const Hooks &h,Job **out) {
++    if(!out)return Error::Invalid;
++    *out=nullptr;
++    if(!supported(caps))return Error::Unsupported;
++    if(!owner || !resources || !ibs || !n || n>caps.max_resources || !ni || ni>caps.max_ibs ||
++       !a.allocate || !a.free || !h.lookup || !h.hold || !h.release || !h.publish ||
++       !h.enqueue || !h.completion || !h.acquire || !h.quiesce)return Error::Invalid;
++    void *memory=a.allocate(a.context,sizeof(Job));
++    if(!memory)return Error::NoMemory;
++    Job *job=new(memory) Job(a,h);
++    job->owner_=owner;job->queue_=queue;
++    job->resource_capacity_=n;job->command_capacity_=ni;
++    job->uses_=static_cast<Use *>(a.allocate(a.context,n*sizeof(Use)));
++    job->pins_=static_cast<Mapping *>(a.allocate(a.context,n*sizeof(Mapping)));
++    job->spans_=static_cast<CacheSpan *>(a.allocate(a.context,n*sizeof(CacheSpan)));
++    job->commands_=static_cast<Command *>(a.allocate(a.context,ni*sizeof(Command)));
++    auto fail=[&](Error e) { destroy(job);return e; };
++    if(!job->uses_ || !job->pins_ || !job->spans_ || !job->commands_)return fail(Error::NoMemory);
++    for(size_t i=0;i<n;++i) {
++        const Resource r=resources[i];
++        if(!r.handle || !r.generation || r.reserved || !(r.access&(Read|Write)) ||
++           (r.access&~uint32_t(Read|Write|Execute)) ||
++           ((r.access&Execute) && !(r.access&Read)))return fail(Error::Invalid);
++        Mapping m{};
++        Error error=h.lookup(h.context,r.handle,&m);
++        if(error!=Error::Ok)return fail(error);
++        if(m.owner!=owner)return fail(Error::Ownership);
++        if(m.handle!=r.handle || m.generation!=r.generation || !m.mapping || !m.backing || m.reserved)
++            return fail(Error::Stale);
++        if(!m.bytes || m.iova>UINT64_MAX-m.bytes || m.backing_offset>UINT64_MAX-m.bytes ||
++           !fits(r.offset,r.bytes,m.bytes))return fail(Error::Bounds);
++        if((m.permissions&~uint32_t(Read|Write)) || (r.access&uint32_t(Read|Write)&~m.permissions))
++            return fail(Error::Permission);
++        size_t at=0;
++        for(;at<job->use_count_;++at)if(job->uses_[at].mapping.handle==r.handle)break;
++        if(at<job->use_count_) {
++            Use &u=job->uses_[at];
++            if(!sameMapping(u.mapping,m))return fail(Error::Stale);
++            const uint64_t begin=u.offset<r.offset?u.offset:r.offset;
++            const uint64_t old_end=u.offset+u.bytes,new_end=r.offset+r.bytes;
++            u.offset=begin;u.bytes=(old_end>new_end?old_end:new_end)-begin;u.access|=r.access;
++        } else job->uses_[job->use_count_++]={m,r.offset,r.bytes,r.access,0};
++        size_t pin=0;
++        for(;pin<job->pin_count_;++pin)if(job->pins_[pin].mapping==m.mapping)break;
++        if(pin<job->pin_count_) {
++            if(!sameMapping(job->pins_[pin],m))return fail(Error::Stale);
++        } else job->pins_[job->pin_count_++]=m;
++    }
++    for(size_t i=0;i<ni;++i) {
++        const Ib ib=ibs[i];
++        if(!ib.bytes || (ib.offset&3) || (ib.bytes&3))return fail(Error::Bounds);
++        const Use *use=nullptr;
++        for(size_t j=0;j<job->use_count_;++j)if(job->uses_[j].mapping.handle==ib.handle)use=&job->uses_[j];
++        if(!use || use->mapping.generation!=ib.generation)return fail(Error::Stale);
++        if((use->access&(Read|Execute))!=(Read|Execute))return fail(Error::Permission);
++        if(ib.offset<use->offset || !fits(ib.offset-use->offset,ib.bytes,use->bytes))return fail(Error::Bounds);
++        const uint64_t address=use->mapping.iova+ib.offset;
++        if(address&3)return fail(Error::Bounds);
++        job->commands_[job->command_count_++]={address,ib.bytes};
++    }
++    /* Cache aliases merge by canonical backing ranges; mappings remain separately
++     * pinned. Re-scan after each merge so bridging intervals merge transitively. */
++    for(size_t i=0;i<job->use_count_;++i) {
++        const Use &u=job->uses_[i];
++        CacheSpan span{u.mapping.backing,u.mapping.backing_offset+u.offset,u.bytes,u.access,0};
++        for(size_t j=0;j<job->span_count_;) {
++            CacheSpan &s=job->spans_[j];
++            if(s.backing==span.backing && s.offset<=span.offset+span.bytes && span.offset<=s.offset+s.bytes) {
++                const uint64_t begin=s.offset<span.offset?s.offset:span.offset;
++                const uint64_t end=s.offset+s.bytes>span.offset+span.bytes?s.offset+s.bytes:span.offset+span.bytes;
++                span.offset=begin;span.bytes=end-begin;span.access|=s.access;
++                job->spans_[j]=job->spans_[--job->span_count_];j=0;
++            } else ++j;
++        }
++        job->spans_[job->span_count_++]=span;
++    }
++    *out=job;return Error::Ok;
++}
++void Job::releaseAll(Release reason) {
++    while(held_)hooks_.release(hooks_.context,pins_[--held_],reason);
++}
++Error Job::submit() {
++    if(state_!=State::Prepared)return Error::Busy;
++    for(;held_<pin_count_;++held_) {
++        const Error e=hooks_.hold(hooks_.context,pins_[held_]);
++        if(e!=Error::Ok) { releaseAll(Release::BeforeSubmit);state_=State::Rejected;return e; }
++    }
++    Error e=hooks_.publish(hooks_.context,spans_,span_count_);
++    if(e!=Error::Ok) { releaseAll(Release::BeforeSubmit);state_=State::Rejected;return e; }
++    const SubmitResult result=hooks_.enqueue(hooks_.context,owner_,queue_,uses_,use_count_,commands_,command_count_);
++    fence_=result.fence;
++    fence_covers_work_=result.acceptance==Acceptance::Accepted && fence_;
++    if(result.acceptance==Acceptance::Rejected && !fence_) {
++        releaseAll(Release::BeforeSubmit);state_=State::Rejected;
++        return result.error==Error::Ok?Error::Backend:result.error;
++    }
++    if(result.acceptance==Acceptance::Accepted && fence_ && result.error==Error::Ok) {
++        state_=State::InFlight;return Error::Ok;
++    }
++    state_=State::Uncertain;
++    return result.error==Error::Ok?Error::Backend:result.error;
++}
++Error Job::poll() {
++    if(state_==State::Completed)return Error::Ok;
++    if((state_!=State::InFlight && state_!=State::Uncertain) || !fence_covers_work_)return Error::Busy;
++    const Completion c=hooks_.completion(hooks_.context,fence_);
++    if(c!=Completion::Complete) {
++        if(c==Completion::Uncertain)state_=State::Uncertain;
++        return Error::Busy;
++    }
++    /* Even after completion, acquisition failure keeps pins for retry/recovery. */
++    const Error e=hooks_.acquire(hooks_.context,spans_,span_count_);
++    if(e!=Error::Ok) {state_=State::Uncertain;return e;}
++    releaseAll(Release::Completed);state_=State::Completed;return Error::Ok;
++}
++Error Job::recover() {
++    if(state_!=State::InFlight && state_!=State::Uncertain)return Error::Busy;
++    if(!hooks_.quiesce(hooks_.context))return Error::Busy;
++    const Error e=hooks_.acquire(hooks_.context,spans_,span_count_);
++    if(e!=Error::Ok)return e;
++    releaseAll(Release::Quiesced);state_=State::Completed;return Error::Ok;
++}
++Error Job::destroy(Job *job) {
++    if(!job)return Error::Invalid;
++    if(job->held_ || job->state_==State::InFlight || job->state_==State::Uncertain)return Error::Busy;
++    const Allocator a=job->allocator_;
++    if(job->uses_)a.free(a.context,job->uses_,job->resource_capacity_*sizeof(Use));
++    if(job->pins_)a.free(a.context,job->pins_,job->resource_capacity_*sizeof(Mapping));
++    if(job->spans_)a.free(a.context,job->spans_,job->resource_capacity_*sizeof(CacheSpan));
++    if(job->commands_)a.free(a.context,job->commands_,job->command_capacity_*sizeof(Command));
++    job->~Job();a.free(a.context,job,sizeof(Job));return Error::Ok;
++}
++}
+diff --git a/NativeAdrenoResources.h b/NativeAdrenoResources.h
+new file mode 100644
+index 0000000..458454e
+--- /dev/null
++++ b/NativeAdrenoResources.h
+@@ -0,0 +1,98 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef NATIVE_ADRENO_RESOURCES_H
++#define NATIVE_ADRENO_RESOURCES_H
++#include <stddef.h>
++#include <stdint.h>
++
++/* Internal, portable submission boundary, NOT a published wire ABI. No existing
++ * ABI-v1 capability implies this contract. Kernel transport integration must
++ * explicitly implement all required capabilities before enabling a caller. */
++namespace NativeAdrenoResources {
++enum class Error { Ok, Unsupported, Invalid, Stale, Ownership, Bounds, Permission,
++                   NoMemory, PinFailed, Backend, Busy };
++enum : uint32_t { Read=1, Write=2, Execute=4,
++                 CompleteSet=1, RetainUntilCompletion=2, ScopedCache=4 };
++enum : size_t { MaxResources=4096, MaxIbs=128 };
++struct Capabilities { uint32_t version, flags; size_t max_resources, max_ibs; };
++bool supported(const Capabilities &);
++struct Resource { uint64_t handle, generation, offset, bytes; uint32_t access, reserved; };
++struct Ib { uint64_t handle, generation, offset, bytes; };
++/* Cookies identify live incarnations, never raw userspace addresses. A mapping
++ * cookie/generation and backing cookie must stay stable while held. backing_offset
++ * permits distinct mappings of overlapping parts of one allocation. */
++struct Mapping {
++    uint64_t handle, generation, owner, backing, mapping, iova, bytes, backing_offset;
++    uint32_t permissions, reserved;
++};
++struct Use { Mapping mapping; uint64_t offset, bytes; uint32_t access, reserved; };
++struct CacheSpan { uint64_t backing, offset, bytes; uint32_t access, reserved; };
++struct Command { uint64_t iova, bytes; };
++enum class Acceptance { Rejected, Accepted, Uncertain };
++struct SubmitResult { Error error; Acceptance acceptance; uint64_t fence; };
++enum class Completion { Pending, Complete, Uncertain };
++enum class Release { BeforeSubmit, Completed, Quiesced };
++struct Allocator {
++    void *context;
++    void *(*allocate)(void *,size_t); /* max_align_t aligned; no exceptions */
++    void (*free)(void *,void *,size_t);
++};
++struct Hooks {
++    void *context;
++    Error (*lookup)(void *,uint64_t,Mapping *); /* read-only, client-scoped */
++    /* hold must atomically revalidate the entire mapping snapshot and ownership,
++     * then pin it. A failed hold must not acquire a reference. */
++    Error (*hold)(void *,const Mapping &);
++    void (*release)(void *,const Mapping &,Release);
++    Error (*publish)(void *,const CacheSpan *,size_t);
++    /* One transaction, full referenced set + separate commands. Accepted means
++     * its fence covers ALL accepted work, even on a partial-submit error. If an
++     * untracked tail may exist, return Uncertain: a prefix fence never permits
++     * release without quiescence. No silent legacy global submit is allowed. */
++    SubmitResult (*enqueue)(void *,uint64_t owner,uint64_t queue,const Use *,size_t,const Command *,size_t);
++    Completion (*completion)(void *,uint64_t);
++    Error (*acquire)(void *,const CacheSpan *,size_t);
++    bool (*quiesce)(void *); /* true ONLY after proven GPU cancel/quiescence */
++};
++class Job final {
++public:
++    enum class State { Prepared, Rejected, InFlight, Uncertain, Completed };
++    static Error create(const Capabilities &,uint64_t owner,uint64_t queue,const Resource *,size_t,
++                        const Ib *,size_t,const Allocator &,const Hooks &,Job **);
++    Error submit();
++    Error poll();
++    Error recover();
++    /* Busy preserves job storage/pins; caller must retain the Job pointer and
++     * arrange completion or recovery. No destructor frees uncertain GPU work. */
++    static Error destroy(Job *);
++    State state() const { return state_; }
++    uint64_t fence() const { return fence_; }
++    const Use *uses() const { return uses_; }
++    size_t useCount() const { return use_count_; }
++    const CacheSpan *spans() const { return spans_; }
++    size_t spanCount() const { return span_count_; }
++    const Command *commands() const { return commands_; }
++    size_t commandCount() const { return command_count_; }
++private:
++    Job(const Allocator &,const Hooks &);
++    ~Job()=default;
++    Job(const Job &)=delete;
++    Job &operator=(const Job &)=delete;
++    void releaseAll(Release);
++    Allocator allocator_;
++    Hooks hooks_;
++    Use *uses_=nullptr;
++    Mapping *pins_=nullptr;
++    CacheSpan *spans_=nullptr;
++    Command *commands_=nullptr;
++    size_t use_count_=0,pin_count_=0,held_=0,span_count_=0,command_count_=0;
++    size_t resource_capacity_=0,command_capacity_=0;
++    State state_=State::Prepared;
++    uint64_t fence_=0;
++    uint64_t owner_=0,queue_=0;
++    bool fence_covers_work_=false;
++};
++/* External serialization must cover lookup/creation through hold/submit and all
++ * mutation of the client namespace. Callbacks cannot reenter or throw. Lookup
++ * validates residency declarations, not arbitrary addresses hidden in PM4. */
++}
++#endif
+diff --git a/NativeAdrenoSubmit.cpp b/NativeAdrenoSubmit.cpp
+index 238ebb6..ac01609 100644
+--- a/NativeAdrenoSubmit.cpp
++++ b/NativeAdrenoSubmit.cpp
+@@ -118,7 +118,11 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
+      * caches over every mapped BO are cleaned and invalidated. The board shows the last submission's record on a stall. */
+     uint32_t cached=~0u,before=~0u,ignored=0,after=~0u;
+     /* Write-combined stores this CPU made before the call (the client's command words) complete before anything below. */
++#if defined(__aarch64__) || defined(__arm64__)
+     __asm__ volatile("dsb sy":::"memory");
++#else
++    __atomic_thread_fence(__ATOMIC_SEQ_CST); // host peer only
++#endif
+     /* int-098/099: with write-combined user BOs and no maintenance the CP stopped at the end of the first IB, as in int-065..069 when an
+      * IB sat in a CPU cache. While write-combined BOs are trusted, every line of this submission's IBs is compared as a CPU cache and
+      * DRAM hold it (bounded). A dirty line means a client view still caches its BOs: maintain every BO from now on, this submission
+diff --git a/NativeAdrenoUserClient.cpp b/NativeAdrenoUserClient.cpp
+index b3dd3b6..8ff8c1c 100644
+--- a/NativeAdrenoUserClient.cpp
++++ b/NativeAdrenoUserClient.cpp
+@@ -21,6 +21,96 @@ static void noteImport(IOReturn status,uint32_t stage,uint64_t bytes,uint64_t ad
+ }
+ #include <IOKit/IOLib.h>
+ #include <string.h>
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++namespace nr=NativeAdrenoResources;
++namespace rt=NativeAdrenoResources::Transaction;
++namespace {
++// Kernel-only identities shared across open/backing/map incarnations. Saturate,
++// never wrap/reuse; neither packet data, PIDs, fd numbers nor pointers seed it.
++uint64_t resource_identity=0;
++uint64_t nextResourceIdentity() {
++    uint64_t old=__atomic_load_n(&resource_identity,__ATOMIC_RELAXED);
++    for(;;) {
++        if(old==UINT64_MAX)return 0;
++        if(__atomic_compare_exchange_n(&resource_identity,&old,old+1,false,
++                                      __ATOMIC_RELAXED,__ATOMIC_RELAXED))return old+1;
++    }
++}
++nr::Allocator resourceAllocator() {
++    return {nullptr,[](void *,size_t bytes)->void *{return IOMalloc(bytes);},
++                    [](void *,void *p,size_t bytes){IOFree(p,bytes);}};
++}
++}
++nr::Error NativeAdrenoUserClient::resourceLookup(void *context,uint64_t handle,nr::Mapping *out)
++{
++    auto *client=static_cast<NativeAdrenoUserClient *>(context);
++    if(!client || !out || !client->open_)return nr::Error::Stale;
++    Entry *entry=client->find(handle);
++    if(!entry || entry->unreleasable || !entry->mapped_state || !entry->resource_generation ||
++       !entry->resource_backing)return nr::Error::Stale;
++    uint64_t iova=0;size_t bytes=0;unsigned permissions=0;
++    const IOReturn status=client->vm_->describe(entry->mapped,&iova,&bytes,&permissions);
++    if(status || iova!=entry->iova || bytes!=entry->memory.bytes())return nr::Error::Stale;
++    *out={entry->handle,entry->resource_generation,client->resource_owner_,entry->resource_backing,
++          entry->mapped,iova,bytes,0,permissions,0};
++    // backing names the real Entry allocation incarnation for validation only.
++    // Physical aliases of separate imports still require canonicalization before
++    // any scoped-cache or execution capability can be advertised.
++    return nr::Error::Ok;
++}
++IOReturn NativeAdrenoUserClient::resourceMapping(const void *input,size_t in,void *output,size_t out)
++{
++    if(!open_)return kIOReturnNotReady;
++    if(!input || in!=sizeof(NativeAdrenoResourceMappingRequest) || !output ||
++       out!=sizeof(NativeAdrenoResourceMappingReply))return kIOReturnBadArgument;
++    NativeAdrenoResourceMappingRequest request{};memcpy(&request,input,sizeof(request));
++    nr::Mapping mapping{};
++    if(resourceLookup(this,request.handle,&mapping)!=nr::Error::Ok)return kIOReturnBadArgument;
++    const NativeAdrenoResourceMappingReply reply{mapping.handle,mapping.generation,mapping.iova,
++                                                mapping.bytes,mapping.permissions,0};
++    memcpy(output,&reply,sizeof(reply));return kIOReturnSuccess;
++}
++IOReturn NativeAdrenoUserClient::resourceStaging(const void *input,size_t in,void *output,size_t out)
++{
++    if(!open_)return kIOReturnNotReady;
++    if(!input || in!=sizeof(rt::Request) || !output || out!=sizeof(rt::Reply))return kIOReturnBadArgument;
++    if(!resource_session_) {
++        const uint64_t incarnation=nextResourceIdentity();
++        if(!incarnation)return kIOReturnNoResources;
++        const nr::Error error=rt::Session::createValidationOnly(resource_owner_,incarnation,
++            NativeAdrenoClientMaxObjects,resourceAllocator(),this,&resourceLookup,&resource_session_);
++        if(error!=nr::Error::Ok)return error==nr::Error::NoMemory?kIOReturnNoMemory:kIOReturnUnsupported;
++    }
++    const rt::Reply reply=resource_session_->process(resource_owner_,input,in);
++    memcpy(output,&reply,sizeof(reply));return kIOReturnSuccess;
++}
++#endif
++bool NativeAdrenoUserClient::resourceStagingActive() const
++{
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    return resource_session_!=nullptr;
++#else
++    return false;
++#endif
++}
++IOReturn NativeAdrenoUserClient::closeResourceStaging()
++{
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    if(resource_session_) {
++        const nr::Error error=rt::Session::destroy(resource_session_);
++        if(error!=nr::Error::Ok)return kIOReturnBusy;
++        resource_session_=nullptr;
++    }
++#endif
++    return kIOReturnSuccess;
++}
++IOReturn NativeAdrenoUserClient::pollResourceStagingRetirement()
++{
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    if(resource_session_)resource_session_->poll();
++#endif
++    return closeResourceStaging();
++}
+ NativeAdrenoUserClient::Entry *NativeAdrenoUserClient::find(uint64_t handle)
+ {
+     if(handle)for(size_t i=0;i<entry_count_;++i)if(entries_[i].used && entries_[i].handle==handle)return &entries_[i];
+@@ -31,6 +121,9 @@ void NativeAdrenoUserClient::clear(Entry &entry)
+     entry.handle=0;entry.mapped=0;entry.iova=0;entry.used=false;
+     entry.mapped_state=false;entry.unreleasable=false;entry.metadata_bytes=0;
+     entry.token=0;entry.mapping_leases=0;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    entry.resource_backing=entry.resource_generation=0;
++#endif
+ }
+ NativeAdrenoUserClient::Entry *NativeAdrenoUserClient::free()
+ {
+@@ -57,12 +150,19 @@ IOReturn NativeAdrenoUserClient::open(uint32_t abi_version,NativeAdrenoVm *vm,
+     if(!vm || !submit || !ring || input_bits<31 || input_bits>48 ||
+         output_bits<32 || output_bits>48 || vm->poisoned() || submit->poisoned() ||
+         ring->poisoned())return kIOReturnBadArgument;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    const uint64_t resource_owner=nextResourceIdentity();
++    if(!resource_owner)return kIOReturnNoResources;
++#endif
+     entries_=IONewData(Entry,NativeAdrenoClientMaxObjects);
+     if(!entries_)return kIOReturnNoMemory;
+     memset(entries_,0,sizeof(Entry)*NativeAdrenoClientMaxObjects);
+     entry_count_=NativeAdrenoClientMaxObjects;
+     vm_=vm;submit_=submit;ring_=ring;input_bits_=input_bits;output_bits_=output_bits;
+     next_handle_=1;open_=true;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    resource_owner_=resource_owner;
++#endif
+     queues_[0]={0,true};
+     /* Each client is a new GPU context for the CP: its first submission clears the BR/BV synchronization state. */
+     ring_->requestContextReset();
+@@ -82,6 +182,7 @@ IOReturn NativeAdrenoUserClient::setScope(uint32_t queue_base,uint64_t window_st
+ IOReturn NativeAdrenoUserClient::close()
+ {
+     if(!open_)return kIOReturnNotReady;
++    const IOReturn resource_close=closeResourceStaging();if(resource_close)return resource_close;
+     if(liveObjects() || submit_->rangeOutstanding(queue_base_,NativeAdrenoAbiMaxQueues))return kIOReturnBusy;
+     for(size_t i=1;i<NativeAdrenoAbiMaxQueues;++i)if(queues_[i].active)return kIOReturnBusy;
+     IODeleteData(entries_,Entry,entry_count_);entry_count_=0;
+@@ -93,6 +194,7 @@ IOReturn NativeAdrenoUserClient::releaseAll(const NativeAdrenoRingClock *clock,u
+ {
+     if(!open_)return kIOReturnNotReady;
+     if(!clock)return kIOReturnBadArgument;
++    const IOReturn resource_close=closeResourceStaging();if(resource_close)return resource_close;
+     IOReturn status=submit_->waitRange(queue_base_,NativeAdrenoAbiMaxQueues,clock,timeout_us);
+     if(status)return status;
+     for(size_t index=0;index<entry_count_;++index) {
+@@ -133,6 +235,9 @@ IOReturn NativeAdrenoUserClient::allocBo(const NativeAdrenoAbiBoAlloc *request,
+         return kIOReturnBadArgument;
+     Entry *entry=free();
+     if(!entry)return kIOReturnNoResources;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    const uint64_t backing=nextResourceIdentity();if(!backing)return kIOReturnNoResources;
++#endif
+     /* A scattered allocation costs one VM span per physical page (int-030: 16 MiB came back as 4096 single-page spans, the
+      * whole span table), so larger objects try one contiguous run first and fall back to scattered pages unless the
+      * caller demanded contiguity. */
+@@ -160,6 +265,9 @@ IOReturn NativeAdrenoUserClient::allocBo(const NativeAdrenoAbiBoAlloc *request,
+     }
+     entry->used=true;entry->handle=next_handle_++;entry->token=(uint32_t)(entry-entries_)+1;
+     entry->mapped=0;entry->iova=0;entry->mapped_state=false;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    entry->resource_backing=backing;entry->resource_generation=0;
++#endif
+     reply->handle=entry->handle;
+     return kIOReturnSuccess;
+ }
+@@ -176,6 +284,9 @@ IOReturn NativeAdrenoUserClient::importBo(const NativeAdrenoAbiBoImport *request
+     }
+     Entry *entry=free();
+     if(!entry) {noteImport(kIOReturnNoResources,2,request->bytes,request->address);return kIOReturnNoResources;}
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    const uint64_t backing=nextResourceIdentity();if(!backing)return kIOReturnNoResources;
++#endif
+     const IOReturn status=entry->memory.importTask(task,request->address,(size_t)request->bytes,output_bits_,(size_t)request->bytes);
+     if(status) {
+         noteImport(status,native_adreno_import_stage,request->bytes,request->address);
+@@ -185,6 +296,9 @@ IOReturn NativeAdrenoUserClient::importBo(const NativeAdrenoAbiBoImport *request
+     }
+     entry->used=true;entry->handle=next_handle_++;entry->token=(uint32_t)(entry-entries_)+1;
+     entry->mapped=0;entry->iova=0;entry->mapped_state=false;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    entry->resource_backing=backing;entry->resource_generation=0;
++#endif
+     reply->handle=entry->handle;
+     return kIOReturnSuccess;
+ }
+@@ -208,10 +322,16 @@ IOReturn NativeAdrenoUserClient::mapBo(const NativeAdrenoAbiBoMap *request,
+      * write-back inner-shareable (Linux's IOMMU_CACHE PTE) and the CPU caches over it need no maintenance. The GPU's own BOs stay
+      * non-cacheable: their CPU view is write-combined, and a snoop could find a stale line of the kernel's cacheable alias. */
+     const bool coherent=entry->memory.imported() && native_adreno_io_coherent;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    const uint64_t generation=nextResourceIdentity();if(!generation)return kIOReturnNoResources;
++#endif
+     const IOReturn status=vm_->map(&entry->memory,0,request->iova,permissions,
+         coherent?1u:request->writeback,coherent?3u:request->shareability,&handle);
+     if(status)return status;
+     entry->mapped=handle;entry->iova=request->iova;entry->mapped_state=true;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    entry->resource_generation=generation;
++#endif
+     if(end>window_peak_)window_peak_=end;
+     reply->iova=request->iova;
+     return kIOReturnSuccess;
+@@ -321,6 +441,10 @@ IOReturn NativeAdrenoUserClient::status(NativeAdrenoAbiStatus *reply)
+ size_t NativeAdrenoUserClient::inputSize(uint32_t method)
+ {
+     switch(method) {
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    case NativeAdrenoExperimentalResourceStaging:return sizeof(rt::Request);
++    case NativeAdrenoExperimentalResourceMapping:return sizeof(NativeAdrenoResourceMappingRequest);
++#endif
+     case NativeAdrenoMethodQuery:
+     case NativeAdrenoMethodGetTimestamp:
+     case NativeAdrenoMethodGetStatus:
+@@ -343,6 +467,10 @@ size_t NativeAdrenoUserClient::inputSize(uint32_t method)
+ size_t NativeAdrenoUserClient::outputSize(uint32_t method)
+ {
+     switch(method) {
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    case NativeAdrenoExperimentalResourceStaging:return sizeof(rt::Reply);
++    case NativeAdrenoExperimentalResourceMapping:return sizeof(NativeAdrenoResourceMappingReply);
++#endif
+     case NativeAdrenoMethodQuery:return sizeof(NativeAdrenoAbiParams);
+     case NativeAdrenoMethodBoAlloc:return sizeof(NativeAdrenoAbiBoAllocReply);
+     case NativeAdrenoMethodBoMap:return sizeof(NativeAdrenoAbiBoMapReply);
+@@ -389,6 +517,12 @@ IOReturn NativeAdrenoUserClient::dispatch(uint32_t method,const void *input,
+     if((expected_in && !input) || (expected_out && !output))return kIOReturnBadArgument;
+     IOReturn status=kIOReturnSuccess;
+     switch(method) {
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    case NativeAdrenoExperimentalResourceStaging:
++        status=resourceStaging(input,input_size,output,output_size);break;
++    case NativeAdrenoExperimentalResourceMapping:
++        status=resourceMapping(input,input_size,output,output_size);break;
++#endif
+     case NativeAdrenoMethodQuery: {
+         NativeAdrenoAbiParams reply{};
+         status=query(&reply);
+diff --git a/NativeAdrenoUserClient.h b/NativeAdrenoUserClient.h
+index bcd1728..24313db 100644
+--- a/NativeAdrenoUserClient.h
++++ b/NativeAdrenoUserClient.h
+@@ -5,6 +5,7 @@
+ #include "NativeAdrenoSubmit.h"
+ #include "NativeAdrenoTimer.h"
+ #include "NativeAdrenoStatus.h"
++#include "NativeAdrenoResourceIntegration.h"
+ 
+ /* Kernel-side body of the Adreno user client, deliberately free of IOKit so it
+  * can be exercised on a host. The future IOService/IOUserClient wrapper only
+@@ -21,6 +22,9 @@ class NativeAdrenoUserClient final {
+         uint64_t handle=0;
+         uint64_t mapped=0;
+         uint64_t iova=0;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++        uint64_t resource_backing=0,resource_generation=0;
++#endif
+         bool used=false;
+         bool mapped_state=false;
+         bool unreleasable=false;
+@@ -46,6 +50,13 @@ class NativeAdrenoUserClient final {
+     uint64_t window_start_=0,window_bytes_=0,window_peak_=0;
+     uint64_t next_handle_=1;
+     bool open_=false;
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    uint64_t resource_owner_=0;
++    NativeAdrenoResources::Transaction::Session *resource_session_=nullptr;
++    static NativeAdrenoResources::Error resourceLookup(void *,uint64_t,NativeAdrenoResources::Mapping *);
++    IOReturn resourceStaging(const void *,size_t,void *,size_t);
++    IOReturn resourceMapping(const void *,size_t,void *,size_t);
++#endif
+     Entry *find(uint64_t);
+     Entry *free();
+     static void clear(Entry &);
+@@ -68,6 +79,11 @@ public:
+     /* Connection teardown: waits for every outstanding job, then unmaps and frees every object, closes every queue and
+      * closes the client. The first failure stops it and leaves what remains live; nothing is forced. */
+     IOReturn releaseAll(const NativeAdrenoRingClock *,uint32_t timeout_us);
++    /* Requires the caller's same namespace lock. Busy forbids BO/client teardown;
++     * wrapper must retain this core and its OSObject retirement owner. */
++    IOReturn closeResourceStaging();
++    IOReturn pollResourceStagingRetirement();
++    bool resourceStagingActive() const;
+     /* Backing object of a token returned by cpuMap while its lease is held (clientMemoryForType); null otherwise. */
+     NativeAdrenoMemory *memoryForToken(uint32_t token);
+     IOReturn query(NativeAdrenoAbiParams *);
+diff --git a/RESOURCE-INTEGRATION.md b/RESOURCE-INTEGRATION.md
+new file mode 100644
+index 0000000..46c3a64
+--- /dev/null
++++ b/RESOURCE-INTEGRATION.md
+@@ -0,0 +1,129 @@
++# Native user-client staging integration, default off
++
++The isolated branch wires the parser into the actual `NativeAdrenoUserClient`
++body and `AGXDeviceUserClient` wrapper. This is source-only, validation-only
++integration. `NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING` defaults to zero.
++No board/root feed, selected profile, running kernel or published AIR probe is
++changed. Native execution capabilities remain unavailable.
++
++## Lock and identity audit
++
++The wrapper's shared `g.lock` serializes core dispatch, map/free, token lookup
++and close. Existing fence waits release/reacquire it for each zero-timeout poll.
++Each core owns its Entry array and client handles; the shared VM's mapping handle
++is not the client handle. VM `describe()` provides live mapped size, IOVA and
++actual permissions and fails on partial/poisoned mappings. All staging lookup
++and teardown run under the same namespace lock.
++
++With the staging source opt-in, kernel atomic monotonic identities name core
++owners, backing Entry incarnations, mapping generations and Session incarnations.
++They saturate rather than wrap. They are never seeded by packet owner fields,
++PID, fd, pointers or a guessed generation. Recreating a Session on an open core
++gets a fresh incarnation: a partially successful close cannot resurrect old
++tokens. Freeing/replacing a BO changes backing/map identities.
++
++Resource lookup checks this core's own Entry, mapped/liveness/quarantine state,
++real VM IOVA/extent and `memory.bytes()`, then uses actual VM permissions. Backing
++cookies currently identify allocation objects for **validation**. Distinct imports
++that alias physical pages still need canonicalization before any scoped-cache
++capability can become available.
++
++## Exact experimental receivers
++
++Only with the source opt-in, both core size dispatch and the wrapper's direct/
++tunneled paths admit these experimental methods:
++
++| Method | Input/output | Behavior |
++|---|---|---|
++| `0x52540001` staging | 408 / 32 bytes | Owner-scoped Begin/pages/Seal/Abort through the actual core |
++| `0x52540002` mapping | 8 / 40 bytes | Client handle in; handle, real generation, IOVA, full extent, permissions and reserved=0 out |
++
++Default-off core dispatch rejects both methods without allocation or modifying
++output. Legacy query/version/flags remain unchanged, and no execution readiness
++is advertised even with the staging source flag. Direct requests reject scalar
++arguments and wrong fixed sizes. The tunnel's existing header removal reaches
++the same exact core validator under `g.lock`.
++
++The generation query addresses a real producer gap: ABI-v1 BoAlloc/BoMap replies
++and the published bridge's BO records have no generation. Future producer wiring
++must issue this exact mapping query (or another reviewed versioned reply) after
++mapping, then carry its actual generation into every BO/IB record. The published
++bridge is unchanged and is not yet connected to this receiver. Never supply 1
++or accept an owner/generation solely because the caller asserted it.
++
++Core Session storage uses actual `IOMalloc`/`IOFree` adapters. Base driver core
++capacity is its real `NativeAdrenoClientMaxObjects` (1024), even though the generic
++transport supports 4096; no unrelated board capacity patch is silently applied.
++
++The core uses `Session::createValidationOnly()` with real lookup. Private Job
++creation uses the immutable validator, but Session refuses `submitSealed()` before
++any Job hook. Every execution hook independently refuses too. No dispatch/opcode
++exposes Job submission. Thus internal validator flags cannot enable GPU execution.
++Execution readiness still requires real queue/context, mapping-pin, cache and
++completion hooks plus capability negotiation.
++
++## Teardown and OS references
++
++Core close/releaseAll first closes staging; Busy stops BO unmap/release. The
++wrapper's actual class has a retirement flag and a bounded registry (three user
++slots plus the kernel slot) that takes an OSObject `retain()` on deferred close.
++The existing kernel poller services that registry under `g.lock`, then terminates/
++`release()`s only after Session and ordinary client teardown succeed. Failed
++retirement keeps core, Session, callback context, VM and slot alive; no force free.
++Polling uses zero-timeout ordinary teardown and never treats a timeout/prefix
++fence as quiescence. Source flag off preserves the prior ordinary close path.
++
++Validation-only staging cannot create in-flight jobs, so native deferred GPU
++retirement is not exercised by this integration yet. The registry/adapters are
++source wiring, not proof of actual OSObject or GPU retirement on hardware.
++
++## Verification and remaining gates
++
++```sh
++python3 tests/run-resource-client.py
++bash tests/run-resource-transactions.sh
++bash tests/run-resources.sh
++python3 tests/compile-resource-client-arm64.py --output /tmp/resource-client-arm64
++```
++
++The actual core/VM/memory/ring bodies pass ASan/UBSan with staging off and on over
++software SMMU/CP peers. Tests cover unmapped/freed/other-client generation query,
++actual read-only VM permission refusal at Seal, allocation cleanup, fresh Session
++identity after partial teardown, unchanged ABI flags and no staging CP writes,
++cache calls or outstanding jobs. Staging metadata returns to its exact baseline.
++Legacy software table roots are intentionally retained, so this existing fixture
++uses leak detection off; new metadata lifetime is checked explicitly. Separate
++49 transaction/33 Job sanitizer cases retain ordinary leak checks. ARM `dsb sy`
++remains unchanged; x86 host peers use a CPU fence instead of invalid ARM assembly.
++
++Six plain ARMv8-A Mach-O objects compile (core/Job/transaction, source flag off/on).
++The check uses authored declarations for IOKit symbols and allocation macros;
++it is **not an XNU SDK build**, linking or runtime ABI evidence. No local Xcode SDK
++was available. `NativeAdrenoPublish.cpp` was not SDK-compiled. Full native SDK/
++kernel-header compilation of the wrapper is a required gate before selecting it.
++
++Next integrate queue/context ownership, all-resource mapping pins and real scoped
++cache/dirty ownership, canonical import aliases, actual completion/quiescence,
++and capability negotiation. Then qualify native receiver/lifetime behavior on
++hardware. Until then both native execution readiness and profile selection stay off.
++
++### Native header compile gate
++
++`tests/compile-resource-client-xnu.py` consumes the **actual**
++`IOPlatformExpert.cpo.json` left by the matching XNU build, preserving its target,
++configuration includes, generated headers and working directory. It compiles
++`NativeAdrenoPublish`, core, VM, immutable Job and transaction units with staging
++both off and on into ten plain ARM64 Mach-O objects. `-H` traces and SHA-256 binds
++actual IOLib/IOUserClient/OSObject/IOMemoryDescriptor headers to explicitly declared
++real source/SDK roots; a declaration-only substitute outside those roots fails.
++It records each exact command, source/object hashes, failures and header hashes.
++It does not modify or select the board's provider archive. It still does not prove
++final linking, hardware behavior or safe enabling. The script's local helper
++checks are not a completed SDK gate; run it on the original macOS kernel builder.
++
++```sh
++python3 tests/compile-resource-client-xnu.py \
++  --record "$UNIXNU/build/xnu-12377.121.6/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json" \
++  --unixnu "$UNIXNU" --header-root "$UNIXNU" \
++  --output /tmp/resource-xnu-objects
++```
+diff --git a/RESOURCE-MANIFEST.md b/RESOURCE-MANIFEST.md
+new file mode 100644
+index 0000000..ceeffd8
+--- /dev/null
++++ b/RESOURCE-MANIFEST.md
+@@ -0,0 +1,71 @@
++# Experimental complete-resource job boundary
++
++Base: `805c7e4bfb7451eb6923f4a14dea8c657b9be7d2`, the exact driver gitlink in
++the board's root checkout (`work/ios27-port/unixnu`, root commit
++`107af906532d252ef6ba7aff0c43f11e571d3fa1`) and the local control root
++(`UniXNU`, root commit `68c513467bb6c44106c053c410582c1d14f96dd7`). Board/root
++feeds and the board lock contain no driver override. The worktree is isolated;
++no root gitlink, board profile, image, published ABI or existing submit body changes.
++
++`NativeAdrenoResources.{h,cpp}` supplies a portable production-body validator and
++explicit job owner. It copies a complete referenced-resource list and separate
++IBs into privately owned storage, validates live client handles/generations,
++mapping permissions and overflow-safe ranges, merges duplicate uses and backing
++cache intervals, and retains distinct GPU mappings. IBs need declared read/execute
++access and must lie within the declared resource range. Non-IB resources remain
++in both residency and cache manifests. This contract does not discover hidden PM4
++addresses or establish command isolation.
++
++The callback integration must provide real native mappings, atomic revalidated
++holds, scoped cache operations, queue ownership and actual fence/quiescence
++observation. Hold failures release only references successfully held before GPU
++submit. Publication/enqueue happen only after every resource and IB validates
++and every unique mapping is held. `enqueue` receives immutable uses and commands
++plus the exact owner/queue. It must revalidate queue ownership/liveness and retain
++the queue/context until its work finishes.
++
++`Accepted` means the returned fence covers **all** accepted work, including known
++partial submission failures. `Uncertain` may have an unknown tail: even completing
++a known prefix fence cannot release those pins. Timeout/device-lost/uncertain
++completion keeps storage and resources. `destroy()` returns Busy without freeing
++them. Only real completion plus successful CPU acquisition, or proven GPU
++cancel/quiescence plus acquisition, retires pins. Callers must retain Busy jobs
++and arrange observation or recovery; process/client exit cannot free them blindly.
++Prepared/rejected jobs can be destroyed without GPU completion.
++
++Callbacks, allocation and object ownership must outlive the job, be externally
++serialized, non-reentrant and non-throwing. Allocators provide max_align_t-aligned
++memory. Lookup/holds and client namespace mutation must share serialization;
++holds revalidate the whole mapping incarnation atomically. Cache callbacks get
++canonical backing spans and access bits; acquisition should select GPU-written
++spans. Backing identity/offset must represent physical aliasing correctly.
++
++The capability structure is an **internal contract, not a wire extension**.
++All of complete resources, retention through fence and scoped cache semantics
++must be explicitly available. ABI v1 does not imply any of them; an absent/old
++capability is rejected before allocation, lookup, cache or submission. No existing
++kernel advertises this interface and no transport/profile is selected here.
++
++Actual API constraints checked before choosing transport: current
++`NativeAdrenoAbiSubmit` is 416 bytes with 16 IBs, and both the direct IOKit dispatch
++and core request validator require exact fixed-size records. The AGX tunnel strips
++8 bytes then uses the same core validator. There is no established 4096-BO wire
++message. A bounded [transaction implementation](RESOURCE-TRANSACTION.md) now
++provides paged upload/seal/abort and immutable Job creation. Native IOKit dispatch,
++capability publication and VM/cache hooks remain unintegrated; there is no
++silent legacy/global-cache fallback.
++
++Run the exact implementation bodies under ASan/UBSan without exceptions or RTTI:
++
++```sh
++bash tests/run-resources.sh
++```
++
++33 host cases cover immutable full manifests, non-IB retention, bounds/permissions/
++ownership, all allocator/hold failures, stale lookup-to-hold changes, duplicate
++uses, overlapping/transitive backing aliases, partial acceptance and unknown
++prefix fences, timeouts, acquisition failure and proven-quiescence recovery.
++The separate experimental renderer's MSM adapter suite adds 25 cases, including
++all 4096 full BOs and strict old-capability refusal. These are host callback/fault
++tests; native IOKit transport, cache maintenance and physical GPU lifetime behavior
++are still unproven for this new boundary.
+diff --git a/RESOURCE-TRANSACTION.md b/RESOURCE-TRANSACTION.md
+new file mode 100644
+index 0000000..a9f9c97
+--- /dev/null
++++ b/RESOURCE-TRANSACTION.md
+@@ -0,0 +1,113 @@
++# Bounded resource transaction protocol, experimental
++
++`NativeAdrenoResourceTransaction.{h,cpp}` implements the exact parser, owner-scoped
++staging storage, token/sequence state and seal-to-`Job` validation. The follow-on
++[core integration](RESOURCE-INTEGRATION.md) reserves default-off experimental
++selectors; no published capability or selected profile enables it.
++Host tests exercise the implementation bodies; native IOKit transport and real
++VM/cache hooks are still unproven for this path.
++
++## Fixed inline sizes and capability boundary
++
++Requests are **408 bytes**, leaving 8 bytes for the AGX tunnel within a 416-byte
++total. Replies are **32 bytes**. Future direct dispatch must check exactly 408/32;
++tunnel dispatch must check 416/32 before removing its header. Existing ABI-v1
++Submit expects a different 416-byte record and must reject these packets. Fitting
++the size envelope does not make the current dispatch accept this format.
++There are no pointers or out-of-line arrays.
++
++`schema()` describes format facts in 32 bytes: magic, version, request/reply sizes,
++max resources/IBs, required Job flags, reserved. Required flags are complete
++resources, retention through completion and scoped cache. Requirements are not
++available runtime capabilities. Session creation rejects missing/old internal
++capabilities before allocation.
++
++Future negotiation needs a separately assigned exact-size query that distinguishes
++available semantics from schema requirements. Old kernels must return unsupported;
++clients must refuse the path. Do not infer readiness from ABI-v1 or a protocol
++number. Advertise only after native VM/cache/pins, queue ownership and close-time
++retirement are integrated and validated. No query/method IDs are assigned here
++and there is no legacy/global-cache fallback. The follow-on integration's mapping
++generation query is separate from execution-capability negotiation.
++
++## Layout and operations
++
++All fields are little endian; static assertions fix sizes. The parser first copies
++the complete request, safely handling unaligned caller storage.
++
++| Request offset | Field |
++|---:|---|
++| 0 / 4 / 8 / 12 | u32 magic `0x31524d4e`, version 1, operation, flags=0 |
++| 16 / 24 | u64 token ID, generation |
++| 32 / 36 | u32 sequence, page record count |
++| 40 / 44 | u32 declared resource/IB totals |
++| 48 / 52 | u32 exact payload bytes, reserved=0 |
++| 56 | 352 inline payload bytes; unused bytes zero |
++
++Reply offsets: u32 status/state at 0/4, u64 token/generation at 8/16, u32 next
++sequence/internal Error at 24/28. Unauthorized calls reveal no token/generation/
++sequence. Authentication comes from the native connection, never packet fields.
++Internal Error does not imply GPU execution or fault absence.
++
++| Operation | Requirement and effect |
++|---|---|
++| Begin=1 | Zero token/generation/sequence/count; totals within 1..4096 BOs and 1..128 IBs; exactly 8 payload bytes for queue; allocate arrays and return token/sequence 1 |
++| Resources=2 | Up to 8×40-byte full-BO Resource records; exact bytes/count, resource phase only |
++| Ibs=3 | Up to 11×32-byte IB records; resource total must already be complete |
++| Seal=4 | Zero count/payload; both totals complete; validate full live extents, create immutable Job, release upload arrays |
++| Abort=5 | Zero count/payload; discard incomplete upload or safe prepared/completed/rejected Job; unresolved work returns Busy |
++
++Every non-Begin packet needs the exact active token/generation, totals and next
++sequence. Successful pages and Seal advance once. Replay, gaps, wrong phase,
++excess/empty pages, truncated/oversized packets, nonzero padding, unknown flags
++and wrong totals cannot advance state. A page validates fully before copying
++records. Resources contain handle/generation, offset=0, full bytes, access and
++reserved=0; IBs contain handle/generation/offset/bytes. Seal and the Job's atomic
++hold contract validate permissions, ownership, liveness and containment before
++GPU effects.
++
++One transaction can be staged/sealed per Session. Begin while occupied returns
++Busy without eviction. Begin after abort gets a new generation. Replayed Begin
++in an idle session creates a fresh transaction; old pages remain stale. Begin
++allocation failure consumes a generation, frees partial storage and issues no
++token. Generation never wraps. Seal allocation failure retains the upload for
++retry at the same sequence. Invalid immutable data requires Abort to replace it.
++
++## Identity, bounds and close
++
++Token ID is a nonzero kernel-issued connection incarnation, never reused for that
++owner across close/reconnect and never derived from an fd, PID or user pointer.
++Generation increases within the connection. Every request checks authenticated
++owner before reading bytes. The eventual native owner/incarnation provider must
++enforce those guarantees; tokens are not secrets and arbitrary user-supplied owner
++arguments are not authentication.
++
++At 4096 BOs/128 IBs, upload plus copied Job allocation peak is tested below 1 MiB,
++excluding allocator metadata/existing GPU BOs. Pages allocate nothing. Native
++connection management must also enforce connection/global quotas.
++
++Seal uses read-only lookup and immutable validation: no holds, cache or enqueue.
++`submitSealed()` is a future internal integration entry, deliberately absent from
++wire operations. Exact owner/queue and complete resources reach Job enqueue;
++replay cannot submit the same Job twice.
++
++Close forbids further packets and frees incomplete/prepared state. In-flight or
++uncertain jobs make close/destroy return Busy with storage/pins intact. A retirement
++owner must retain Session, context/VM, callback context and allocator after client
++close, then poll or recover through proven quiescence. A known prefix fence does
++not cover an unknown tail. Covering completion or proven cancel/quiescence, plus
++CPU acquisition, is required before release. Actual native client teardown is
++not wired to this owner yet and must never free Busy state blindly.
++
++## Host gate
++
++```sh
++bash tests/run-resource-transactions.sh
++bash tests/run-resources.sh
++```
++
++49 transaction and 33 Job cases pass ASan/UBSan with exceptions/RTTI disabled.
++Tests include 4096/128 maxima, replay/sequence/phase, every allocation failure,
++lengths/padding, full BO extents, wrong owner/cross-connection/old generation,
++abort/retry, seal without GPU effects, client close in each phase and unknown-tail
++quiescence. This proves host parser/state/lifetime behavior only.
+diff --git a/tests/ResourceFixture.h b/tests/ResourceFixture.h
+new file mode 100644
+index 0000000..ff2e5ec
+--- /dev/null
++++ b/tests/ResourceFixture.h
+@@ -0,0 +1,93 @@
++/* SPDX-License-Identifier: MIT -- host harness, never a GPU emulator */
++#pragma once
++#include "NativeAdrenoResources.h"
++#include <cassert>
++#include <cstdlib>
++#include <map>
++#include <vector>
++namespace resource_test {
++namespace nr=NativeAdrenoResources;
++struct Fixture {
++    std::vector<nr::Mapping> mappings{
++        {1,11,99,100,1001,0x10000,4096,0,3,0},
++        {2,12,99,200,1002,0x20000,8192,0,3,0},
++        {3,13,99,300,1003,0x40000,4096,0,3,0}};
++    std::map<uint64_t,int> pins;
++    std::vector<nr::CacheSpan> published,acquired;
++    size_t allocations=0,live_allocations=0,fail_allocation=0;
++    size_t live_bytes=0,peak_bytes=0;
++    std::map<void *,size_t> allocation_sizes;
++    size_t lookups=0,holds=0,releases=0,publishes=0,enqueues=0,acquires=0,quiesces=0;
++    size_t enqueue_uses=0,enqueue_commands=0,fail_hold=0;
++    nr::Error publish_error=nr::Error::Ok,acquire_error=nr::Error::Ok;
++    nr::SubmitResult result{nr::Error::Ok,nr::Acceptance::Accepted,77};
++    nr::Completion completion=nr::Completion::Pending;
++    bool quiescent=false;
++    std::vector<nr::Release> release_reasons;
++    static nr::Capabilities caps() {return {1,7,4096,128};}
++    nr::Mapping *mapping(uint64_t handle) {
++        for(auto &m:mappings)if(m.handle==handle)return &m;
++        return nullptr;
++    }
++    nr::Allocator allocator() {
++        return {this,[](void *ctx,size_t n)->void * {
++            auto &f=*static_cast<Fixture *>(ctx);
++            if(++f.allocations==f.fail_allocation)return nullptr;
++            void *p=std::malloc(n);if(p) {
++                ++f.live_allocations;f.live_bytes+=n;
++                if(f.live_bytes>f.peak_bytes)f.peak_bytes=f.live_bytes;
++                f.allocation_sizes[p]=n;
++            }
++            return p;
++        },[](void *ctx,void *p,size_t n) {
++            auto &f=*static_cast<Fixture *>(ctx);assert(f.live_allocations && f.allocation_sizes.at(p)==n);
++            --f.live_allocations;f.live_bytes-=n;f.allocation_sizes.erase(p);std::free(p);
++        }};
++    }
++    nr::Hooks hooks() {
++        return {this,[](void *ctx,uint64_t h,nr::Mapping *out) {
++            auto &f=*static_cast<Fixture *>(ctx);++f.lookups;
++            if(auto *m=f.mapping(h)) {*out=*m;return nr::Error::Ok;}
++            return nr::Error::Stale;
++        },[](void *ctx,const nr::Mapping &m) {
++            auto &f=*static_cast<Fixture *>(ctx);
++            if(++f.holds==f.fail_hold)return nr::Error::PinFailed;
++            const auto *p=f.mapping(m.handle);
++            if(!p || p->generation!=m.generation || p->owner!=m.owner || p->mapping!=m.mapping ||
++               p->backing!=m.backing || p->iova!=m.iova || p->bytes!=m.bytes ||
++               p->backing_offset!=m.backing_offset || p->permissions!=m.permissions)return nr::Error::Stale;
++            ++f.pins[m.mapping];return nr::Error::Ok;
++        },[](void *ctx,const nr::Mapping &m,nr::Release why) {
++            auto &f=*static_cast<Fixture *>(ctx);++f.releases;
++            assert(f.pins[m.mapping]>0);--f.pins[m.mapping];f.release_reasons.push_back(why);
++        },[](void *ctx,const nr::CacheSpan *s,size_t n) {
++            auto &f=*static_cast<Fixture *>(ctx);++f.publishes;f.published.assign(s,s+n);return f.publish_error;
++        },[](void *ctx,uint64_t owner,uint64_t queue,const nr::Use *,size_t n,const nr::Command *,size_t c) {
++            assert(owner==99 && queue==1);
++            auto &f=*static_cast<Fixture *>(ctx);++f.enqueues;f.enqueue_uses=n;f.enqueue_commands=c;return f.result;
++        },[](void *ctx,uint64_t fence) {
++            auto &f=*static_cast<Fixture *>(ctx);assert(fence==77);return f.completion;
++        },[](void *ctx,const nr::CacheSpan *s,size_t n) {
++            auto &f=*static_cast<Fixture *>(ctx);++f.acquires;f.acquired.assign(s,s+n);return f.acquire_error;
++        },[](void *ctx) {
++            auto &f=*static_cast<Fixture *>(ctx);++f.quiesces;return f.quiescent;
++        }};
++    }
++    std::vector<nr::Resource> resources() const {
++        return {{1,11,0,4096,nr::Read|nr::Execute,0},{2,12,0,8192,nr::Write,0},
++                {3,13,0,4096,nr::Read,0}};
++    }
++    nr::Job *make() {
++        auto r=resources();nr::Ib ib{1,11,16,64};nr::Job *job=nullptr;
++        assert(nr::Job::create(caps(),99,1,r.data(),r.size(),&ib,1,allocator(),hooks(),&job)==nr::Error::Ok);
++        return job;
++    }
++    void finish(nr::Job *job) {
++        completion=nr::Completion::Complete;
++        assert(job->poll()==nr::Error::Ok);
++        assert(nr::Job::destroy(job)==nr::Error::Ok);
++        assert(!live_allocations);
++        for(auto pin:pins)assert(pin.second==0);
++    }
++};
++}
+diff --git a/tests/XnuMemoryFixture.h b/tests/XnuMemoryFixture.h
+index 5d1fa13..bee9fe3 100644
+--- a/tests/XnuMemoryFixture.h
++++ b/tests/XnuMemoryFixture.h
+@@ -49,6 +49,8 @@ inline void fixtureMetadataFree(void *p) {
+ }
+ #define IONewData(type,count) static_cast<type *>(fixtureMetadata(sizeof(type)*(count)))
+ #define IODeleteData(ptr,type,count) do {fixtureMetadataFree(ptr);ptr=nullptr;}while(0)
++inline void *IOMalloc(size_t bytes) {return fixtureMetadata(bytes);}
++inline void IOFree(void *p,size_t) {fixtureMetadataFree(p);}
+ class IOBufferMemoryDescriptor {
+ public:
+     void *raw=nullptr;
+diff --git a/tests/compile-resource-client-arm64.py b/tests/compile-resource-client-arm64.py
+new file mode 100644
+index 0000000..301a97a
+--- /dev/null
++++ b/tests/compile-resource-client-arm64.py
+@@ -0,0 +1,62 @@
++#!/usr/bin/env python3
++"""Plain ARM64 object check with authored declarations; NOT an XNU SDK build."""
++import argparse
++from pathlib import Path
++import hashlib
++import json
++import subprocess
++import struct
++
++root=Path(__file__).resolve().parents[1]
++p=argparse.ArgumentParser(description=__doc__)
++p.add_argument('--unixnu',type=Path,default=root.parents[2]/'UniXNU')
++p.add_argument('--output',type=Path,required=True)
++a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
++inc=out/'declarations';(inc/'IOKit').mkdir(parents=True,exist_ok=True)
++declarations={
++    'IOKit/IOTypes.h':'''#pragma once
++#include <stddef.h>
++#include <stdint.h>
++typedef int IOReturn;
++extern const IOReturn kIOReturnSuccess,kIOReturnBadArgument,kIOReturnBusy,kIOReturnNoResources,
++    kIOReturnNoMemory,kIOReturnUnsupported,kIOReturnNotReady,kIOReturnIOError,kIOReturnTimeout;
++''',
++    'IOKit/IOLib.h':'''#pragma once
++#include "IOTypes.h"
++extern "C" void *IOMalloc(size_t);
++extern "C" void IOFree(void *,size_t);
++#define IONewData(type,count) static_cast<type *>(IOMalloc(sizeof(type)*(count)))
++#define IODeleteData(ptr,type,count) do {IOFree(ptr,sizeof(type)*(count));ptr=nullptr;}while(0)
++''',
++    'new':'''#pragma once
++#include <stddef.h>
++inline void *operator new(size_t,void *p) noexcept {return p;}
++''',
++    'string.h':'''#pragma once
++#include <stddef.h>
++extern "C" void *memcpy(void *,const void *,size_t);
++extern "C" void *memset(void *,int,size_t);
++extern "C" int memcmp(const void *,const void *,size_t);
++'''}
++for name,text in declarations.items():(inc/name).write_text(text)
++builtin=subprocess.check_output(['clang++','-print-resource-dir'],text=True).strip()
++records=[]
++for enabled in [0,1]:
++    for name in ['NativeAdrenoUserClient','NativeAdrenoResources','NativeAdrenoResourceTransaction']:
++        source=root/(name+'.cpp');obj=out/(name+f'-staging{enabled}.o')
++        cmd=['clang++','-target','arm64-apple-ios17.0','-mcpu=generic','-march=armv8-a',
++             '-std=c++23','-ffreestanding','-fno-exceptions','-fno-rtti','-nostdinc','-nostdinc++',
++             '-isystem',builtin+'/include','-I'+str(inc),'-I'+str(root),
++             '-I'+str(a.unixnu/'kits/ArmSmmu4K'),'-I'+str(a.unixnu/'kits/AdrenoPM4'),
++             '-DNATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING='+str(enabled),
++             '-O1','-Wall','-Wextra','-Werror','-c',str(source),'-o',str(obj)]
++        subprocess.run(cmd,check=True)
++        data=obj.read_bytes()
++        require=data[:4]==bytes.fromhex('cffaedfe') and struct.unpack_from('<I',data,4)[0]==0x0100000c
++        if not require:raise RuntimeError('not Mach-O: '+str(obj))
++        records.append({'source':name+'.cpp','staging':enabled,'command':cmd,
++                        'sha256':hashlib.sha256(obj.read_bytes()).hexdigest()})
++record={'scope':'declaration-only ARMv8-A Mach-O object generation; no XNU SDK, linking or execution proof',
++        'native_publish_compiled':False,'records':records}
++(out/'objects.json').write_text(json.dumps(record,indent=2)+'\n')
++print('PASS: 6 plain ARMv8-A Mach-O objects; declaration-only, no XNU SDK or runtime proof')
+diff --git a/tests/compile-resource-client-xnu.py b/tests/compile-resource-client-xnu.py
+new file mode 100644
+index 0000000..d978224
+--- /dev/null
++++ b/tests/compile-resource-client-xnu.py
+@@ -0,0 +1,127 @@
++#!/usr/bin/env python3
++"""Compile isolated resource units with an existing real XNU C++ build record.
++
++Run on the original build host after XNU generated its headers. Does not alter
++provider feeds, archives, selected profiles or phone images. Object compilation
++alone is not final-link, native execution or ABI qualification.
++"""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++import re
++import struct
++import subprocess
++
++UNITS = ('NativeAdrenoPublish', 'NativeAdrenoUserClient', 'NativeAdrenoVm',
++         'NativeAdrenoResources', 'NativeAdrenoResourceTransaction')
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def command_from_record(record, source, output):
++    cwd = Path(record['directory']).resolve()
++    original = Path(record['file'])
++    original = original.resolve() if original.is_absolute() else (cwd / original).resolve()
++    args = record['arguments']
++    result, index, replaced, outputs = [], 0, 0, 0
++    while index < len(args):
++        value = args[index]
++        candidate = Path(value)
++        if not value.startswith('-') and index and (
++                candidate.resolve() if candidate.is_absolute() else (cwd / candidate).resolve()) == original:
++            result.append(str(source.resolve()))
++            replaced += 1
++        elif value == '-o':
++            if index + 1 >= len(args):
++                raise ValueError('missing -o operand')
++            result.extend(['-o', str(output.resolve())])
++            outputs += 1
++            index += 1
++        elif value in ('-MF', '-MJ', '-MT', '-MQ'):
++            if index + 1 >= len(args):
++                raise ValueError('missing dependency operand')
++            index += 1
++        elif value not in ('-MD', '-MMD', '-MP'):
++            result.append(value)
++        index += 1
++    if replaced != 1 or outputs != 1 or '-c' not in result:
++        raise ValueError('expected one compile source and one object output')
++    return result
++
++
++def header_provenance(log, allowed):
++    headers = {}
++    for line in log.splitlines():
++        found = re.match(r'^\.+ (.+?)(?: \(.*\))?$', line)
++        if not found:
++            continue
++        path = Path(found.group(1))
++        if path.name not in ('IOLib.h', 'IOUserClient.h', 'OSObject.h', 'IOMemoryDescriptor.h'):
++            continue
++        path = path.resolve()
++        if not any(path.is_relative_to(root) for root in allowed):
++            raise ValueError('IOKit/libkern header outside declared real roots: ' + str(path))
++        headers[str(path)] = sha(path)
++    return headers
++
++
++def main():
++    root = Path(__file__).resolve().parents[1]
++    p = argparse.ArgumentParser(description=__doc__)
++    p.add_argument('--record', type=Path, required=True,
++                   help='actual IOPlatformExpert.cpo.json from same XNU configuration')
++    p.add_argument('--unixnu', type=Path, required=True)
++    p.add_argument('--header-root', type=Path, action='append', required=True,
++                   help='real XNU source/generated SDK root; repeat as needed')
++    p.add_argument('--output', type=Path, required=True)
++    a = p.parse_args()
++    record = json.loads(a.record.read_text().strip().rstrip(','))
++    if not Path(record['directory']).is_dir():
++        p.error('original compile working directory is unavailable')
++    allowed = [path.resolve(strict=True) for path in a.header_root]
++    output = a.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    manifest = dict(scope='real XNU C++ compile-record object check; no linking or execution proof',
++                    record_sha256=sha(a.record), record=record, headers={}, objects=[],
++                    native_publish_compiled=False, staging_default_changed=False,
++                    profile_selected=False, passed=False)
++    result_path = output / 'xnu-objects.json'
++    for staging in (0, 1):
++        for unit in UNITS:
++            source = root / (unit + '.cpp')
++            obj = output / f'{unit}-staging{staging}.o'
++            cmd = command_from_record(record, source, obj)
++            cmd += ['-std=c++23', '-H', '-UNATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING',
++                    f'-DNATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING={staging}']
++            for include in (root, a.unixnu / 'kits/ArmSmmu4K', a.unixnu / 'kits/AdrenoPM4',
++                            a.unixnu / 'kits/AdrenoFirmware'):
++                cmd += ['-I', str(include.resolve())]
++            run = subprocess.run(cmd, cwd=record['directory'], capture_output=True, text=True, timeout=300)
++            log = run.stdout + run.stderr
++            (output / f'{unit}-staging{staging}.log').write_text(log)
++            entry = dict(source=source.name, source_sha256=sha(source), staging=staging,
++                         command=cmd, returncode=run.returncode)
++            manifest['objects'].append(entry)
++            result_path.write_text(json.dumps(manifest, indent=2) + '\n')
++            if run.returncode:
++                raise RuntimeError('real XNU compile failed; retained log: ' + str(output / f'{unit}-staging{staging}.log'))
++            raw = obj.read_bytes()
++            if len(raw) < 32 or struct.unpack_from('<4I', raw) != (0xfeedfacf, 0x100000c, 0, 1):
++                raise ValueError('expected plain ARM64 Mach-O object: ' + str(obj))
++            headers = header_provenance(log, allowed)
++            if unit == 'NativeAdrenoPublish' and not {'IOLib.h', 'IOUserClient.h', 'OSObject.h',
++                                                       'IOMemoryDescriptor.h'} <= {Path(h).name for h in headers}:
++                raise ValueError('missing actual IOKit wrapper header trace')
++            manifest['headers'].update(headers)
++            entry['sha256'] = sha(obj)
++    manifest['native_publish_compiled'] = True
++    manifest['passed'] = True
++    result_path.write_text(json.dumps(manifest, indent=2) + '\n')
++    print('PASS: 10 real XNU-header ARM64 objects; no linking, execution or selected profile')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/tests/run-resource-client.py b/tests/run-resource-client.py
+new file mode 100644
+index 0000000..c4573dc
+--- /dev/null
++++ b/tests/run-resource-client.py
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python3
++"""Build actual core/VM bodies over host peers, source-only staging on and off."""
++import argparse
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++
++root=Path(__file__).resolve().parents[1]
++p=argparse.ArgumentParser(description=__doc__)
++p.add_argument('--unixnu',type=Path,default=root.parents[2]/'UniXNU')
++args=p.parse_args()
++smmu=args.unixnu/'kits/ArmSmmu4K';pm4=args.unixnu/'kits/AdrenoPM4'
++with tempfile.TemporaryDirectory(prefix='resource-client-') as tmp:
++    out=Path(tmp);inc=out/'include'
++    for name in ['IOKit/IOTypes.h','IOKit/IOReturn.h','IOKit/IOBufferMemoryDescriptor.h','IOKit/IOLib.h','kern/task.h']:
++        q=inc/name;q.parent.mkdir(parents=True,exist_ok=True);q.write_text('#include "XnuMemoryFixture.h"\n')
++    flags=['-O1','-g','-Wall','-Wextra','-Werror','-Wno-missing-field-initializers','-fsanitize=address,undefined']
++    objects=[]
++    for source in [*(smmu/(s+'.c') for s in ['ArmSmmu4KContext','ArmSmmu4KProgram','ArmSmmu4KLive','ArmSmmu4KStreams']),pm4/'AdrenoPM4.c']:
++        obj=out/(source.stem+'.o')
++        subprocess.run(['clang','-std=c11',*flags,'-c',str(source),'-o',str(obj)],check=True);objects.append(obj)
++    names=['NativeAdrenoMemory','NativeAdrenoSmmuMemory','NativeAdrenoVm','NativeAdrenoRing','NativeAdrenoSubmit',
++           'NativeAdrenoUserClient','NativeAdrenoClient','NativeAdrenoTimer','NativeAdrenoResources','NativeAdrenoResourceTransaction']
++    for enabled in [0,1]:
++        executable=out/('test-client-'+str(enabled))
++        subprocess.run(['clang++','-std=c++23',*flags,'-DNATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING='+str(enabled),
++            '-I'+str(inc),'-I'+str(root/'tests'),'-I'+str(root),'-I'+str(smmu),'-I'+str(pm4),
++            *(str(root/(n+'.cpp')) for n in names),str(root/'tests/test_client.cpp'),*map(str,objects),'-o',str(executable)],check=True)
++        # Existing software-SMMU fixtures intentionally retain mounted table roots.
++        # New staging metadata is checked explicitly for exact restoration.
++        subprocess.run([str(executable)],env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},check=True)
+diff --git a/tests/run-resource-transactions.sh b/tests/run-resource-transactions.sh
+new file mode 100644
+index 0000000..7df1f0b
+--- /dev/null
++++ b/tests/run-resource-transactions.sh
+@@ -0,0 +1,10 @@
++#!/usr/bin/env bash
++set -euo pipefail
++root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
++out=$(mktemp -d)
++trap 'rm -rf "$out"' EXIT
++"${CXX:-clang++}" -std=c++17 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -g -O1 \
++  -fsanitize=address,undefined -fno-omit-frame-pointer -I"$root" \
++  "$root/NativeAdrenoResources.cpp" "$root/NativeAdrenoResourceTransaction.cpp" \
++  "$root/tests/test_resource_transaction.cpp" -o "$out/test-resource-transactions"
++"$out/test-resource-transactions"
+diff --git a/tests/run-resources.sh b/tests/run-resources.sh
+new file mode 100644
+index 0000000..d649fd5
+--- /dev/null
++++ b/tests/run-resources.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++set -euo pipefail
++root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
++out=$(mktemp -d)
++trap 'rm -rf "$out"' EXIT
++"${CXX:-clang++}" -std=c++17 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -g -O1 \
++  -fsanitize=address,undefined -fno-omit-frame-pointer -I"$root" \
++  "$root/NativeAdrenoResources.cpp" "$root/tests/test_resources.cpp" -o "$out/test-resources"
++"$out/test-resources"
+diff --git a/tests/test_client.cpp b/tests/test_client.cpp
+index 7a27f98..d82c81d 100644
+--- a/tests/test_client.cpp
++++ b/tests/test_client.cpp
+@@ -247,6 +247,94 @@ int main()
+         CHECK(wire.calls==calls);
+         CHECK(client.close()==kIOReturnSuccess);
+     }
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    {
++        namespace rt=NativeAdrenoResources::Transaction;
++        Path p;CHECK(exposed(p)==kIOReturnSuccess);
++        NativeAdrenoAbiBoAlloc alloc{4096,12,1};NativeAdrenoAbiBoAllocReply bo{};
++        CHECK(p.client.allocBo(&alloc,&bo)==kIOReturnSuccess);
++        NativeAdrenoResourceMappingRequest query{bo.handle};NativeAdrenoResourceMappingReply mapping{};
++        CHECK(p.client.dispatch(NativeAdrenoExperimentalResourceMapping,&query,sizeof(query),&mapping,sizeof(mapping),&ringclock)==kIOReturnBadArgument);
++        NativeAdrenoAbiBoMap map{bo.handle,0x800000,1,0,2,0};NativeAdrenoAbiBoMapReply mapped{};
++        CHECK(p.client.mapBo(&map,&mapped)==kIOReturnSuccess);
++        CHECK(p.client.dispatch(NativeAdrenoExperimentalResourceMapping,&query,sizeof(query),&mapping,sizeof(mapping),&ringclock)==kIOReturnSuccess);
++        CHECK(mapping.handle==bo.handle && mapping.generation && mapping.bytes==4096 &&
++              mapping.iova==0x800000 && mapping.permissions==1 && !mapping.reserved);
++        const size_t metadata=fixture.metadata.size(),writes=cp.writes.size();
++        const unsigned cache=fixture.cache_calls,physical=fixture.physical_calls;
++        rt::Reply reply{};
++        auto call=[&](rt::Request &r) {
++            CHECK(p.client.dispatch(NativeAdrenoExperimentalResourceStaging,&r,sizeof(r),&reply,sizeof(reply),&ringclock)==kIOReturnSuccess);
++            return rt::Status(reply.status);
++        };
++        rt::Request r{};r.magic=rt::Magic;r.version=rt::Version;r.operation=uint32_t(rt::Operation::Begin);
++        r.total_resources=r.total_ibs=1;r.payload_bytes=8;uint64_t queue=0;std::memcpy(r.payload,&queue,8);
++        CHECK(p.client.dispatch(NativeAdrenoExperimentalResourceStaging,&r,sizeof(r)-1,&reply,sizeof(reply),&ringclock)==kIOReturnBadArgument);
++        CHECK(!p.client.resourceStagingActive() && fixture.metadata.size()==metadata);
++        fixture.metadata_fail=true;
++        CHECK(p.client.dispatch(NativeAdrenoExperimentalResourceStaging,&r,sizeof(r),&reply,sizeof(reply),&ringclock)==kIOReturnNoMemory);
++        CHECK(!p.client.resourceStagingActive() && fixture.metadata.size()==metadata);
++        fixture.metadata_fail=false;
++        CHECK(call(r)==rt::Status::Ok && reply.token && reply.generation);
++        const uint64_t owner_token=reply.token;
++        r.token=reply.token;r.generation=reply.generation;r.sequence=reply.next_sequence;
++        r.operation=uint32_t(rt::Operation::Resources);r.count=1;
++        NativeAdrenoResources::Resource resource{bo.handle,mapping.generation,0,4096,
++            NativeAdrenoResources::Read|NativeAdrenoResources::Execute,0};
++        r.payload_bytes=sizeof(resource);std::memset(r.payload,0,sizeof(r.payload));std::memcpy(r.payload,&resource,sizeof(resource));
++        const rt::Request old_page=r;CHECK(call(r)==rt::Status::Ok);r.sequence=reply.next_sequence;
++        r.operation=uint32_t(rt::Operation::Ibs);NativeAdrenoResources::Ib ib{bo.handle,mapping.generation,0,64};
++        r.payload_bytes=sizeof(ib);std::memset(r.payload,0,sizeof(r.payload));std::memcpy(r.payload,&ib,sizeof(ib));
++        CHECK(call(r)==rt::Status::Ok);r.sequence=reply.next_sequence;
++        r.operation=uint32_t(rt::Operation::Seal);r.count=r.payload_bytes=0;std::memset(r.payload,0,sizeof(r.payload));
++        CHECK(call(r)==rt::Status::Ok && reply.state==uint32_t(rt::State::Sealed));
++        CHECK(cp.writes.size()==writes && fixture.cache_calls==cache && fixture.physical_calls==physical && !p.execbuf.outstanding());
++        CHECK(p.client.closeResourceStaging()==kIOReturnSuccess && !p.client.resourceStagingActive());
++        CHECK(fixture.metadata.size()==metadata);
++        // Teardown can stop after staging closes but before BO release succeeds.
++        // A later staging Session on this same core must not reuse its token.
++        rt::Request again{};again.magic=rt::Magic;again.version=rt::Version;again.operation=uint32_t(rt::Operation::Begin);
++        again.total_resources=again.total_ibs=1;again.payload_bytes=8;
++        CHECK(call(again)==rt::Status::Ok && reply.token!=owner_token);
++        rt::Request replay=old_page;CHECK(call(replay)==rt::Status::Stale);
++        // Real VM read-only permissions must reject a forged write declaration.
++        r=old_page;r.token=reply.token;r.generation=reply.generation;r.sequence=reply.next_sequence;
++        resource.access|=NativeAdrenoResources::Write;std::memcpy(r.payload,&resource,sizeof(resource));
++        CHECK(call(r)==rt::Status::Ok);r.sequence=reply.next_sequence;r.operation=uint32_t(rt::Operation::Ibs);
++        r.payload_bytes=sizeof(ib);std::memset(r.payload,0,sizeof(r.payload));std::memcpy(r.payload,&ib,sizeof(ib));
++        CHECK(call(r)==rt::Status::Ok);r.sequence=reply.next_sequence;r.operation=uint32_t(rt::Operation::Seal);
++        r.count=r.payload_bytes=0;std::memset(r.payload,0,sizeof(r.payload));
++        CHECK(call(r)==rt::Status::Validation && reply.detail==uint32_t(NativeAdrenoResources::Error::Permission));
++        CHECK(cp.writes.size()==writes && fixture.cache_calls==cache && fixture.physical_calls==physical && !p.execbuf.outstanding());
++        CHECK(p.client.closeResourceStaging()==kIOReturnSuccess);
++        CHECK(fixture.metadata.size()==metadata);
++        NativeAdrenoUserClient other;
++        CHECK(other.open(NativeAdrenoAbiVersion,&p.vm,&p.execbuf,&p.ring,32,40)==kIOReturnSuccess);
++        CHECK(other.dispatch(NativeAdrenoExperimentalResourceMapping,&query,sizeof(query),&mapping,sizeof(mapping),&ringclock)==kIOReturnBadArgument);
++        rt::Request begin{};begin.magic=rt::Magic;begin.version=rt::Version;begin.operation=uint32_t(rt::Operation::Begin);
++        begin.total_resources=begin.total_ibs=1;begin.payload_bytes=8;
++        CHECK(other.dispatch(NativeAdrenoExperimentalResourceStaging,&begin,sizeof(begin),&reply,sizeof(reply),&ringclock)==kIOReturnSuccess);
++        CHECK(reply.token!=owner_token);
++        CHECK(other.dispatch(NativeAdrenoExperimentalResourceStaging,&old_page,sizeof(old_page),&reply,sizeof(reply),&ringclock)==kIOReturnSuccess);
++        CHECK(reply.status==uint32_t(rt::Status::Stale));
++        CHECK(other.close()==kIOReturnSuccess);
++        NativeAdrenoAbiParams unchanged{};CHECK(p.client.query(&unchanged)==kIOReturnSuccess);
++        CHECK(unchanged.flags==NativeAdrenoParamsHostImport); // no readiness advertised
++        NativeAdrenoAbiBoFree free_request{bo.handle};CHECK(p.client.freeBo(&free_request)==kIOReturnSuccess);
++        CHECK(p.client.dispatch(NativeAdrenoExperimentalResourceMapping,&query,sizeof(query),&mapping,sizeof(mapping),&ringclock)==kIOReturnBadArgument);
++        CHECK(p.client.releaseAll(&ringclock,0)==kIOReturnSuccess);
++        std::printf("PASS: actual core staging/generation lookup, real VM permissions, cross-owner refusal and zero GPU/cache side effects (host peers)\n");
++    }
++#else
++    {
++        Path p;CHECK(exposed(p)==kIOReturnSuccess);
++        NativeAdrenoResourceMappingRequest request{1};NativeAdrenoResourceMappingReply reply{};
++        CHECK(NativeAdrenoUserClient::inputSize(NativeAdrenoExperimentalResourceStaging)==SIZE_MAX);
++        CHECK(p.client.dispatch(NativeAdrenoExperimentalResourceMapping,&request,sizeof(request),&reply,sizeof(reply),&ringclock)==kIOReturnUnsupported);
++        CHECK(!p.client.resourceStagingActive() && p.client.close()==kIOReturnSuccess);
++        std::printf("PASS: default native resource staging/mapping methods unavailable\n");
++    }
++#endif
+     std::printf("PASS: 1 userspace-to-kernel round trip including CPU mapping leases and queue lifecycle, 1 version mismatch, 1 altered-size rejection and 8 client-side refusals over software SMMU/CP peers\n");
+ }
+ /* Physical-page maintenance (imported BOs): record it; no host page is touched. */
+diff --git a/tests/test_resource_transaction.cpp b/tests/test_resource_transaction.cpp
+new file mode 100644
+index 0000000..5f3352a
+--- /dev/null
++++ b/tests/test_resource_transaction.cpp
+@@ -0,0 +1,261 @@
++/* SPDX-License-Identifier: MIT */
++#include "NativeAdrenoResourceTransaction.h"
++#include "ResourceFixture.h"
++#include <cstdio>
++#include <cstring>
++#include <vector>
++namespace nr=NativeAdrenoResources;
++namespace tx=nr::Transaction;
++using resource_test::Fixture;
++static bool is(tx::Reply r,tx::Status s) { return r.status==uint32_t(s); }
++struct Harness {
++    Fixture f;
++    tx::Session *session=nullptr;
++    uint32_t resources=3,ibs=1,sequence=0;
++    Harness(uint64_t incarnation=123,bool validation=false) {
++        const auto error=validation?
++            tx::Session::createValidationOnly(99,incarnation,4096,f.allocator(),&f,f.hooks().lookup,&session):
++            tx::Session::create(99,incarnation,f.caps(),f.allocator(),f.hooks(),&session);
++        assert(error==nr::Error::Ok);
++    }
++    tx::Request request(tx::Operation operation) const {
++        tx::Request r{};r.magic=tx::Magic;r.version=tx::Version;r.operation=uint32_t(operation);
++        r.total_resources=resources;r.total_ibs=ibs;
++        if(operation!=tx::Operation::Begin) {
++            const auto token=session->token();r.token=token.id;r.generation=token.generation;r.sequence=sequence;
++        }
++        return r;
++    }
++    tx::Reply call(const tx::Request &r) {
++        const auto reply=session->process(99,&r,sizeof(r));
++        if(is(reply,tx::Status::Ok))sequence=reply.next_sequence;
++        return reply;
++    }
++    tx::Reply begin() {
++        auto r=request(tx::Operation::Begin);uint64_t queue=1;r.payload_bytes=8;std::memcpy(r.payload,&queue,8);
++        return call(r);
++    }
++    tx::Request resourcePage(const nr::Resource *data,size_t count) const {
++        auto r=request(tx::Operation::Resources);r.count=count;r.payload_bytes=count*sizeof(nr::Resource);
++        assert(r.payload_bytes<=sizeof(r.payload));std::memcpy(r.payload,data,r.payload_bytes);return r;
++    }
++    tx::Request ibPage(const nr::Ib *data,size_t count) const {
++        auto r=request(tx::Operation::Ibs);r.count=count;r.payload_bytes=count*sizeof(nr::Ib);
++        assert(r.payload_bytes<=sizeof(r.payload));std::memcpy(r.payload,data,r.payload_bytes);return r;
++    }
++    void upload() {
++        auto r=f.resources();assert(is(call(resourcePage(r.data(),r.size())),tx::Status::Ok));
++        nr::Ib ib{1,11,16,64};assert(is(call(ibPage(&ib,1)),tx::Status::Ok));
++    }
++    void sealed() {
++        assert(is(begin(),tx::Status::Ok));upload();
++        assert(is(call(request(tx::Operation::Seal)),tx::Status::Ok));
++        assert(!f.holds && !f.publishes && !f.enqueues);
++    }
++    void destroy() {
++        assert(tx::Session::destroy(session)==nr::Error::Ok);session=nullptr;assert(!f.live_allocations);
++    }
++};
++int main() {
++    size_t cases=0;
++    {
++        const auto schema=tx::schema();assert(schema.request_bytes+8==416 && schema.reply_bytes==32);
++        assert(schema.max_resources==4096 && schema.required_job_flags==7);++cases;
++    }
++    {
++        Harness h;h.sealed();const auto token=h.session->token();
++        assert(h.session->state()==tx::State::Sealed);
++        assert(h.session->submitSealed(99,token)==nr::Error::Ok && h.f.enqueue_uses==3);
++        assert(h.session->submitSealed(99,token)==nr::Error::Busy && h.f.enqueues==1);
++        assert(is(h.call(h.request(tx::Operation::Abort)),tx::Status::Busy) && !h.f.releases);
++        assert(h.session->poll()==nr::Error::Busy && tx::Session::destroy(h.session)==nr::Error::Busy);
++        h.f.completion=nr::Completion::Complete;assert(h.session->poll()==nr::Error::Ok);
++        h.destroy();++cases;
++    }
++    {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));auto r=h.f.resources();
++        const auto page=h.resourcePage(r.data(),1);assert(is(h.call(page),tx::Status::Ok));
++        assert(is(h.call(page),tx::Status::Sequence) && h.session->receivedResources()==1);
++        auto skipped=h.resourcePage(r.data()+1,1);++skipped.sequence;
++        assert(is(h.call(skipped),tx::Status::Sequence) && h.session->receivedResources()==1);
++        assert(is(h.call(h.resourcePage(r.data()+1,2)),tx::Status::Ok));
++        nr::Ib ib{1,11,0,64};const auto ibpage=h.ibPage(&ib,1);
++        assert(is(h.call(ibpage),tx::Status::Ok));assert(is(h.call(ibpage),tx::Status::Sequence));
++        const auto seal=h.request(tx::Operation::Seal);assert(is(h.call(seal),tx::Status::Ok));
++        assert(is(h.call(seal),tx::Status::Sequence) && !h.f.holds && !h.f.enqueues);
++        assert(is(h.call(h.request(tx::Operation::Abort)),tx::Status::Ok));h.destroy();++cases;
++    }
++    for(size_t length:{size_t(0),size_t(1),size_t(407),size_t(409)}) {
++        Harness h;auto packet=h.request(tx::Operation::Begin);
++        assert(is(h.session->process(99,&packet,length),tx::Status::BadPacket));
++        assert(h.session->state()==tx::State::Idle && h.f.allocations==1);h.destroy();++cases;
++    }
++    {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));auto packet=h.request(tx::Operation::Seal);
++        const auto reply=h.session->process(100,&packet,sizeof(packet));
++        assert(is(reply,tx::Status::Ownership) && !reply.token && !reply.generation && !reply.next_sequence);
++        assert(h.session->submitSealed(100,h.session->token())==nr::Error::Ownership);
++        assert(h.session->receivedResources()==0);h.destroy();++cases;
++    }
++    {
++        Harness a(123),b(124);assert(is(a.begin(),tx::Status::Ok) && is(b.begin(),tx::Status::Ok));
++        auto r=a.f.resources();const auto packet=a.resourcePage(r.data(),3);
++        assert(is(b.call(packet),tx::Status::Stale) && b.session->receivedResources()==0);
++        const auto old=a.session->token();assert(is(a.call(a.request(tx::Operation::Abort)),tx::Status::Ok));
++        assert(is(a.begin(),tx::Status::Ok) && a.session->token().generation>old.generation);
++        assert(is(a.call(packet),tx::Status::Stale) && a.session->receivedResources()==0);
++        a.destroy();b.destroy();++cases;
++    }
++    for(int change=0;change<10;++change) {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));auto data=h.f.resources();
++        auto r=h.resourcePage(data.data(),3);
++        switch(change) {
++        case 0:r.magic=0;break;
++        case 1:r.version=2;break;
++        case 2:r.flags=1;break;
++        case 3:r.reserved=1;break;
++        case 4:r.payload_bytes=352;break;
++        case 5:r.count=0;break;
++        case 6:r.count=9;break;
++        case 7:r.payload[351]=1;break;
++        case 8:r.total_resources=4;break;
++        case 9:r.payload_bytes=UINT32_MAX;break;
++        }
++        assert(is(h.call(r),tx::Status::BadPacket) && h.session->receivedResources()==0);
++        assert(!h.f.holds && !h.f.publishes && !h.f.enqueues);h.destroy();++cases;
++    }
++    {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));nr::Ib ib{1,11,0,64};
++        assert(is(h.call(h.ibPage(&ib,1)),tx::Status::BadPacket));
++        assert(is(h.call(h.request(tx::Operation::Seal)),tx::Status::BadPacket));
++        auto r=h.f.resources();assert(is(h.call(h.resourcePage(r.data(),2)),tx::Status::Ok));
++        assert(is(h.call(h.request(tx::Operation::Seal)),tx::Status::BadPacket));
++        assert(is(h.call(h.resourcePage(r.data()+2,1)),tx::Status::Ok));
++        assert(is(h.call(h.request(tx::Operation::Seal)),tx::Status::BadPacket));
++        assert(!h.f.holds && !h.f.enqueues);h.destroy();++cases;
++    }
++    {
++        Harness h;h.sealed();assert(is(h.begin(),tx::Status::Busy));
++        assert(is(h.call(h.request(tx::Operation::Seal)),tx::Status::Busy));
++        assert(is(h.call(h.request(tx::Operation::Abort)),tx::Status::Ok));
++        assert(!h.f.holds && !h.f.enqueues);h.destroy();++cases;
++    }
++    for(int change=0;change<4;++change) {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));auto r=h.f.resources();
++        if(change==0)r[2].bytes=64;
++        if(change==1)h.f.mappings[2].owner=100;
++        if(change==2)++h.f.mappings[2].generation;
++        if(change==3)r[0].access=nr::Read;
++        assert(is(h.call(h.resourcePage(r.data(),r.size())),tx::Status::Ok));
++        nr::Ib ib{1,11,0,64};assert(is(h.call(h.ibPage(&ib,1)),tx::Status::Ok));
++        const auto reply=h.call(h.request(tx::Operation::Seal));assert(is(reply,tx::Status::Validation));
++        assert(h.session->state()==tx::State::Uploading && !h.f.holds && !h.f.enqueues);
++        assert(is(h.call(h.request(tx::Operation::Abort)),tx::Status::Ok));h.destroy();++cases;
++    }
++    for(size_t failure=1;failure<=2;++failure) {
++        Harness h;h.f.fail_allocation=h.f.allocations+failure;
++        assert(is(h.begin(),tx::Status::NoMemory) && h.f.live_allocations==1);
++        h.f.fail_allocation=0;assert(is(h.begin(),tx::Status::Ok));
++        assert(h.session->token().generation==2);h.destroy();++cases;
++    }
++    for(size_t failure=1;failure<=5;++failure) {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));h.upload();
++        h.f.fail_allocation=h.f.allocations+failure;const auto packet=h.request(tx::Operation::Seal);
++        assert(is(h.call(packet),tx::Status::NoMemory) && h.f.live_allocations==3);
++        assert(!h.f.holds && !h.f.enqueues);h.f.fail_allocation=0;
++        assert(is(h.call(packet),tx::Status::Ok));h.destroy();++cases;
++    }
++    {
++        Fixture f;tx::Session *session=nullptr;
++        assert(tx::Session::create(99,123,{},f.allocator(),f.hooks(),&session)==nr::Error::Unsupported);
++        assert(!session && !f.allocations);f.fail_allocation=1;
++        assert(tx::Session::create(99,123,f.caps(),f.allocator(),f.hooks(),&session)==nr::Error::NoMemory);
++        assert(!session && !f.live_allocations);++cases;
++    }
++    for(int phase=0;phase<3;++phase) {
++        Harness h;
++        if(phase==1)assert(is(h.begin(),tx::Status::Ok));
++        if(phase==2)h.sealed();
++        const auto packet=h.request(tx::Operation::Abort);
++        assert(h.session->close()==nr::Error::Ok && h.f.live_allocations==1);
++        assert(is(h.call(packet),tx::Status::Closed) && !h.f.holds && !h.f.enqueues);
++        h.destroy();++cases;
++    }
++    {
++        Harness h;h.sealed();h.f.result={nr::Error::Backend,nr::Acceptance::Uncertain,77};
++        assert(h.session->submitSealed(99,h.session->token())==nr::Error::Backend);
++        assert(h.session->close()==nr::Error::Busy && !h.f.releases);
++        h.f.completion=nr::Completion::Complete;assert(h.session->poll()==nr::Error::Busy);
++        assert(tx::Session::destroy(h.session)==nr::Error::Busy && !h.f.releases);
++        h.f.quiescent=true;assert(h.session->recover()==nr::Error::Ok && h.f.releases==3);
++        h.destroy();++cases;
++    }
++    {
++        Harness h;h.resources=4096;h.ibs=128;h.f.mappings.clear();
++        std::vector<nr::Resource> resources;std::vector<nr::Ib> ibs;
++        for(uint64_t i=0;i<4096;++i) {
++            h.f.mappings.push_back({i+1,i+10,99,i+100,i+5000,0x10000+i*4096,4096,0,3,0});
++            resources.push_back({i+1,i+10,0,4096,i?nr::Write:uint32_t(nr::Read|nr::Execute),0});
++        }
++        for(size_t i=0;i<128;++i)ibs.push_back({1,10,i*4,4});
++        assert(is(h.begin(),tx::Status::Ok));
++        for(size_t i=0;i<resources.size();i+=8)assert(is(h.call(h.resourcePage(resources.data()+i,8)),tx::Status::Ok));
++        for(size_t i=0;i<ibs.size();i+=11) {
++            const size_t count=ibs.size()-i<11?ibs.size()-i:11;
++            assert(is(h.call(h.ibPage(ibs.data()+i,count)),tx::Status::Ok));
++        }
++        assert(h.session->receivedResources()==4096 && h.session->receivedIbs()==128);
++        assert(is(h.call(h.request(tx::Operation::Seal)),tx::Status::Ok));
++        assert(!h.f.holds && !h.f.enqueues);
++        assert(h.f.peak_bytes<1024*1024); // Job+upload peak, excluding allocator metadata
++        assert(h.session->submitSealed(99,h.session->token())==nr::Error::Ok);
++        assert(h.f.enqueue_uses==4096 && h.f.enqueue_commands==128 && h.f.holds==4096);
++        h.f.completion=nr::Completion::Complete;assert(h.session->poll()==nr::Error::Ok);h.destroy();++cases;
++    }
++    {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));auto resources=h.f.resources();
++        resources[2].bytes=0;
++        assert(is(h.call(h.resourcePage(resources.data(),3)),tx::Status::BadPacket));
++        assert(h.session->receivedResources()==0 && h.sequence==1);
++        resources=h.f.resources();assert(is(h.call(h.resourcePage(resources.data(),3)),tx::Status::Ok));
++        nr::Ib invalid{1,11,0,3};assert(is(h.call(h.ibPage(&invalid,1)),tx::Status::BadPacket));
++        assert(h.session->receivedIbs()==0 && h.sequence==2);
++        h.destroy();++cases;
++    }
++    for(int change=0;change<7;++change) {
++        Harness h;auto r=h.request(tx::Operation::Begin);uint64_t queue=1;r.payload_bytes=8;
++        std::memcpy(r.payload,&queue,8);
++        switch(change) {
++        case 0:r.total_resources=4097;break;
++        case 1:r.total_ibs=129;break;
++        case 2:r.total_resources=0;break;
++        case 3:r.token=1;break;
++        case 4:r.sequence=1;break;
++        case 5:r.payload[8]=1;break;
++        case 6:r.count=1;break;
++        }
++        assert(is(h.call(r),tx::Status::BadPacket) && h.f.allocations==1);
++        assert(h.session->state()==tx::State::Idle);h.destroy();++cases;
++    }
++    {
++        Harness h;assert(is(h.begin(),tx::Status::Ok));auto r=h.request(tx::Operation::Abort);
++        r.operation=99;assert(is(h.call(r),tx::Status::Unsupported));
++        assert(h.session->state()==tx::State::Uploading && h.sequence==1);
++        assert(is(h.session->process(99,nullptr,408),tx::Status::BadPacket));h.destroy();++cases;
++    }
++    {
++        Harness h;h.sealed();const auto token=h.session->token();
++        auto r=h.request(tx::Operation::Abort);r.payload[351]=1;
++        assert(is(h.call(r),tx::Status::BadPacket) && h.session->state()==tx::State::Sealed);
++        const auto abort=h.request(tx::Operation::Abort);assert(is(h.call(abort),tx::Status::Ok));
++        assert(is(h.call(abort),tx::Status::Stale));
++        assert(h.session->submitSealed(99,token)==nr::Error::Stale && !h.f.enqueues);h.destroy();++cases;
++    }
++    {
++        Harness h(123,true);h.sealed();
++        assert(h.session->submitSealed(99,h.session->token())==nr::Error::Unsupported);
++        assert(!h.f.holds && !h.f.publishes && !h.f.enqueues);
++        assert(h.session->state()==tx::State::Sealed);h.destroy();++cases;
++    }
++    std::printf("PASS: %zu bounded transaction cases (host callbacks; no IOKit/GPU execution)\n",cases);
++}
+diff --git a/tests/test_resources.cpp b/tests/test_resources.cpp
+new file mode 100644
+index 0000000..9e856cb
+--- /dev/null
++++ b/tests/test_resources.cpp
+@@ -0,0 +1,137 @@
++/* SPDX-License-Identifier: MIT */
++#include "ResourceFixture.h"
++#include <cstdio>
++using resource_test::Fixture;
++namespace nr=NativeAdrenoResources;
++int main() {
++    size_t cases=0;
++    {
++        Fixture f;auto r=f.resources();r.push_back({2,12,0,8192,nr::Read,0});
++        nr::Ib ib{1,11,16,64};nr::Job *j=nullptr;
++        assert(nr::Job::create(f.caps(),99,1,r.data(),r.size(),&ib,1,f.allocator(),f.hooks(),&j)==nr::Error::Ok);
++        assert(j->useCount()==3 && j->spanCount()==3 && j->uses()[1].access==(nr::Read|nr::Write));
++        r[1].bytes=1;ib.bytes=4; // manifest/commands must own immutable copies
++        assert(j->uses()[1].bytes==8192 && j->commands()[0].bytes==64 && j->commands()[0].iova==0x10010);
++        assert(!f.holds && !f.enqueues && !f.publishes);
++        assert(j->submit()==nr::Error::Ok && f.enqueue_uses==3 && f.enqueue_commands==1);
++        assert(f.pins[1001]==1 && f.pins[1002]==1 && f.pins[1003]==1);
++        assert(j->submit()==nr::Error::Busy && f.enqueues==1);
++        assert(j->poll()==nr::Error::Busy && nr::Job::destroy(j)==nr::Error::Busy && !f.releases);
++        f.finish(j);assert(f.releases==3 && f.acquires==1);++cases;
++    }
++    for(int change=0;change<10;++change) {
++        Fixture f;auto r=f.resources();nr::Ib ib{1,11,16,64};nr::Job *j=nullptr;
++        switch(change) {
++        case 0:f.mappings[2].owner=100;break;
++        case 1:r[2].generation=99;break;
++        case 2:r[2].offset=UINT64_MAX;break;
++        case 3:r[2].bytes=4097;break;
++        case 4:r[2].access=16;break;
++        case 5:f.mappings[1].permissions=nr::Read;break;
++        case 6:ib.handle=4;break;
++        case 7:ib.offset=4096;break;
++        case 8:ib.bytes=3;break;
++        case 9:f.mappings[2].backing_offset=UINT64_MAX;break;
++        }
++        assert(nr::Job::create(f.caps(),99,1,r.data(),r.size(),&ib,1,f.allocator(),f.hooks(),&j)!=nr::Error::Ok);
++        assert(!j && !f.holds && !f.publishes && !f.enqueues && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;auto r=f.resources();nr::Ib ib{1,11,0,64};nr::Job *j=nullptr;
++        assert(nr::Job::create({},99,1,r.data(),r.size(),&ib,1,f.allocator(),f.hooks(),&j)==nr::Error::Unsupported);
++        assert(!j && !f.allocations && !f.lookups);++cases;
++    }
++    for(size_t failure=1;failure<=5;++failure) {
++        Fixture f;f.fail_allocation=failure;auto r=f.resources();nr::Ib ib{1,11,0,64};nr::Job *j=nullptr;
++        assert(nr::Job::create(f.caps(),99,1,r.data(),r.size(),&ib,1,f.allocator(),f.hooks(),&j)==nr::Error::NoMemory);
++        assert(!j && !f.live_allocations && !f.holds && !f.enqueues);++cases;
++    }
++    for(size_t failure=1;failure<=3;++failure) {
++        Fixture f;auto *j=f.make();f.fail_hold=failure;
++        assert(j->submit()==nr::Error::PinFailed && f.releases==failure-1 && !f.publishes && !f.enqueues);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();++f.mappings[1].generation;
++        assert(j->submit()==nr::Error::Stale && f.releases==1 && !f.enqueues && !f.publishes);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;f.mappings[2].backing=200;f.mappings[2].backing_offset=4096;
++        auto *j=f.make();assert(j->spanCount()==2);
++        bool merged=false;for(size_t i=0;i<j->spanCount();++i)if(j->spans()[i].backing==200) {
++            assert(j->spans()[i].offset==0 && j->spans()[i].bytes==8192 && j->spans()[i].access==3);merged=true;
++        }
++        assert(merged && j->submit()==nr::Error::Ok && f.holds==3);f.finish(j);++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();f.publish_error=nr::Error::Backend;
++        assert(j->submit()==nr::Error::Backend && !f.enqueues && f.releases==3);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();f.result={nr::Error::Backend,nr::Acceptance::Rejected,0};
++        assert(j->submit()==nr::Error::Backend && f.releases==3);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);++cases;
++    }
++    for(auto acceptance:{nr::Acceptance::Accepted,nr::Acceptance::Uncertain,nr::Acceptance::Rejected}) {
++        Fixture f;auto *j=f.make();f.result={nr::Error::Backend,acceptance,77};
++        assert(j->submit()==nr::Error::Backend && !f.releases && j->state()==nr::Job::State::Uncertain);
++        assert(nr::Job::destroy(j)==nr::Error::Busy && j->poll()==nr::Error::Busy);
++        if(acceptance==nr::Acceptance::Accepted)f.finish(j);
++        else {
++            f.completion=nr::Completion::Complete;
++            assert(j->poll()==nr::Error::Busy && !f.releases); // prefix is insufficient
++            f.quiescent=true;assert(j->recover()==nr::Error::Ok);
++            assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);
++        }
++        ++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();f.result={nr::Error::Backend,nr::Acceptance::Uncertain,0};
++        assert(j->submit()==nr::Error::Backend && j->poll()==nr::Error::Busy);
++        assert(j->recover()==nr::Error::Busy && !f.releases && nr::Job::destroy(j)==nr::Error::Busy);
++        f.quiescent=true;assert(j->recover()==nr::Error::Ok && f.releases==3);
++        assert(f.release_reasons[0]==nr::Release::Quiesced);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();assert(j->submit()==nr::Error::Ok);
++        f.completion=nr::Completion::Uncertain;assert(j->poll()==nr::Error::Busy && !f.releases);
++        f.completion=nr::Completion::Complete;f.acquire_error=nr::Error::Backend;
++        assert(j->poll()==nr::Error::Backend && !f.releases && nr::Job::destroy(j)==nr::Error::Busy);
++        f.acquire_error=nr::Error::Ok;f.finish(j);++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();assert(nr::Job::destroy(j)==nr::Error::Ok);
++        assert(!f.live_allocations && !f.holds);++cases;
++    }
++    {
++        Fixture f;
++        f.mappings[1].bytes=1024;f.mappings[2].backing=200;f.mappings[2].bytes=1024;
++        f.mappings[2].backing_offset=2048;
++        f.mappings.push_back({4,14,99,200,1004,0x50000,1024,1024,3,0});
++        nr::Resource r[]={{1,11,0,4096,nr::Read|nr::Execute,0},{2,12,0,1024,nr::Read,0},
++                         {3,13,0,1024,nr::Write,0},{4,14,0,1024,nr::Read,0}};
++        nr::Ib ib{1,11,0,64};nr::Job *j=nullptr;
++        assert(nr::Job::create(f.caps(),99,1,r,4,&ib,1,f.allocator(),f.hooks(),&j)==nr::Error::Ok);
++        assert(j->spanCount()==2);
++        bool merged=false;for(size_t i=0;i<j->spanCount();++i)if(j->spans()[i].backing==200) {
++            assert(j->spans()[i].offset==0 && j->spans()[i].bytes==3072 && j->spans()[i].access==3);merged=true;
++        }
++        assert(merged && j->submit()==nr::Error::Ok && f.holds==4);f.finish(j);++cases;
++    }
++    {
++        Fixture f;f.mappings[2].mapping=f.mappings[1].mapping;
++        auto r=f.resources();nr::Ib ib{1,11,0,64};nr::Job *j=nullptr;
++        assert(nr::Job::create(f.caps(),99,1,r.data(),r.size(),&ib,1,f.allocator(),f.hooks(),&j)==nr::Error::Stale);
++        assert(!j && !f.holds && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;auto r=f.resources();r[0].access=nr::Read;
++        nr::Ib ib{1,11,0,64};nr::Job *j=nullptr;
++        assert(nr::Job::create(f.caps(),99,1,r.data(),r.size(),&ib,1,f.allocator(),f.hooks(),&j)==nr::Error::Permission);
++        assert(!j && !f.enqueues && !f.live_allocations);++cases;
++    }
++    std::printf("PASS: %zu resource validation/lifetime cases (host callbacks; no GPU execution)\n",cases);
++}

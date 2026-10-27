@@ -1,0 +1,10 @@
+{
+  "scope": "isolated source-only resource receiver and real-XNU object gate; no feed/profile/image selection",
+  "repository": "https://github.com/UniXNU/NativeAdreno.git",
+  "base_commit": "805c7e4bfb7451eb6923f4a14dea8c657b9be7d2",
+  "source_commit": "fb3e0d078bc000c6c47930a0cd25c7249ca5f982",
+  "patch_sha256": "9fba890c048e2b396595198452787059b7ef990376b4bdaec2bee828c451103d",
+  "default_staging": 0,
+  "execution_available": false,
+  "actual_sdk_compilation_qualified": false
+}

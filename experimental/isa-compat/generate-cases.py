@@ -37,6 +37,8 @@ def generate(out):
             'maddpt': ['.inst 0x9b617c00'], 'ldapur': ['.inst 0xd9400000'],
             'irg': ['.inst 0x9adf1000'],
             'sha512': ['movi v0.16b,#0', 'movi v1.16b,#0', 'movi v2.16b,#0', '.inst 0xce628020', 'fmov x0,d0'],
+            'pauth': ['.inst 0xdac10020', '.inst 0xdac11020'],
+            'pauth_lr': ['.inst 0xdac1a7fe', '.inst 0x5520003f'],
             'unallocated': ['.inst 0x00000000']}
     for name, instructions in caps.items():
         name = 'zeta_cap_' + name

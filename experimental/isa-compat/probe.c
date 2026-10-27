@@ -116,6 +116,8 @@ int main(void) {
     capability("ldapur", zeta_cap_ldapur, (uintptr_t)&load_value, 0, 1, load_value);
     capability("mte-irg", zeta_cap_irg, (uintptr_t)&load_value, 0, 0, 0);
     capability("sha512h-zero", zeta_cap_sha512, 0, 0, 1, 0);
+    capability("pauth-pacia-autia", zeta_cap_pauth, 17, 25, 1, 17);
+    capability("pauth-lr-paired-leaf", zeta_cap_pauth_lr, 17, 0, 1, 17);
     capability("unallocated", zeta_cap_unallocated, 0, 0, 0, 0);
     caught = 0;
     volatile unsigned tpro_version = 0;

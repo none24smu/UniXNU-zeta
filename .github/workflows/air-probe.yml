@@ -1,10 +1,19 @@
 name: Duo Metal native GPU probe
 on:
   workflow_dispatch:
+    inputs:
+      semantics_only:
+        description: Run only the native ARM64 instruction semantics check
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
+  instruction-semantics:
+    if: inputs.semantics_only
+    uses: ./.github/workflows/isa-semantics.yml
   build:
+    if: ${{ !inputs.semantics_only }}
     runs-on: macos-26
     timeout-minutes: 20
     env:

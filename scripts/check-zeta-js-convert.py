@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import platform
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -137,7 +138,8 @@ int main(void){
     report = {'schema': 'zeta-js-convert-oracle-v1', 'passed': result.returncode == 0 and b'PASS FJCVTZS' in log,
               'qemu_version': None if args.native_apple else run([qemu, '--version']).stdout.decode().splitlines()[0],
               'oracle': 'Apple ARM64 host instruction execution' if args.native_apple else 'QEMU instruction model',
-              'cases': 2048 * 7 * 2 * 8 * 2 + 200000 * 8,
+              'planned_cases': 2048 * 7 * 2 * 8 * 2 + 200000 * 8,
+              'completed_cases': int(re.search(rb'model cases: ([0-9a-f]{16})', log).group(1),16) if b'PASS FJCVTZS model cases:' in log else None,
               'value_nzcv_fpsr_checked': True, 'fpcr_modes': 8,
               'apple_host_execution': args.native_apple, 'phone_execution': False, 'kernel_integration': False,
               'source_sha256': {str(p.relative_to(board)): hashlib.sha256(p.read_bytes()).hexdigest()

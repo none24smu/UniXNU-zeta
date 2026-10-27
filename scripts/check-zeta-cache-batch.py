@@ -60,7 +60,7 @@ headers={
 for name,text in headers.items():
     target=arm_inc/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
 for shift in [12,14]:
-    subprocess.run(['clang++','--target=aarch64-none-elf','-ffreestanding','-fno-exceptions','-fno-rtti',
+    subprocess.run(['clang++','--target=aarch64-none-elf','-ffreestanding','-fno-exceptions','-fno-rtti','-nostdinc++',
         '-std=c++14','-Wall','-Wextra','-Werror','-Wno-missing-field-initializers','-fsyntax-only',
         '-DTEST_VM_PAGE_SHIFT='+str(shift),'-I',str(arm_inc),'-I',str(kit),str(kit/'NativeAdrenoCpu.cpp')],check=True)
 print('PASS: ARM64 cache backend syntax with 4 KiB and 16 KiB VM declarations; not a real XNU build')

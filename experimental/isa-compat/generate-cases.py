@@ -34,6 +34,7 @@ def generate(out):
             if rd not in (0, 31): asm.append(f'mov x0,x{rd}')
             asm += ['ldp x29,x30,[sp],#16', 'ret']
     caps = {'add': ['add x0,x0,x1'], 'addpt': ['.inst 0x9a012000'],
+            'fjcvtzs': ['fmov d0,x0', '.inst 0x1e7e0000'],
             'maddpt': ['.inst 0x9b617c00'], 'ldapur': ['.inst 0xd9400000'],
             'irg': ['.inst 0x9adf1000'],
             'sha512': ['movi v0.16b,#0', 'movi v1.16b,#0', 'movi v2.16b,#0', '.inst 0xce628020', 'fmov x0,d0'],

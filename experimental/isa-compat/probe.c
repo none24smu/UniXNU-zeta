@@ -98,6 +98,7 @@ int main(void) {
         "hw.optional.arm.FEAT_CSSC", "hw.optional.arm.FEAT_CPA", "hw.optional.arm.FEAT_CPA2",
         "hw.optional.arm.FEAT_PAuth", "hw.optional.arm.FEAT_PAuth_LR", "hw.optional.arm.FEAT_MTE",
         "hw.optional.arm.FEAT_SHA512", "hw.optional.arm.FEAT_LRCPC", "hw.optional.arm.FEAT_LRCPC2",
+        "hw.optional.arm.FEAT_JSCVT",
         "hw.optional.arm.FEAT_TME", "hw.optional.arm.FEAT_TPRO", NULL
     };
     for (unsigned i = 0; features[i]; ++i) feature(features[i]);
@@ -130,6 +131,12 @@ int main(void) {
     capability("ldapur", zeta_cap_ldapur, (uintptr_t)&load_value, 0, 1, load_value);
     capability("mte-irg", zeta_cap_irg, (uintptr_t)&load_value, 0, 0, 0);
     capability("sha512h-zero", zeta_cap_sha512, 0, 0, 1, 0);
+    capability("fjcvtzs-zero", zeta_cap_fjcvtzs, 0, 0, 1, 0);
+    capability("fjcvtzs-positive-fraction", zeta_cap_fjcvtzs, UINT64_C(0x400e000000000000), 0, 1, 3);
+    capability("fjcvtzs-negative-fraction", zeta_cap_fjcvtzs, UINT64_C(0xc006000000000000), 0, 1, UINT32_C(0xfffffffe));
+    capability("fjcvtzs-modulo32", zeta_cap_fjcvtzs, UINT64_C(0x41f0000000100000), 0, 1, 1);
+    capability("fjcvtzs-qnan", zeta_cap_fjcvtzs, UINT64_C(0x7ff8000000000000), 0, 1, 0);
+    capability("fjcvtzs-infinity", zeta_cap_fjcvtzs, UINT64_C(0x7ff0000000000000), 0, 1, 0);
     capability("pauth-pacia-autia", zeta_cap_pauth, 17, 25, 1, 17);
     capability("pauth-lr-paired-leaf", zeta_cap_pauth_lr, 17, 0, 1, 17);
     capability("unallocated", zeta_cap_unallocated, 0, 0, 0, 0);

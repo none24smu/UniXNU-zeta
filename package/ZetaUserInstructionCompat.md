@@ -1,9 +1,9 @@
-# Unwired scalar user-instruction compatibility helper
+# Opt-in scalar user-instruction compatibility experiment
 
 `ZetaUserInstructionCompat.c/.h` implements allocation-free register semantics.
-It is deliberately absent from the kernel archives, trap patches and conversion
-pipeline. No code fetch, user-memory access, exception delivery or PC update is
-performed. A successful call changes only the architectural destination; a
+The pure helper performs no code fetch, user-memory access, exception delivery
+or PC update. The separate `ZetaUserInstructionKernel.c` adapter is included in
+the owner-Data diagnostic archive; its runtime policy defaults to disabled. A successful call changes only the architectural destination; a
 failure leaves the supplied state unchanged.
 
 Supported exact scalar forms: UMIN/UMAX/SMIN/SMAX with register or imm8 operands,
@@ -51,42 +51,50 @@ lowerings. It does not claim native CSSC execution, XNU trap validation, or
 physical SM8350 timing, or data-independent-timing guarantees. The existing proven-word audit has 1168 dyld and 62 launchd
 pointer sites that fit the single-word OFF planner; OFF is not yet qualified.
 
-## Required XNU adapter work before a runtime hook
+## XNU adapter and qualification boundary
 
-The inspected XNU 12377 `osfmk/arm64/sleh.c` routes uncategorized synchronous
-exceptions to `handle_uncategorized` (about line 1185). That function copies the
-faulting word, recognizes debugger/DTrace cases, panics for undefined kernel
-instructions, and otherwise delivers `EXC_BAD_INSTRUCTION/EXC_ARM_UNDEFINED`.
-Its existing COPYIN result is ignored; an emulator must not reuse that as proof
-that instruction fetch succeeded.
+The root patch `native-zeta-user-cssc.patch` adds a weak callback only inside
+XNU12377's existing uncategorized exception handler. It retains the initial
+COPYIN result, skips the callback on failure, and preserves kernel, debugger,
+DTrace and AArch32 handling. The adapter checks64-bit EL0/aligned PC and performs
+a second checked4-byte copyin. Changed/failed fetches and unsupported instructions
+leave state untouched and continue through XNU's normal exception delivery.
 
-A future opt-in hook must:
+The adapter maps x0..x28 through saved-state accessors, FP/LR separately, and uses
+signed user-state setters for x16/x17/LR/PC. It commits only the destination and
+advances PC exactly4bytes. It passes CPTA UNKNOWN, so ADDPT/SUBPT/MADDPT are
+**never** handled by this trap path. `zeta-cssc-compat=0` disables it (default),
+`1` permits only the diagnostic basename `zeta-isa-probe`, and `2` additionally
+permits platform binaries as determined by XNU's actual code-signing state.
+Mode2 is an experiment, not a qualified product setting. The exported mode word
+and eight counters support owner diagnostics; no per-trap log or allocation is
+performed. Matching a basename is a diagnostic convenience, not code identity.
 
-1. Require a 64-bit EL0 saved state, the intended uncategorized ESR, aligned PC,
-   and an explicitly enabled/task-scoped compatibility policy. Preserve kernel,
-   AArch32, DTrace/debugger and unsupported-instruction behavior.
-2. Safely fetch exactly 4 bytes with checked copyin, preserving normal user-fault
-   recovery. A copy failure must not mutate registers/PC, retry indefinitely,
-   or invent a successfully fetched word. Validate mappings/execute semantics
-   and races with writable code rather than assuming successful data copyin
-   proves executable ownership.
-3. Map x0..x28 with user saved-state accessors, x29 through FP, x30 through LR,
-   and SP separately. XNU's `arm_saved_state64` contains x[29], not x[31]. Use
-   `set_user_saved_state_reg`/`set_user_saved_state_lr` and the proper FP/SP
-   accessors, preserving signed-state/jophash handling where applicable.
-4. Evaluate without committing, validate the destination and successful return,
-   then commit exactly the destination and advance the user PC by 4 once via
-   `add_user_saved_state_pc`. Preserve CPSR/NZCV and exception state. Confirm
-   this in real EL0 tests including x16/x17/FP/LR/SP/ZR and a page-boundary fetch.
-5. Provide bounded per-task/instruction counters and a way to disable fallback;
-   validate unmapped/unreadable PC, unsupported opcodes, bad policy, signal and
-   debugger interaction before enabling the hook.
+```
+python3 scripts/check-zeta-instruction-kernel.py --output <fresh-output>
+```
 
-A native compiler object is not this integration proof. Current source searches
-found no CPTA/CPA2 task-policy implementation in the inspected XNU arm/arm64/
-BSD-kern paths. Actual CPU advertisements, effective reference-task CPTA policy,
-and the replacement kernel's policy still require explicit validation before
-OFF can qualify an executable conversion. Feature/persona spoofing is not proof.
+The actual adapter passes2071 host ASan/UBSan cases against mocked XNU accessors:
+mode/process gates, failed/changed fetches, kernel/AArch32 rejection, exact state
+and PC preservation, W zero extension, FP/LR/x16/x17/ZR, pointer refusal and
+unsupported opcodes. These are host tests, not native ABI or exception proof.
+The first native kernel build and EL0 experiment are pending. Execute-permission
+and writable-code races are not generally qualified: the current limited target
+is signed immutable text; double fetching does not solve arbitrary JIT races.
+
+The baseline-arm64 `experimental/isa-compat` probe contains32 independently
+LLVM-checked CSSC encodings with nine edge values each, preserves/tests NZCV,
+uses signal recovery for missing features, and records native csops platform
+status/CDHash. Separate same-CDHash basenames allow mode1-denied/mode2-allowed
+validation without broadening the adapter. Additional guest probes cover
+ADDPT/MADDPT, LDAPUR, IRG, SHA512, paired pointer authentication, an unallocated
+negative control and TPRO commpage state. It does not execute TCHANGE or EL1
+register accesses. Native outcomes must be bound to the exact tested kernel and
+probe files before the converter's explicit x1 contract can become validated.
+
+Source searches found no CPTA/CPA2 task-policy implementation in the inspected
+XNU arm/arm64/BSD-kern paths. Reference-task CPTA policy and the replacement
+kernel's chosen ABI remain distinct. Feature/persona spoofing is not proof.
 
 ## Performance decision
 

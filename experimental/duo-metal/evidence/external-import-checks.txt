@@ -1,0 +1,72 @@
+## release-current
+   Compiling metal2vulkan v0.2.0 (/home/smudev/iosongen2/work/ios27-port/metal2vulkan-external/crates/metal2vulkan)
+    Finished `release` profile [optimized] target(s) in 1m 09s
+     Running unittests src/lib.rs (target/release/deps/metal2vulkan-c0fcc9cc0f5784bf)
+
+running 7 tests
+test pipeline::external_spirv::tests::actual_linker_keeps_unsupported_attachment_conversion_refusal ... ok
+test pipeline::external_spirv::tests::immutable_words_profiles_and_provenance_keys ... ok
+test pipeline::external_spirv::tests::imported_stage_uses_the_existing_cache_contract ... ok
+test pipeline::external_spirv::tests::unknown_resource_specialization_attribute_and_bad_ir_refuse ... ok
+test pipeline::external_spirv::tests::owned_identities_and_actual_pipeline_and_binding_planner ... ok
+external import batch=32 words=4094 elapsed_us=14366 slowest_us=338
+test pipeline::external_spirv::tests::bounded_largest_module_batch ... ok
+external mutation L3 checks accepted=130
+test pipeline::external_spirv::tests::accepted_single_word_mutations_remain_real_valid_spirv ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 3235 filtered out; finished in 0.59s
+
+
+## measured-current
+
+running 7 tests
+test pipeline::external_spirv::tests::accepted_single_word_mutations_remain_real_valid_spirv ... external mutation L3 checks accepted=130
+ok
+test pipeline::external_spirv::tests::actual_linker_keeps_unsupported_attachment_conversion_refusal ... ok
+test pipeline::external_spirv::tests::bounded_largest_module_batch ... external import batch=32 words=4094 elapsed_us=10898 slowest_us=293
+ok
+test pipeline::external_spirv::tests::immutable_words_profiles_and_provenance_keys ... ok
+test pipeline::external_spirv::tests::imported_stage_uses_the_existing_cache_contract ... ok
+test pipeline::external_spirv::tests::owned_identities_and_actual_pipeline_and_binding_planner ... ok
+test pipeline::external_spirv::tests::unknown_resource_specialization_attribute_and_bad_ir_refuse ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 3235 filtered out; finished in 0.64s
+
+	Command being timed: "target/release/deps/metal2vulkan-c0fcc9cc0f5784bf pipeline::external_spirv --test-threads=1 --nocapture"
+	User time (seconds): 0.35
+	System time (seconds): 0.29
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.64
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 20964
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 33958
+	Voluntary context switches: 409
+	Involuntary context switches: 95
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 1096
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+
+## clippy-final
+   Compiling metal2vulkan v0.2.0 (/home/smudev/iosongen2/work/ios27-port/metal2vulkan-external/crates/metal2vulkan)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.56s
+
+## clippy-default-final
+   Compiling metal2vulkan v0.2.0 (/home/smudev/iosongen2/work/ios27-port/metal2vulkan-external/crates/metal2vulkan)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.99s
+
+## rustdoc-final
+   Compiling metal2vulkan v0.2.0 (/home/smudev/iosongen2/work/ios27-port/metal2vulkan-external/crates/metal2vulkan)
+ Documenting metal2vulkan v0.2.0 (/home/smudev/iosongen2/work/ios27-port/metal2vulkan-external/crates/metal2vulkan)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.65s
+   Generated /home/smudev/iosongen2/work/ios27-port/metal2vulkan-external/target/doc/metal2vulkan/index.html
+

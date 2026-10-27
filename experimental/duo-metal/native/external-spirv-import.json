@@ -58,5 +58,7 @@
   },
   "clean_base_patch_reconstruction_passed": true,
   "rustdoc_final_sha256": "53e7ce360052ecb4ed1e14496a4dd101b994750c0ddd67d6aee785e52aca237a",
-  "clippy_default_final_sha256": "d6ad8b4c24e2dddcbb3f745b5daa7e88391c07c60511723004c7df71b1dad571"
+  "clippy_default_final_sha256": "d6ad8b4c24e2dddcbb3f745b5daa7e88391c07c60511723004c7df71b1dad571",
+  "checks_transcript": "experimental/duo-metal/evidence/external-import-checks.txt",
+  "checks_transcript_sha256": "42a55dc4667a5f41d88f5cab2e5acc73f4dc02256c0cfbfae9787a4fc7c3992f"
 }

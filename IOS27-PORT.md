@@ -4,6 +4,19 @@ This branch targets **iPhone19,4, V68/V68AP, iPhone Duo**, using the supplied
 27.1 / 24A94425 IPSW. It retains the source-built XNU 12377 and SM8350 board
 drivers. This is an experimental source profile, not a boot-qualified image.
 
+Current migration checkpoint (2026-10-27):
+
+| Task | Verified result | Required next result |
+| --- | --- | --- |
+| CPU/kernel/loader | Five native CSSC test phases passed on the Duo; exact limited AOT aliases and CTZ thunk plans tested; the standalone FJCVTZS helper passed2,058,752 comparisons on both QEMU and an actual ARM64 host | Complete startup feature/ABI qualification, integrate remaining instruction handling and qualify converted executables |
+| Full stock storage | Complete compact18GiB Main/8GiB SystemOS/256MiB AppOS plus4GiB Data preserve original stock content and metadata; original inputs retained | Native compilation/mount tests, final signed converted payloads and recoverable persistent-store installation |
+| Graphics/performance | Four new AIR/FD660 hardware draws passed16384component comparisons with no mismatches on two diagnostic kernels | Resource execution/retirement native qualification, full Metal/compositor integration, correct wallpapers and sustained60/90FPS |
+| iOS27 apps/services/stability | Stock inventory and minimal setup-skip inputs prepared | Actual iOS27 boot, visible interface, stock app registration/service startup and stability runs |
+
+The phone remains on iOS26 diagnostics. None of these individual results is an
+iOS27 boot or a completed migration. The FJCVTZS helper is not installed in the
+phone's exception handler; it explicitly refuses unqualified FPCR controls.
+
 `board.toml` selects `scripts/make-zeta-ios27-adt.py`. This uses the payload
 builder's existing argument contract and defaults to the V68 product identity.
 The original `make-zeta-adt.py` entry point still defaults to V54 for control

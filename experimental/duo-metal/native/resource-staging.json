@@ -1,9 +1,9 @@
 {
-  "scope": "isolated source-only receiver plus internal complete-resource native VM/Ring path; no feed/profile/image selection",
+  "scope": "isolated source resource queue, receiver and actual-XNU14-object gate; no feed/profile/image selection",
   "repository": "https://github.com/UniXNU/NativeAdreno.git",
   "base_commit": "805c7e4bfb7451eb6923f4a14dea8c657b9be7d2",
-  "source_commit": "15ca18c86deb8f9afa3b95e8b6881abdb176cbd9",
-  "patch_sha256": "aee063b95814ac19612775ec7be6f2f8199d8cb2c04e0f1e439556deab270aec",
+  "source_commit": "feca2fcf361cac8b96a2e7189c4b7fcf19cd44a6",
+  "patch_sha256": "bdc6242eef8891bb99938db944a5681149aa54ff5e7c2fcf5fe413632bb9a0a8",
   "default_staging": 0,
   "execution_available": false,
   "actual_sdk_compilation_qualified": false,

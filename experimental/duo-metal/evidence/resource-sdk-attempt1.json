@@ -1,0 +1,15 @@
+{
+  "scope": "first real-XNU compile attempt; overall gate failed in host provenance resolver",
+  "ci": 40580558252,
+  "root_kernel_build_succeeded": true,
+  "wrapper_staging0_compiler_returncode": 0,
+  "wrapper_object_sha256": "444abde45aae064f1b68ba1829feb1699c2c3795ee2cebde1aeb0cbea03d8efb",
+  "compile_record_directory": "/Users/runner/work/UniXNU/UniXNU/out/zeta/tree/build/xnu-12377.121.6/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT",
+  "failure": "relative ./DriverKit/OSObject.h resolved against postscript cwd instead of compiler record cwd",
+  "resolution": "resolve against actual record directory; preserve original allowed root; capture actual traced header bytes before checking results",
+  "native_sdk_gate_passed": false,
+  "completed_objects": 1,
+  "expected_objects_at_attempt": 10,
+  "new_device_profile_expected_objects": 14,
+  "running_device_changed": false
+}

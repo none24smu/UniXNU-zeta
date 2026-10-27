@@ -2024,10 +2024,10 @@ index 0000000..301a97a
 +print('PASS: 6 plain ARMv8-A Mach-O objects; declaration-only, no XNU SDK or runtime proof')
 diff --git a/tests/compile-resource-client-xnu.py b/tests/compile-resource-client-xnu.py
 new file mode 100644
-index 0000000..237840c
+index 0000000..7c146b6
 --- /dev/null
 +++ b/tests/compile-resource-client-xnu.py
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,160 @@
 +#!/usr/bin/env python3
 +"""Compile isolated resource units with an existing real XNU C++ build record.
 +
@@ -2038,6 +2038,8 @@ index 0000000..237840c
 +import argparse
 +import hashlib
 +import json
++import os
++import shutil
 +from pathlib import Path
 +import re
 +import struct
@@ -2083,7 +2085,7 @@ index 0000000..237840c
 +    return result
 +
 +
-+def header_provenance(log, allowed):
++def header_provenance(log, allowed, directory):
 +    headers = {}
 +    for line in log.splitlines():
 +        found = re.match(r'^\.+ (.+?)(?: \(.*\))?$', line)
@@ -2092,11 +2094,37 @@ index 0000000..237840c
 +        path = Path(found.group(1))
 +        if path.name not in ('IOLib.h', 'IOUserClient.h', 'OSObject.h', 'IOMemoryDescriptor.h'):
 +            continue
-+        path = path.resolve()
++        path = path if path.is_absolute() else Path(directory) / path
++        path = path.resolve(strict=True)
 +        if not any(path.is_relative_to(root) for root in allowed):
 +            raise ValueError('IOKit/libkern header outside declared real roots: ' + str(path))
 +        headers[str(path)] = sha(path)
 +    return headers
++
++
++def retain_header_snapshot(log, directory, output, snapshot):
++    """Retain actual traced bytes before checking success, including generated IIG.
++
++    Relative -H paths belong to the compiler record cwd, never this script's cwd.
++    Preserve lookup spellings as ordinary files; do not retain dangling symlinks.
++    This closure is evidence, not a qualified relocatable SDK until replayed.
++    """
++    for line in log.splitlines():
++        found = re.match(r'^\.+ (.+?)(?: \(.*\))?$', line)
++        if not found:
++            continue
++        source = Path(found.group(1))
++        if not source.is_absolute():
++            source = Path(directory) / source
++        source = Path(os.path.abspath(source))
++        if not source.is_file():
++            continue
++        destination = output / 'files' / str(source).lstrip('/')
++        destination.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copyfile(source, destination)
++        snapshot['headers'][str(source)] = sha(destination)
++    output.mkdir(parents=True, exist_ok=True)
++    (output / 'manifest.json').write_text(json.dumps(snapshot, indent=2) + '\n')
 +
 +
 +def main():
@@ -2120,6 +2148,9 @@ index 0000000..237840c
 +                    native_publish_compiled=False, staging_default_changed=False,
 +                    profile_selected=False, passed=False)
 +    result_path = output / 'xnu-objects.json'
++    snapshot = dict(scope='exact compiler-traced header closure; replay not yet qualified',
++                    record=record, headers={}, compiler_sha256=sha(Path(record['arguments'][0])),
++                    relocatable_sdk_qualified=False)
 +    for staging in (0, 1):
 +        for unit in UNITS:
 +            source = root / (unit + '.cpp')
@@ -2133,6 +2164,7 @@ index 0000000..237840c
 +            run = subprocess.run(cmd, cwd=record['directory'], capture_output=True, text=True, timeout=300)
 +            log = run.stdout + run.stderr
 +            (output / f'{unit}-staging{staging}.log').write_text(log)
++            retain_header_snapshot(log, record['directory'], output / 'header-snapshot', snapshot)
 +            entry = dict(source=source.name, source_sha256=sha(source), staging=staging,
 +                         command=cmd, returncode=run.returncode)
 +            manifest['objects'].append(entry)
@@ -2142,7 +2174,7 @@ index 0000000..237840c
 +            raw = obj.read_bytes()
 +            if len(raw) < 32 or struct.unpack_from('<4I', raw) != (0xfeedfacf, 0x100000c, 0, 1):
 +                raise ValueError('expected plain ARM64 Mach-O object: ' + str(obj))
-+            headers = header_provenance(log, allowed)
++            headers = header_provenance(log, allowed, record['directory'])
 +            if unit == 'NativeAdrenoPublish' and not {'IOLib.h', 'IOUserClient.h', 'OSObject.h',
 +                                                       'IOMemoryDescriptor.h'} <= {Path(h).name for h in headers}:
 +                raise ValueError('missing actual IOKit wrapper header trace')

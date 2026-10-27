@@ -1,0 +1,87 @@
+{
+  "scope": "isolated source resource queue, receiver and actual-XNU14-object gate; no feed/profile/image selection",
+  "repository": "https://github.com/UniXNU/NativeAdreno.git",
+  "base_commit": "805c7e4bfb7451eb6923f4a14dea8c657b9be7d2",
+  "source_commit": "dcdc7cc418873e03b01b65b77b5c10e8311e0020",
+  "patch_sha256": "b1a3d20d9b3ef7e75991ebdb9221634ceea272ab1571897dedea2f334164b6cd",
+  "default_staging": 0,
+  "execution_available": false,
+  "actual_sdk_compilation_qualified": false,
+  "sdk_compile_units": 14,
+  "board_base_commit": "35a4f120c2f8a5f567329f17378a73bd5287fd2b",
+  "board_patches": [
+    {
+      "patch": "NativeAdreno-16k-vm.patch",
+      "sha256": "2c90d07eb65c284b536c7125369a285277a5b324b74dc8921f51287241c8dbea"
+    },
+    {
+      "patch": "NativeAdreno-a6xx-fence.patch",
+      "sha256": "d9f7dd6d68b619015bdc849ab0cca4bef92fae08f9e0c24c2ab8760cb9e6ed36"
+    },
+    {
+      "patch": "NativeAdreno-client-object-budget.patch",
+      "sha256": "eda7a6ec4af9a6201880bc7165d3ac9733cd06ac6bf8488d188c0b4df9f117bf"
+    },
+    {
+      "patch": "NativeAdreno-metal-text.patch",
+      "sha256": "59bba4eeb0adbbc0a2beec9ad4e3c467aa1cbcbb9ac572a0dfcf003ceef4e433"
+    },
+    {
+      "patch": "NativeAdreno-scope-fresh.patch",
+      "sha256": "ed3e748aeba25400c7d56cb9842164ade70291a0d24627fca828841dac97fb57"
+    },
+    {
+      "patch": "NativeAdreno-tbu-alias.patch",
+      "sha256": "eb8984488c46d5101d658e0f66b04a94bd9fa0479f9abba092d45d01cc6dd9b2"
+    },
+    {
+      "patch": "NativeAdreno-view-free.patch",
+      "sha256": "b13175a5d77b4d74ea0fb3637ea18652b183a013ad60d56d9056f219b4a79d62"
+    },
+    {
+      "patch": "NativeAdreno-view-unmap.patch",
+      "sha256": "15f17464c6888b3c6e2a89723daf67a0753b211c9d493f0b0b59ff904bb38935"
+    },
+    {
+      "patch": "NativeAdreno-vm-object-budget.patch",
+      "sha256": "8e142ebeb3942bc7fcadbe30f96becd58d5ed26bc0119ab5c4d7da901a096769"
+    },
+    {
+      "patch": "NativeAdreno-zz-alloc-diagnostics.patch",
+      "sha256": "81ef06952e742ea226c72106a396b137b26cc84428dcdf0fc49e7f47f35f4e88"
+    },
+    {
+      "patch": "NativeAdreno-zz-host-peer-barriers.patch",
+      "sha256": "cf7ad1020a2b56f80b900ae9ff439a5dfcf61d3c58e585009e2db08b848203b6"
+    },
+    {
+      "patch": "NativeAdreno-zzz-host-stall.patch",
+      "sha256": "0fb4952d5cf6a3098b48ed0ac5587da89db9d92793bff33b6d4103143950b62a"
+    },
+    {
+      "patch": "NativeAdreno-zzz-persistent-imports.patch",
+      "sha256": "c2fc2a91bfe5ce03e19f09867f2067653d935294793b36076efead7260203d2c"
+    },
+    {
+      "patch": "NativeAdreno-zzzz-display-drain.patch",
+      "sha256": "b5503058d5d8e0c64f4c384f791e30f585a120a6746c4220dffacaebbb5ef64b"
+    },
+    {
+      "patch": "NativeAdreno-zzzz-host-iokit-fallback.patch",
+      "sha256": "a3bfd96b3d36cbe4c265ce2e0dcd738cdde0d173909be73b5fd5a5a5d7f7a4f2"
+    },
+    {
+      "patch": "NativeAdreno-zzzz-scattered-user-buffers.patch",
+      "sha256": "1481ce1b0a862a63beb9c4d81f6d9c01be8190bd130ca01b1d9c60123ac040af"
+    },
+    {
+      "patch": "NativeAdreno-zzzzz-gpu-address-space.patch",
+      "sha256": "685b17a80576236da4d655a6a78eeb2d42535ff10c745042fc23a916a7c3da67"
+    },
+    {
+      "patch": "NativeAdreno-zzzzzz-cache-batch.patch",
+      "sha256": "b82e421b7a7d14f926ee76c7be002606dfa4907cf0f2899ecdd132313e755668"
+    }
+  ],
+  "board_integration": "all18devicepatches preserved; manual conflicts resolved; host core queue off/on passes; wrapper SDK gate pending"
+}

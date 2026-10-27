@@ -1,0 +1,171 @@
+{
+  "scope": "all18Duo2patches plus internal complete-resource queue; host source tests only",
+  "repository": "https://github.com/UniXNU/NativeAdreno.git",
+  "base_commit": "805c7e4bfb7451eb6923f4a14dea8c657b9be7d2",
+  "source_commit": "dcdc7cc418873e03b01b65b77b5c10e8311e0020",
+  "patch_sha256": "b1a3d20d9b3ef7e75991ebdb9221634ceea272ab1571897dedea2f334164b6cd",
+  "default_staging": 0,
+  "execution_available": false,
+  "actual_sdk_compilation_qualified": false,
+  "sdk_compile_units": 14,
+  "board_base_commit": "35a4f120c2f8a5f567329f17378a73bd5287fd2b",
+  "board_patches": [
+    {
+      "patch": "NativeAdreno-16k-vm.patch",
+      "sha256": "2c90d07eb65c284b536c7125369a285277a5b324b74dc8921f51287241c8dbea"
+    },
+    {
+      "patch": "NativeAdreno-a6xx-fence.patch",
+      "sha256": "d9f7dd6d68b619015bdc849ab0cca4bef92fae08f9e0c24c2ab8760cb9e6ed36"
+    },
+    {
+      "patch": "NativeAdreno-client-object-budget.patch",
+      "sha256": "eda7a6ec4af9a6201880bc7165d3ac9733cd06ac6bf8488d188c0b4df9f117bf"
+    },
+    {
+      "patch": "NativeAdreno-metal-text.patch",
+      "sha256": "59bba4eeb0adbbc0a2beec9ad4e3c467aa1cbcbb9ac572a0dfcf003ceef4e433"
+    },
+    {
+      "patch": "NativeAdreno-scope-fresh.patch",
+      "sha256": "ed3e748aeba25400c7d56cb9842164ade70291a0d24627fca828841dac97fb57"
+    },
+    {
+      "patch": "NativeAdreno-tbu-alias.patch",
+      "sha256": "eb8984488c46d5101d658e0f66b04a94bd9fa0479f9abba092d45d01cc6dd9b2"
+    },
+    {
+      "patch": "NativeAdreno-view-free.patch",
+      "sha256": "b13175a5d77b4d74ea0fb3637ea18652b183a013ad60d56d9056f219b4a79d62"
+    },
+    {
+      "patch": "NativeAdreno-view-unmap.patch",
+      "sha256": "15f17464c6888b3c6e2a89723daf67a0753b211c9d493f0b0b59ff904bb38935"
+    },
+    {
+      "patch": "NativeAdreno-vm-object-budget.patch",
+      "sha256": "8e142ebeb3942bc7fcadbe30f96becd58d5ed26bc0119ab5c4d7da901a096769"
+    },
+    {
+      "patch": "NativeAdreno-zz-alloc-diagnostics.patch",
+      "sha256": "81ef06952e742ea226c72106a396b137b26cc84428dcdf0fc49e7f47f35f4e88"
+    },
+    {
+      "patch": "NativeAdreno-zz-host-peer-barriers.patch",
+      "sha256": "cf7ad1020a2b56f80b900ae9ff439a5dfcf61d3c58e585009e2db08b848203b6"
+    },
+    {
+      "patch": "NativeAdreno-zzz-host-stall.patch",
+      "sha256": "0fb4952d5cf6a3098b48ed0ac5587da89db9d92793bff33b6d4103143950b62a"
+    },
+    {
+      "patch": "NativeAdreno-zzz-persistent-imports.patch",
+      "sha256": "c2fc2a91bfe5ce03e19f09867f2067653d935294793b36076efead7260203d2c"
+    },
+    {
+      "patch": "NativeAdreno-zzzz-display-drain.patch",
+      "sha256": "b5503058d5d8e0c64f4c384f791e30f585a120a6746c4220dffacaebbb5ef64b"
+    },
+    {
+      "patch": "NativeAdreno-zzzz-host-iokit-fallback.patch",
+      "sha256": "a3bfd96b3d36cbe4c265ce2e0dcd738cdde0d173909be73b5fd5a5a5d7f7a4f2"
+    },
+    {
+      "patch": "NativeAdreno-zzzz-scattered-user-buffers.patch",
+      "sha256": "1481ce1b0a862a63beb9c4d81f6d9c01be8190bd130ca01b1d9c60123ac040af"
+    },
+    {
+      "patch": "NativeAdreno-zzzzz-gpu-address-space.patch",
+      "sha256": "685b17a80576236da4d655a6a78eeb2d42535ff10c745042fc23a916a7c3da67"
+    },
+    {
+      "patch": "NativeAdreno-zzzzzz-cache-batch.patch",
+      "sha256": "b82e421b7a7d14f926ee76c7be002606dfa4907cf0f2899ecdd132313e755668"
+    }
+  ],
+  "board_integration": "all18devicepatches preserved; manual conflicts resolved; host core queue off/on passes; wrapper SDK gate pending",
+  "host_core_flags": [
+    0,
+    1
+  ],
+  "job_tests": 39,
+  "session_tests": 50,
+  "wrapper_sdk_gate_passed": false,
+  "actual_hardware_queue_proven": false,
+  "profile_selected": false,
+  "conflict_resolution": [
+    "preserved SM8350 allocation diagnostics and scattered-first policy while assigning fresh resource backing identities",
+    "merged equivalent ARM64/host barriers",
+    "kept typed View free and forced user-view unmap",
+    "normal/deferred retirement invokes display drain outside GPU lock before releasing producer slot"
+  ],
+  "source_sha256": {
+    "NativeAdrenoA740HwInit.h": "008e9a923e78798ef54d3c4c37f44bbadd35911515d8832fe04793e51f31588c",
+    "NativeAdrenoABI.h": "b5574e34ee3a368616f722f9fa40ea2c87bbc5c03989a299d9d4f954c9f8be70",
+    "NativeAdrenoAccelerator.cpp": "0efc3af57940465f8a25cf9d341631bbd2384cd36532606537c64452bd0767d5",
+    "NativeAdrenoAddressSpace.h": "8201567e5f89346ae09fbf2fda53b5b09fdec9f51d823ec94ca7c4d6307f8da2",
+    "NativeAdrenoBoard.cpp": "273fedfdc89c64abab3195fadd27045f606bdd7868920842117a323c193cbd66",
+    "NativeAdrenoBoard.h": "648fefb774118d174bf5ef42ab89579edaf781c4f4f08bce393ee7100e54e19b",
+    "NativeAdrenoCacheBatch.h": "ea3d15af6adfd5532a8de88e50c30dcd1de5db6371bbe33d32094cb1ed48df94",
+    "NativeAdrenoClient.cpp": "f280ffcb2c31a195d3305b4c3ee272b624bce7f458dd3290fb0ef5a4bf1ff4b4",
+    "NativeAdrenoClient.h": "ac6a35c5b2e3080655cdf41870f0d0551d0961b773192f7adf2effe283f5e7aa",
+    "NativeAdrenoCpInit.cpp": "02bb5791a021ae115b430187291a7de30002c069d1924ef69a9c3282633bbe49",
+    "NativeAdrenoCpInit.h": "8e192f1925da89e522b1f42d4d5659e8097d90f22e8deb54d5abd103ac80461b",
+    "NativeAdrenoCpu.cpp": "e6d6fca1c42728ecbc92c2ccf3cb90d99ddf25af12116fccfa057c63d318109f",
+    "NativeAdrenoFirmware.cpp": "87606cac2ded872d3f904decdaa47177192a019d3c365a49e138353a42279233",
+    "NativeAdrenoFirmware.h": "78d42a674a06aed96a5b206b927964772222eda33f93ae6d6509b6a5e9aba75b",
+    "NativeAdrenoFirmwareDefaults.cpp": "3a7dd96fbf51582f993aca45ab65c7bd6c8dd6712ee72698630cf342e63174db",
+    "NativeAdrenoGmuConfig.cpp": "b9ba364145169828cf4c743ea8807f536213878f655ae1351334681e35ddf458",
+    "NativeAdrenoGmuConfig.h": "e07d205c1fa429c1e1d4966e50a7de9bfe7d591027c54d15e11562421a421a1c",
+    "NativeAdrenoGmuContext.cpp": "981498e80bc625c33461926a7e179fa2cdb420d9c2211847826aff1efa31071a",
+    "NativeAdrenoGmuContext.h": "b5c894771d07466163c23062fec703d8ba7be753dcf631da2e385314c24ff6d2",
+    "NativeAdrenoGmuMemory.cpp": "12a09b352eec6aa04f86b3f488e648228fecfd8d9eee5dc376fd2ee2e9fe3af8",
+    "NativeAdrenoGmuMemory.h": "3c6c40f2bf742fb7970577a195f70802b1918ac9cf420bab42d9e69d1f8973b6",
+    "NativeAdrenoGmuPlatform.cpp": "1a9263b1a48df626a0e3ab4c3145d3450d34082aa9230cb4dbca7f8f97c7f2e0",
+    "NativeAdrenoGmuPlatform.h": "5634adbedceac94f0bb75b2207caeff256115b5d9dcebf38fd88efba4d979d1d",
+    "NativeAdrenoGmuService.cpp": "431c6709c95053a9033e3ec68d9788231fa8b7b892f5650a48e504a4288a6eaa",
+    "NativeAdrenoGmuService.h": "69eb1d457b8bb4798cbc739b13ae86e2eb500e89ed13720deb8ed0728d55e04d",
+    "NativeAdrenoGpu.cpp": "2c3e0238a4fd1be2f5a5224b7ad33b385987b437d27f28e8166406948e48f589",
+    "NativeAdrenoGpu.h": "340259bbb2261da3cf4c0c0c0c8b96278de4980ab997286e7acd35a0f92d5dcf",
+    "NativeAdrenoGpuContext.cpp": "53c2f816a7dfad145e6481666f16d2013213afae55228739c7191abe5fdd3a38",
+    "NativeAdrenoGpuContext.h": "af64e907fcf8d2ac3e351bc35c58dec4bdd11d251a7a604782974ba2a55af5cd",
+    "NativeAdrenoIrq.cpp": "65c005ce535296871db1b42af7b9e203221102d5a1f9d2c91951ba7cb4a1ee04",
+    "NativeAdrenoIrq.h": "c117f3462603574bf7a922b31105a5f0d59da1bcd1d8f108106c1304c07fc1f4",
+    "NativeAdrenoKernelTime.cpp": "ef6288b1cab7ff77998d9e6b53388714a3ff65022aef0b29697613d80dcc9bd1",
+    "NativeAdrenoKernelTime.h": "c7fcd3e339984278c3c5af98b0de87a72471e04c9855f42ff5934c271d71ec06",
+    "NativeAdrenoMemory.cpp": "618e2c59de90619af683c0f79564a18d7cc7c975ea752e802ec74cd5f7ca9379",
+    "NativeAdrenoMemory.h": "1556e345224f63449a4d62ca3d1e47e56e3b6aa65c1e7a6ff4e11fb4443f4aff",
+    "NativeAdrenoPublish.cpp": "59d009f69e826e324ce7d1f844544e82fc7e0be7f2801c8990a5f84512e57075",
+    "NativeAdrenoPwrup.cpp": "625935493062e63f18d87a691436b4f53cce22969509501e77cbd58d27e398c4",
+    "NativeAdrenoPwrup.h": "708830fae4f6a5cea765992d44135126d7a034a239adece94f094d862819e889",
+    "NativeAdrenoPwrupRegs.h": "8067d9625e922173912eea09e6a504d9c1b31234d4656f8dd4148855882918e1",
+    "NativeAdrenoResourceIntegration.h": "df3f3c9bd7f7bc05e19036ce45ad92d5330e2fee96a29fa4ac8a527b2f6ba557",
+    "NativeAdrenoResourceQueue.cpp": "6458caa6604bdf05b8f010fe256c506c1703ee1d3f93113c0db94266c9d815f3",
+    "NativeAdrenoResourceQueue.h": "f40806cfce1c28595b8d09640deca878698c9f138aad585ec06c34ae874d169b",
+    "NativeAdrenoResourceTransaction.cpp": "3f693a44fdf13c371f4014ea8651eb532c81b3c0468aa7de96e8af5f181b64bc",
+    "NativeAdrenoResourceTransaction.h": "cb55b01162f3cf0ba0cc4cb01d5ec01afb1a74e53eb08482260e91d0e0fe2e56",
+    "NativeAdrenoResources.cpp": "67a1c6772e26a35b7ae9e59ea154f6f7bc6a1ba9f2e8b6f8983b4262525159ed",
+    "NativeAdrenoResources.h": "335346e0a0abfd07d7ba22b761a4d57d1079f0a405799bb0ca739b6b04bd92a8",
+    "NativeAdrenoRing.cpp": "3883ca43a277246f9a15d3f11eafc385dabb7b6d1f973a40d79b6cec7ef1967d",
+    "NativeAdrenoRing.h": "19232fd8365f3c5e9b3ba39595534dc39c08e2ef14a91e832fb9e9288b83b826",
+    "NativeAdrenoService.cpp": "d5223ab57a6f419e043e155a6ea630bbca95aaba2ac5004adac475a14a5961cb",
+    "NativeAdrenoSha256.cpp": "ee624a483a075b8ca44f1dff2efd66acee38c5ccd784192c23614cdb6605db1f",
+    "NativeAdrenoSha256.h": "4c4f1a23f146c1370615ee52912b9bb0c2a3b919ccf14e07314460ffcdb34a74",
+    "NativeAdrenoSmmuContext.cpp": "caee8d5f6757f983d635fb01e9db820938c1e072f8af784fecd112dc647da4b8",
+    "NativeAdrenoSmmuContext.h": "c600e96f9969a19c2f601cbc68561bbb1c70bf37aed365311883305fe0e52fc5",
+    "NativeAdrenoSmmuMemory.cpp": "422a1c2b14408bc2a4855822b7110a4c8b09c31cb5b9820b85dbde648a31d657",
+    "NativeAdrenoSmmuMemory.h": "d2988cc8fe670e569dd14d9556924784994782b6f9efdc1715d2ab281baf3b90",
+    "NativeAdrenoSmmuService.cpp": "7f0b5d3883ffd520ce8631c1d7e1764cde5cad6727a6b86fb5b8aba10e881cab",
+    "NativeAdrenoSmmuService.h": "6e5a666a4c6b28c9dc3ae6c59ce4c55ccb1ef63ac49901cf56759f0dd5a905df",
+    "NativeAdrenoStatus.h": "7305cce3eefbf63176fd08f3d6eb92aa4b874fffb37bda94666fea53d62a2a34",
+    "NativeAdrenoSubmit.cpp": "7bf6d914537731c3839450546884a00361d5a73e43f65a324df5684a48e2ddff",
+    "NativeAdrenoSubmit.h": "03e41ee4afb6bc6ff1970ac298f93cb0add8b49ac300a14fcffef17fd91bd841",
+    "NativeAdrenoTimer.cpp": "281221b6fc5c1175b71d7c54fda8275bab1b08d7b9819f7c60e4e4b10026f22a",
+    "NativeAdrenoTimer.h": "41fd744b29cb12a107d86b6e74a0abe33fa877326e2471e2d534241b016341eb",
+    "NativeAdrenoUserClient.cpp": "d4ab4391a95b4a36d1dbd429839ea564a5d486d2dd622313d5c49e4997c0c717",
+    "NativeAdrenoUserClient.h": "3720c34753ce7a9068c51472d72f829034ad1b8b8f760451a5f232fcb549bee0",
+    "NativeAdrenoVm.cpp": "5beba649f23bd4af085247978a3cf11505a463760be9ada0dceba48e841401e4",
+    "NativeAdrenoVm.h": "67ea5e3390c9bbff9fed28d8a6473f92ba073e4f32c7f10bc80f2f337f1c5068",
+    "NativeAdrenoVmAlias.h": "35fe908bd80389a18e395eb3bfdd5a40cb2c133fe6634dbead8d68cf2822eeea"
+  }
+}

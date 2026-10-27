@@ -1,0 +1,5 @@
+PASS: default native resource staging/mapping methods unavailable
+PASS: 1 userspace-to-kernel round trip including CPU mapping leases and queue lifecycle, 1 version mismatch, 1 altered-size rejection and 8 client-side refusals over software SMMU/CP peers
+PASS: actual complete-resource Job -> scoped VM cache/pins -> native Ring CP-fence retirement; inactive pool excluded (software peers)
+PASS: actual core staging/generation lookup, real VM permissions, cross-owner refusal and zero GPU/cache side effects (host peers)
+PASS: 1 userspace-to-kernel round trip including CPU mapping leases and queue lifecycle, 1 version mismatch, 1 altered-size rejection and 8 client-side refusals over software SMMU/CP peers

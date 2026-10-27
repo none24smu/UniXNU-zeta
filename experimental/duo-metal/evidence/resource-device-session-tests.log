@@ -1,0 +1,1 @@
+PASS: 50 bounded transaction cases (host callbacks; no IOKit/GPU execution)

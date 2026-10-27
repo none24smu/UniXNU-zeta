@@ -64,3 +64,37 @@ behavior remain separate required gates. No 60/90Hz, wallpaper or compositor
 performance follows from host success.
 
 [Hash-bound source checkpoint](evidence/resource-queue-source.json).
+
+## Surface Duo2 composition and real-header gate
+
+The raw NativeAdreno source does not contain the18 board fixes selected by the
+Duo2 profile. A separate `resource-device` candidate now composes **all18** in
+original order before integrating the queue. It preserves the16KiB VM backend,
+A6xx CP fence, object budgets, typed View allocation/free, user-view teardown,
+scattered-first allocation, persistent import, address-window and cache-batch
+fixes. Allocation diagnostics and fresh resource identities coexist. Both normal
+and deferred retirement retain the old producer slot until display drain runs
+outside the GPU lock. The integrated actual core/queue bodies pass the same
+source sanitizer tests; the IOKit wrapper still needs the SDK gate.
+
+The [device source checkpoint](evidence/resource-device-source.json) binds its
+combined patch and all driver source hashes. The [first SDK attempt](evidence/resource-sdk-attempt1.json)
+compiled the earlier raw wrapper object, then stopped in the host verifier:
+relative `./DriverKit/OSObject.h` was incorrectly resolved against the postscript
+working directory rather than the actual compiler record directory. The corrected
+script keeps the same allowed root and resolves generated IIG headers inside the
+matching XNU object tree. It now retains actual traced header bytes/hashes even
+when a later object fails. This closure is not called a reusable SDK until replay
+has been validated.
+
+For the next post-build gate, select the integrated source explicitly:
+
+```sh
+bash "$DEVICE_DIR/experimental/duo-metal/native/check-resource-xnu.sh" \
+  "$PWD/out/zeta/tree" "$PWD/out/zeta/logs/resource-device-xnu-objects" resource-device
+```
+
+This creates a separate source copy and fourteen objects. It does not modify the
+selected driver, archive, kernel image, feeds or persistent phone storage. The
+original bare-source variant remains available as `resource-staging` for source
+comparison; it is not the Duo2 native runtime baseline.

@@ -1,0 +1,17 @@
+Working directory: /home/smudev/iosongen2
+Command: bash work/ios27-port/board/experimental/duo-metal/run-air-host-tests.sh
+Result: exit0; see air-host-tests.log.
+Host environment: Ubuntu GCC13.3, LLVM18.1.3 assembler, pinned Mesa25.0.7/OnePlus AIR host build.
+Sampler: 40 ASan/UBSan representation assertions.
+Immutable input adapter: 12 ASan/UBSan role/lifetime assertions.
+CPU-only reference: explicit AIR vertex+fragment triangle, exact float premultiplied alpha, sRGB1code tolerance, exact two-word sampler, nonzero sampler-extension refusal; all passed.
+Arithmetic: 32 scalar i32/i64 LLVM unsignedmax/saturatingsubtract integer boundary cases folded exactly in NIR.
+Scope: host compiler/reference proof only, no physical GPU or compositor/UI/frame-rate proof.
+
+Source-tree regression:
+python3 work/ios27-port/board/experimental/duo-metal/tests/check_air_source_tree.py --source work/render-stage7/oneplus-adoption-userland/tools/mesa/air
+PASS: Meson build file and all12 referenced C/header inputs copied/hash-recorded; missing-build/missing-source cases refused.
+
+Actual corpus:
+python3 work/ios27-port/board/experimental/duo-metal/census-air27.py --userland work/render-stage7/oneplus-adoption-userland --host-build work/render-stage7/oneplus-adoption-userland/build/mesa-host/build --corpus work/ios27-port/shader-corpus/main-os --output work/ios27-port/replacement-gpu/air27/validated-census
+Result: exit0; baseline587reader/177NIR/177A660IR3; candidate587reader/238NIR/238A660IR3; no baseline NIR regression.

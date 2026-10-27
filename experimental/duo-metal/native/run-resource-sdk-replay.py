@@ -31,6 +31,8 @@ if len(roots) != 1:
 kit_root = snapshot / 'files' / next(iter(roots)).lstrip('/')
 out = a.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
+subprocess.run([sys.executable, str(here / 'recover-resource-sdk-headers.py'),
+                '--snapshot', str(snapshot), '--record', str(out / 'header-recovery.json')], check=True)
 source = out / 'source'
 subprocess.run(['git', 'clone', '--no-checkout', metadata['repository'], str(source)], check=True)
 subprocess.run(['git', '-C', str(source), 'checkout', '--detach', metadata['base_commit']], check=True)

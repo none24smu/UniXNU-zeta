@@ -265,6 +265,21 @@ def rewrite(original, *, x1_contract=None):
     experimental=info['architecture']=='arm64e.x1'
     edits, proof = lower(original, info,experimental_x1=experimental)
     if experimental:qualify_x1_proof(proof,contract)
+    data, report = apply_proven_edits(original, info, directory, edits, proof)
+    if experimental:
+        report.update(experimental_profile=x1.PROFILE,kernel_contract_sha256=contract['sha256'],
+                      kernel_sha256=contract['kernel']['image']['sha256'],effective_cpta='off',
+                      apple_cpta_on_checks_preserved=False,boot_qualified=False,
+                      retained_features_unchanged=True)
+    return bytes(data), report
+
+
+def apply_proven_edits(original, info, directory, edits, proof):
+    """Mechanical signing/edit application, after the caller selects its policy.
+
+    Normal conversion must call rewrite() for the validated contract gate.
+    The separate exact-input first-exec diagnostic is intentionally unqualified.
+    """
     data = bytearray(original)
     for edit in edits:
         at = edit['fileoff']
@@ -295,11 +310,6 @@ def rewrite(original, *, x1_contract=None):
                   instruction_edits=len(edits), code_proof=proof, data_in_code_ranges=len(info['dice']),
                   code_slots=directory['code_slots'], original_cdhash=old_hash.hex(), cdhash=new_hash.hex(),
                   chained_fixups_unchanged=True, hardware_tested=False)
-    if experimental:
-        report.update(experimental_profile=x1.PROFILE,kernel_contract_sha256=contract['sha256'],
-                      kernel_sha256=contract['kernel']['image']['sha256'],effective_cpta='off',
-                      apple_cpta_on_checks_preserved=False,boot_qualified=False,
-                      retained_features_unchanged=True)
     return bytes(data), report
 
 

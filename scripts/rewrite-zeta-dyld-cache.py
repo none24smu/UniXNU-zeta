@@ -51,6 +51,7 @@ import numpy as np
 
 import zeta_dyld_cache as dc
 import zeta_x1_compat as x1
+import zeta_x1_rcpc as rcpc
 import zeta_userland_pauth as pauth
 import zeta_userland_code as code
 
@@ -204,7 +205,7 @@ def verify_signature(data, signature_offset, signature_size):
     return hashlib.sha256(bytes(data[cd:cd + length])).hexdigest()[:40]
 
 
-def load_edits(proof_dir, summary):
+def load_edits(proof_dir, summary, contract=None):
     """{file index: [(file offset, original, ordinary)]} and counts by evidence grade."""
     by_file, grades = {}, Counter()
     entries = list(summary['images'].values()) + summary['islands']
@@ -217,7 +218,14 @@ def load_edits(proof_dir, summary):
                              'x1 proof edit-array hash mismatch: '+str(result_path))
         edits = np.load(result_path)['edits']
         if summary.get('experimental_profile'):
+            groups=entry.get('rcpc2_function_aot',[])
+            coordinated=rcpc.group_edits(groups,edits) if groups else {}
+            if groups:
+                rewriter.require(contract is not None,'coordinated libc++ function edits require explicit typed AOT contract')
+                rcpc.authorized(contract,groups)
             for row in edits:
+                if int(row[0]) in coordinated:
+                    continue
                 lowering=x1.lower_pointer_off(int(row[2]),'off') or x1.lower_cssc_single(int(row[2])) or pauth.lower(int(row[2]))
                 rewriter.require(lowering is not None and lowering[1]==int(row[3]),'x1 proof contains a nonqualified lowering')
         by_file.setdefault(entry['file'], []).append(edits[:, 1:4])
@@ -254,13 +262,18 @@ def qualify_x1_summary(summary,cache,contract):
     for name in ['unproven','unlowerable']:
         rewriter.require(not summary['totals'].get(name),'x1 cache proof has '+name+' instruction candidates')
     rewriter.require(not summary.get('anomaly_counts'),'x1 cache proof has unresolved code-boundary anomalies')
+    for path,entry in summary.get('images',{}).items():
+        groups=entry.get('rcpc2_function_aot',[])
+        if groups:
+            rewriter.require(path==rcpc.IMAGE and bytes(cache.files[0].data[0x58:0x68]).hex()==rcpc.CACHE_UUID,'coordinated libc++ AOT source/cache mismatch')
+            rcpc.authorized(contract,groups)
     remaining=summary.get('remaining_isa_counts',{})
     rewriter.require(not remaining.get('unknown-isa'),'x1 cache has unresolved ISA requirements')
     for kind,count in remaining.items():
         if kind.startswith('retained-') and count:
             rewriter.require(x1.retained_authorized(contract,kind[9:],summary.get('original_file_manifest_sha256')),'x1 cache retained feature lacks evidence: '+kind[9:])
     expected_tools={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [
-        Path(__file__).with_name('prove-zeta-dyld-cache.py'),Path(dc.__file__),Path(code.__file__),Path(pauth.__file__),Path(x1.__file__)]}
+        Path(__file__).with_name('prove-zeta-dyld-cache.py'),Path(dc.__file__),Path(code.__file__),Path(pauth.__file__),Path(x1.__file__),Path(rcpc.__file__)]}
     rewriter.require(summary.get('tool_hashes')==expected_tools,'x1 proof tool/source hashes are stale')
     originals=summary.get('original_files',[])
     rewriter.require(len(originals)==len(cache.files),'cache proof lacks original file hashes')
@@ -295,7 +308,7 @@ def main(argv=None):
         for path in args.apple_trust_cache:
             kind, payload = rewriter.im4p_payload(path.read_bytes())
             trusted.update(rewriter.trust_cache_entries(payload))
-        edits, grades = load_edits(args.proof, summary)
+        edits, grades = load_edits(args.proof, summary, contract)
         metadata=x1_metadata_edits(cache) if experimental else {}
         for index,rows in metadata.items():
             edits[index]=np.concatenate([edits.get(index,np.zeros((0,3),dtype=np.uint64)),rows])

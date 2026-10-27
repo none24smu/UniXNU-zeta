@@ -40,6 +40,7 @@ import zeta_dyld_cache as dc
 import zeta_userland_code as code
 import zeta_userland_pauth as pauth
 import zeta_x1_compat as x1
+import zeta_x1_rcpc as rcpc
 
 GRADES = ('unwind', 'pointer', 'landing', 'stub', 'call', 'start', 'gap')
 PAC_MASKS = ((0xffff0000, 0xdac10000), (0xffe0fc00, 0x9ac03000), (0xfffff81f, 0xd61f081f),
@@ -147,6 +148,21 @@ def prove_code(cache, sections, strong, weak, starts, ordered, label):
                 kept['table'] += 1
             else:
                 unproven.append((address, word))
+    groups=[]
+    if STATE.get('experimental_x1') and label==rcpc.IMAGE:
+        image=dc.Image(cache,next(a for a,p in cache.images if p==label),label)
+        intervals=[(root,root+len(words)*4) for root,_,words in rcpc.FUNCTIONS]
+        # Targeted static entry checks over the original cache, never rewritten
+        # instructions. A later writer must authorize the explicit typed policy.
+        incoming=rcpc.incoming_transfers(cache,intervals)
+        groups=rcpc.plan(cache,image,proven,incoming,pointers|code.materialized(insns,proven),image.landing_pads(),tables)
+        coordinated={}
+        for group in groups:
+            for index,(old,new) in enumerate(zip(group['original_words'],group['translated_words'])):
+                if old==new:continue
+                pc=group['root']+index*4
+                coordinated[pc]=(pc,va_to_off(pc,4),old,new,GRADES.index(proven[pc]))
+        edits=[row for row in edits if row[0] not in coordinated]+list(coordinated.values())
     isa={}
     if STATE.get('experimental_x1'):
         replacements={e[0]:e[3] for e in edits}
@@ -160,7 +176,7 @@ def prove_code(cache, sections, strong, weak, starts, ordered, label):
         rejected=x1.rejected_by_baseline(r[3] for r in rows)
         counts=Counter();examples={};mnemonics=Counter()
         for address,offset,word,ordinary,mnemonic in rows:
-            family=x1.retained_feature(word,mnemonic)
+            family=x1.retained_feature(ordinary,mnemonic if ordinary==word else '')
             if ordinary not in rejected and not family:continue
             kind='cssc-trap' if x1.cssc(word) else 'retained-'+family if family else 'unknown-isa'
             counts[kind]+=1
@@ -170,7 +186,8 @@ def prove_code(cache, sections, strong, weak, starts, ordered, label):
         isa=dict(remaining_counts=dict(counts),mnemonics=dict(mnemonics),examples=examples)
     return dict(edits=edits, unproven=unproven, unlowerable=unlowerable, kept=dict(kept),
                 reached=sorted(coverage.reached), file=file_index, proven_instructions=len(proven),
-                tables=len(tables), roots=roots, x1_isa=isa, anomaly_examples=anomalies[:32], anomalies=dict(Counter(a['kind'] for a in anomalies)))
+                tables=len(tables), roots=roots, x1_isa=isa, rcpc2_function_aot=groups,
+                anomaly_examples=anomalies[:32], anomalies=dict(Counter(a['kind'] for a in anomalies)))
 
 
 def result_name(path):
@@ -221,7 +238,7 @@ def main(argv=None):
     parser.add_argument('--only', action='append', help='prove only images whose path ends with this')
     args = parser.parse_args(argv)
     args.work.mkdir(parents=True, exist_ok=True)
-    tool_paths=[Path(__file__),Path(dc.__file__),Path(code.__file__),Path(pauth.__file__),Path(x1.__file__)]
+    tool_paths=[Path(__file__),Path(dc.__file__),Path(code.__file__),Path(pauth.__file__),Path(x1.__file__),Path(rcpc.__file__)]
     tool_hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in tool_paths}
     cache = dc.Cache(args.cache,allow_x1_analysis=args.experimental_x1_plan)
     family=cache.validate_family() if args.experimental_x1_plan else None

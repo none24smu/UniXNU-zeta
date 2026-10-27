@@ -9,7 +9,7 @@ typedef struct {
 } ZetaJsConvertResult;
 
 // Pure FJCVTZS value/flag semantics, using integer operations only. Supports
-// ordinary FPCR rounding/FZ/DN/AHP/FZ16 controls; refuses exception traps and
+// ordinary FPCR rounding/DN/AHP/FZ16 controls with FZ=0; refuses FZ, exception traps and
 // alternate FP behavior rather than silently losing their semantics.
 // No instruction fetch, thread/NEON-state access or runtime hook. On refusal,
 // output remains unchanged. NZCV is the complete replacement NZCV field.

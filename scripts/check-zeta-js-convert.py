@@ -96,7 +96,7 @@ static int check(uint64_t bits,uint32_t fpcr,uint32_t fpsr){
 }
 int main(void){
  const uint64_t frac[]={0,1,0x0007ffffffffffffULL,0x0008000000000000ULL,0x000fffffffffffffULL,0x00000000001fffffULL,0x0000000000200000ULL};
- const uint32_t modes[]={0,1u<<24,1u<<25,1u<<26,1u<<19,3u<<22,(1u<<24)|(1u<<25),0x07c80000};
+ const uint32_t modes[]={0,1u<<25,1u<<26,1u<<19,1u<<22,2u<<22,3u<<22,0x06c80000};
  const uint32_t prior[]={0,0x0800009f};
  for(unsigned e=0;e<2048;e++)for(unsigned f=0;f<sizeof(frac)/sizeof(frac[0]);f++)for(unsigned sign=0;sign<2;sign++)
   for(unsigned m=0;m<sizeof(modes)/sizeof(modes[0]);m++)for(unsigned p=0;p<2;p++){
@@ -104,7 +104,7 @@ int main(void){
   }
  for(unsigned n=0;n<200000;n++){uint64_t bits=random64();for(unsigned m=0;m<8;m++)if(check(bits,modes[m],prior[n&1]))return 1;}
  // Unsupported controls and bad outputs never mutate the caller's result.
- for(unsigned bit=0;bit<32;bit++)if(!((0x07c80000u>>bit)&1)){
+ for(unsigned bit=0;bit<32;bit++)if(!((0x06c80000u>>bit)&1)){
   ZetaJsConvertResult r={0x12345678,0x87654321,0xaabbccdd};
   if(ZetaJsConvert(0,1u<<bit,0,&r)||r.value!=0x12345678||r.nzcv!=0x87654321||r.fpsr!=0xaabbccdd)return 2;
  }

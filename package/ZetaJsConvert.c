@@ -4,7 +4,7 @@
 int ZetaJsConvert(uint64_t bits, uint32_t fpcr, uint32_t oldFpsr,
                   ZetaJsConvertResult *output)
 {
-    const uint32_t allowed = (UINT32_C(0x1f) << 22) | (UINT32_C(1) << 19);
+    const uint32_t allowed = (UINT32_C(0x1b) << 22) | (UINT32_C(1) << 19);
     if (!output || (fpcr & ~allowed)) return 0;
     const unsigned sign = (unsigned)(bits >> 63);
     const unsigned exponent = (unsigned)((bits >> 52) & 0x7ff);
@@ -16,7 +16,7 @@ int ZetaJsConvert(uint64_t bits, uint32_t fpcr, uint32_t oldFpsr,
         raised = 1;
     } else if (exponent == 0) {
         if (!fraction) exact = !sign; // Negative zero clears Z without an FP exception.
-        else raised = (fpcr & (UINT32_C(1) << 24)) ? (UINT32_C(1) << 7) : (UINT32_C(1) << 4);
+        else raised = UINT32_C(1) << 4;
     } else {
         const int power = (int)exponent - 1023;
         const uint64_t significand = (UINT64_C(1) << 52) | fraction;

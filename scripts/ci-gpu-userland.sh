@@ -120,4 +120,20 @@ cp build/zeta-blit-subresources/host.log "$OUT/blit-subresources-host.log"
 cp build/zeta-blit-subresources/negative-control.log "$OUT/blit-subresources-negative-control.log"
 cp build/zeta-submit-pressure/fixed.log "$OUT/submit-pressure-host.log"
 cp build/zeta-submit-pressure/old.log "$OUT/submit-pressure-negative-control.log"
+# Carry the board's verified discovery policy with every later GPU build. Image
+# preparation consumes this snapshot rather than silently inheriting an old seed.
+python3 - "$Z/package/graphics-userland-profile.json" "$OUT" "$Z" "$U" <<'PYPROFILE'
+import json,pathlib,sys,subprocess,os
+source=pathlib.Path(sys.argv[1]);out=pathlib.Path(sys.argv[2])
+profile=json.loads(source.read_text());clients=profile['metal_clients']
+assert clients and len(clients)==len(set(clients)) and '*' not in clients
+assert all(name and not any(c.isspace() for c in name) for name in clients)
+(out/'graphics-userland-profile.json').write_text(json.dumps(profile,indent=2)+'\n')
+(out/'NativeAdrenoMetal.clients').write_text(''.join(name+'\n' for name in clients))
+revision=lambda path:subprocess.check_output(['git','-C',path,'rev-parse','HEAD'],text=True).strip()
+(out/'build-run.json').write_text(json.dumps({
+    'run':os.environ.get('GITHUB_RUN_ID'), 'device_source':revision(sys.argv[3]),
+    'unixnu_source':revision(sys.argv[4]), 'result':'build-and-host-controls-passed'
+},indent=2)+'\n')
+PYPROFILE
 (cd "$OUT" && find . -type f | sort > files.txt)

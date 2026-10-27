@@ -1,0 +1,28 @@
+{
+  "schema": "zeta-graphics-userland-profile-v1",
+  "metal_clients": [
+    "MercuryPosterExtension",
+    "SBRendererService"
+  ],
+  "exec_environment": "backboardd:CA_DISABLE_ASYNCHRONOUS=0,CA_TRANSIENT_HEAP_FACTOR=2,CA_PERSISTENT_HEAP_FACTOR=2;MercuryPosterExtension:OS_ACTIVITY_DT_MODE=1;SBRendererService:OS_ACTIVITY_DT_MODE=1",
+  "live_fixes": [
+    {
+      "change": "Admit SBRendererService to native Metal discovery",
+      "proof": "Fresh helper opens4,closes4,refused0 after admission; exposed featureProfile selector failure"
+    }
+  ],
+  "diagnostics": [
+    "Replay per-process OS_ACTIVITY_DT_MODE after native USB shell is ready; boot args remain below1024bytes"
+  ],
+  "excluded_experiments": [
+    {
+      "change": "Reset Mercury diagnostic open/close counters8->6",
+      "result": "Fresh GPU access recovered, but same five-second check-in timeout; not a startup fix"
+    },
+    {
+      "change": "Reset diagnostic scanout counter",
+      "result": "Capture operation, not renderer behavior"
+    }
+  ],
+  "candidate_code_fix": "NativeMetal-zzzzzz-feature-profile.patch; hardware validation pending"
+}

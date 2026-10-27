@@ -131,7 +131,7 @@ def load_contract(path):
     policy=value.get('policy',{})
     for key,expected in {'ordinary_pointer_abi':True,'pauth_advertised':False,
                          'effective_cpta':'off','cpa2_advertised':False,
-                         'mte_advertised':False,'signature_page_shift':12}.items():
+                         'mte_advertised':False,'gcs_enabled':False,'gcs_advertised':False,'signature_page_shift':12}.items():
         require(type(policy.get(key)) is type(expected) and policy[key]==expected,'unqualified x1 policy: '+key)
     css=policy.get('cssc',{})
     require(css.get('linked') is True and css.get('opt_in_el0') is True and
@@ -139,7 +139,7 @@ def load_contract(path):
             'CSSC EL0 helper has not been qualified for all supported forms')
     tpro=policy.get('tpro',{})
     require(tpro.get('apple_keys_omitted')==['dyld_hw_tpro','dyld_hw_tpro_pagers'] and
-            tpro.get('commpage_version')==0 and tpro.get('protected_stack') is False,
+            type(tpro.get('commpage_version')) is int and tpro['commpage_version']==0 and tpro.get('protected_stack') is False,
             'hardware TPRO disabled-path contract is incomplete')
     guest=json.loads(artifact(value.get('guest_isa_evidence'),path.parent))
     require(guest.get('schema')=='zeta-x1-guest-isa-evidence-v1' and
@@ -150,7 +150,7 @@ def load_contract(path):
     require(runtime.get('schema')=='zeta-x1-el0-compat-evidence-v1' and
             runtime.get('kernel_sha256')==kernel_hash,'EL0 evidence does not match kernel')
     required={'checked_instruction_fetch','pc_advance_once','fault_no_mutation',
-              'unsupported_fallthrough','cssc_32_64_zr_nzcv','cssc_opt_in_only','cssc_platform_scope'}
+              'unsupported_fallthrough','cssc_32_64_zr_nzcv','cssc_opt_in_only','cssc_platform_scope','gcs_disabled_unadvertised'}
     require(all(runtime.get('tests',{}).get(k)=='pass' for k in required),
             'EL0 code-fetch/PC/fault/semantic validation is incomplete')
     process=runtime.get('platform_process',{})
@@ -163,8 +163,10 @@ def load_contract(path):
     for key,mode,result in [('mode1_negative',1,'sigill'),('mode2_positive',2,'pass')]:
         observation=process.get(key,{})
         status=observation.get('csops_status')
-        require(observation.get('kernel_sha256')==kernel_hash and observation.get('kernel_mode')==mode and
+        require(observation.get('kernel_sha256')==kernel_hash and type(observation.get('kernel_mode')) is int and observation['kernel_mode']==mode and
                 observation.get('basename')==basename and observation.get('csops_cdhash')==identity and
+                type(observation.get('csops_status_result')) is int and observation['csops_status_result']==0 and
+                type(observation.get('csops_cdhash_result')) is int and observation['csops_cdhash_result']==0 and
                 type(status) is int and status&0x04000000 and observation.get('cssc')==result,
                 'platform process identity/scope negative-positive evidence is incomplete: '+key)
         artifact(observation.get('capture'),path.parent)

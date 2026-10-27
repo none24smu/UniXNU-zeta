@@ -31,8 +31,14 @@ def decode_lr(word):
     Arm FEAT_PAuth_LR and LLVM AArch64 SignAuthFixedRegs/PCRel/ReturnPCRel.
     PC/SP are authentication modifiers only; once signing is consistently
     removed, LR stays an ordinary pointer. Immediate RET forms still terminate
-    control flow. Register-modifier/newer forms remain unsupported.
+    control flow. Register modifiers are read-only authentication inputs; under
+    the explicit ordinary-pointer ABI their authentication becomes NOP/RET too.
     """
+    if word & 0xfffff81f == 0xdac1901e:
+        register=(word>>5)&31
+        return ('autibsppcr' if word&0x400 else 'autiasppcr'), ('xzr' if register==31 else 'x'+str(register)), NOP
+    if word & 0xfffffbe0 == 0xd65f0be0 and word&31!=31:
+        return ('retabsppcr' if word&0x400 else 'retaasppcr'), 'x'+str(word&31), RET
     if word & 0xfffffbff == 0xdac1a3fe:
         return ('pacibsppc' if word & 0x400 else 'paciasppc'), '', NOP
     if word & 0xffc0001f in (0xf380001f, 0x5500001f):

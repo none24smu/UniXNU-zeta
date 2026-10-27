@@ -45,7 +45,7 @@ GRADES = ('unwind', 'pointer', 'landing', 'stub', 'call', 'start', 'gap')
 PAC_MASKS = ((0xffff0000, 0xdac10000), (0xffe0fc00, 0x9ac03000), (0xfffff81f, 0xd61f081f),
              (0xfffff81f, 0xd63f081f), (0xfffff800, 0xd71f0800), (0xfffff800, 0xd73f0800),
              (0xfffffbff, 0xd65f0bff), (0xfffffbff, 0xd69f0bff), (0xff200400, 0xf8200400),
-             (0xfffffbff,0xdac1a3fe),(0xffc0001f,0xf380001f),(0xffc0001f,0x5500001f))
+             (0xfffff81f,0xdac1901e),(0xfffffbe0,0xd65f0be0),(0xfffffbff,0xdac1a3fe),(0xffc0001f,0xf380001f),(0xffc0001f,0x5500001f))
 
 STATE = {}
 
@@ -70,7 +70,9 @@ def init(cache_path, ranges, targets, work, experimental_x1=False):
     if experimental_x1:
         for address,path in STATE['cache'].images:
             if path.endswith('/libsystem_c.dylib'):
-                noreturn.update(dc.Image(STATE['cache'],address,path).export_addresses({'___assert_rtn'}))
+                noreturn.update(dc.Image(STATE['cache'],address,path).export_addresses({'___assert_rtn','___stack_chk_fail','_abort'}))
+            elif path.endswith('/libc++abi.dylib'):
+                noreturn.update(dc.Image(STATE['cache'],address,path).export_addresses({'__ZSt9terminatev'}))
             elif path.endswith('/libsystem_kernel.dylib'):
                 exits=dc.Image(STATE['cache'],address,path).export_addresses({'__exit','___exit'})
                 # Darwin syscall1 terminates the process; bind the name to its

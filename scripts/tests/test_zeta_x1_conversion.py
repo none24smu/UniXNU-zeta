@@ -38,15 +38,15 @@ def fixture(directory):
     process={'probe':probe,'basename':'zeta-platform-isa-probe','cdhash':identity}
     for key,mode,result in [('mode1_negative',1,'sigill'),('mode2_positive',2,'pass')]:
         process[key]={'kernel_sha256':kernel['sha256'],'kernel_mode':mode,'basename':process['basename'],
-                      'csops_cdhash':identity,'csops_status':0x04000000,'cssc':result,'capture':capture}
+                      'csops_cdhash':identity,'csops_status':0x04000000,'csops_status_result':0,'csops_cdhash_result':0,'cssc':result,'capture':capture}
     runtime=save('runtime.json',{'schema':'zeta-x1-el0-compat-evidence-v1','kernel_sha256':kernel['sha256'],
         'tests':{k:'pass' for k in ['checked_instruction_fetch','pc_advance_once','fault_no_mutation',
-          'unsupported_fallthrough','cssc_32_64_zr_nzcv','cssc_opt_in_only','cssc_platform_scope']},'capture':capture,'platform_process':process})
+          'unsupported_fallthrough','cssc_32_64_zr_nzcv','cssc_opt_in_only','cssc_platform_scope','gcs_disabled_unadvertised']},'capture':capture,'platform_process':process})
     value={'schema':'zeta-x1-kernel-contract-v1','profile':x1.PROFILE,'qualification':'validated',
       'kernel':{'image':kernel,'source_manifest':save('source.json',{}),
                 'compat_helper':save('helper',b'test helper'),'compat_adapter':save('adapter',b'test adapter')},
       'policy':{'ordinary_pointer_abi':True,'pauth_advertised':False,'effective_cpta':'off',
-                'cpa2_advertised':False,'mte_advertised':False,'signature_page_shift':12,
+                'cpa2_advertised':False,'mte_advertised':False,'gcs_enabled':False,'gcs_advertised':False,'signature_page_shift':12,
                 'cssc':{'linked':True,'opt_in_el0':True,'runtime_validated':True,'scope':'platform-task','forms':sorted(x1.CSSC)},
                 'tpro':{'apple_keys_omitted':['dyld_hw_tpro','dyld_hw_tpro_pagers'],
                         'commpage_version':0,'protected_stack':False}},
@@ -82,6 +82,22 @@ class ContractTests(unittest.TestCase):
                 if change=='identity':process['mode2_positive']['csops_cdhash']='0'*40
                 if change=='basename':process['basename']='zeta-isa-probe'
                 if change=='negative-control':process['mode1_negative']['cssc']='pass'
+                raw=json.dumps(runtime).encode();(directory/'runtime.json').write_bytes(raw)
+                value['el0_runtime_evidence']['sha256']=hashlib.sha256(raw).hexdigest();path.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):x1.load_contract(path)
+
+    def test_gcs_and_failed_csops_cannot_qualify_contract(self):
+        for change in ['gcs-on','gcs-advertised','gcs-unknown','gcs-test-missing','status-error','cdhash-error','status-bool']:
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
+                directory=Path(d);path,value=fixture(directory)
+                runtime=json.loads((directory/'runtime.json').read_text())
+                if change=='gcs-on':value['policy']['gcs_enabled']=True
+                if change=='gcs-advertised':value['policy']['gcs_advertised']=True
+                if change=='gcs-unknown':value['policy'].pop('gcs_enabled')
+                if change=='gcs-test-missing':runtime['tests'].pop('gcs_disabled_unadvertised')
+                if change=='status-error':runtime['platform_process']['mode2_positive']['csops_status_result']=-1
+                if change=='cdhash-error':runtime['platform_process']['mode2_positive']['csops_cdhash_result']=-1
+                if change=='status-bool':runtime['platform_process']['mode2_positive']['csops_status_result']=False
                 raw=json.dumps(runtime).encode();(directory/'runtime.json').write_bytes(raw)
                 value['el0_runtime_evidence']['sha256']=hashlib.sha256(raw).hexdigest();path.write_text(json.dumps(value))
                 with self.assertRaises(ValueError):x1.load_contract(path)

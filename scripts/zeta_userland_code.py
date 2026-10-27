@@ -34,7 +34,7 @@ DYLD_CHAINED_PTR_ARM64E, DYLD_CHAINED_PTR_ARM64E_USERLAND, DYLD_CHAINED_PTR_ARM6
 # Standalone kexts: the arm64e bit layout with a vm offset from the image header.
 DYLD_CHAINED_PTR_ARM64E_KERNEL = 7
 CONDITIONAL = ('cbz', 'cbnz', 'tbz', 'tbnz')
-STOPS = ('ret', 'retab', 'retaa', 'retaasppc', 'retabsppc', 'eret', 'brk', 'udf', 'hlt')
+STOPS = ('ret', 'retab', 'retaa', 'retaasppc', 'retabsppc', 'retaasppcr', 'retabsppcr', 'eret', 'brk', 'udf', 'hlt')
 INDIRECT = ('br', 'braa', 'braaz', 'brab', 'brabz')
 CALLS = ('bl', 'blr', 'blraa', 'blraaz', 'blrab', 'blrabz')
 TARGET = re.compile(r'#(-?0x[0-9a-f]+|-?[0-9]+)$')
@@ -374,7 +374,32 @@ def jump_table(insns, data, va_to_off, pc):
                 targets=sorted({anchor + entry for entry in entries}))
 
 
-def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries, external=None):
+def straightline_trap_roots(insns, strong, starts, limit=32):
+    """Bounded unwind-rooted PAC function bodies ending in exact BRK#1.
+
+    No conditional/unconditional branches, indirect jumps, returns, missing words
+    or atom crossings are accepted. Calls may return, but every normal returning
+    call path then reaches the explicit fatal trap. This is not arbitrary
+    section-end acceptance and does not infer anything from a UDF/data word.
+    """
+    result=set()
+    prologues={'pacibsp','paciasp','pacibsppc','paciasppc'}
+    for root in strong & starts:
+        if insns.get(root,('',))[0] not in prologues:continue
+        for index in range(limit):
+            pc=root+index*4
+            if index and pc in starts:break
+            found=insns.get(pc)
+            if found is None:break
+            mnemonic,operands=found
+            if mnemonic=='brk' and operands in ('#1','#0x1'):
+                result.add(root);break
+            if (mnemonic.startswith('.') or mnemonic in STOPS or mnemonic in INDIRECT or
+                mnemonic in CONDITIONAL or mnemonic=='b' or mnemonic.startswith(('b.','bc.'))):break
+    return result
+
+
+def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries, external=None, noreturn=()):
     """Follow control flow; a strict walk returns None instead of stopping at a doubtful word.
 
     external, when given, covers code outside these sections that another proof owns (an image
@@ -408,7 +433,7 @@ def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries, ex
             if mnemonic == 'bl' or mnemonic.startswith(('b.', 'bc.')) or mnemonic in CONDITIONAL:
                 destination=int(target.group(1), 0)
                 work.append(destination)
-                if mnemonic == 'bl' and external is not None and getattr(external,'is_noreturn',lambda _:False)(destination):
+                if mnemonic == 'bl' and (destination in noreturn or (external is not None and getattr(external,'is_noreturn',lambda _:False)(destination))):
                     break
             elif mnemonic in STOPS:
                 break
@@ -472,15 +497,16 @@ def prove_roots(insns, data, va_to_off, strong, weak, starts, pointers, ordered=
     gaps, when set, adds a last grade: code left inside a proven atom after a proven terminator
     (a dead epilogue or error exit nothing branches to), accepted only by the same strict walk,
     which may not run into another atom."""
+    noreturn=straightline_trap_roots(insns,strong,starts)
     found, tables, anomalies = walk(insns, data, va_to_off, sorted(a for a in strong if a in insns), set(), set(),
-                                    False, starts, external)
+                                    False, starts, external,noreturn)
     code = dict.fromkeys(found, 'unwind')
     data_words = table_words(tables)
     tried, rejected = set(), []
 
     def attempt(root, grade):
         tried.add(root)
-        result = walk(insns, data, va_to_off, [root], code, data_words, True, starts, external)
+        result = walk(insns, data, va_to_off, [root], code, data_words, True, starts, external,noreturn)
         if result is None or any(word in code or word in result[0] for word in table_words(result[1])):
             rejected.append(dict(address=hex(root), grade=grade))
             return False

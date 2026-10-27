@@ -1,0 +1,12 @@
+Existing Khronos-generated headers used; no third-party driver checkout changed.
+Include directory:
+/home/smudev/iosongen2/work/render-stage7/oneplus-adoption-userland/build/mesa-host/mesa-25.0.7/include
+
+Header copyright: The Khronos Group Inc., SPDX-License-Identifier Apache-2.0.
+Header declares generation from the Khronos Vulkan XML API Registry.
+SHA-256:
+7496d78edc128d2f2e602882d9f8d4c76825d4a4df17f91b59130fa77229c131  vulkan/vulkan_core.h
+2fa47dd60cd94eb6fd8d7615953878f5664eb57fdff3b1b9b856c1d8f1496737  vulkan/vk_platform.h
+
+To use a different official header installation, set VULKAN_HEADERS_DIR to its include directory.
+No Vulkan loader library or Vulkan device is used by the host capture tests.

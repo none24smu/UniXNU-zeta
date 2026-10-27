@@ -1,0 +1,9 @@
+Working directory: /home/smudev/iosongen2
+Command: bash work/ios27-port/board/experimental/duo-metal/run-host-tests.sh
+Compiler: c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Options: -std=c++17 -O1 -g -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer
+Result: exit status 0; see host-tests.log
+Planner: 126 assertions passed.
+Vulkan API capture: 259 assertions passed.
+Vulkan headers: see vulkan-headers.txt (existing Khronos-generated Mesa include tree).
+Evidence scope: host semantic/ownership tests only. No GPU execution or device operations.

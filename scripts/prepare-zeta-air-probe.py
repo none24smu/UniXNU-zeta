@@ -39,8 +39,12 @@ def main():
     # competing probes. This changes only this experimental RAM seed.
     daemons=seed/"overlay/ngpu/daemons";daemons.mkdir(exist_ok=True)
     job=plistlib.loads((artifact/"org.unixnu.zeta.air-probe.plist").read_bytes())
-    job["Label"]="com.apple.bluetoothd"
-    (daemons/"com.apple.bluetoothd.plist").write_bytes(plistlib.dumps(job))
+    job["Label"]="com.apple.iomfb_fdr_loader"
+    # Bluetooth is disabled by sheng-lite=1. The nonessential FDR loader is
+    # an existing System RunAtLoad job that remains enabled in this profile.
+    assert job["Label"] not in (z/"package/BootWatchdogPolicy.c").read_text()
+    job["LimitLoadToSessionType"]="System"
+    (daemons/"com.apple.iomfb_fdr_loader.plist").write_bytes(plistlib.dumps(job))
     # Include the expected owner job name for the kernel's mount validation,
     # disabled so it cannot create a second GPU client.
     (daemons/"org.blu-sharky.adrenoprobed.plist").write_bytes(plistlib.dumps({

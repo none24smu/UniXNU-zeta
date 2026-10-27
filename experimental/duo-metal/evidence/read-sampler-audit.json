@@ -1,0 +1,2487 @@
+{
+  "scope": "static intrinsic call/consumer audit only; no semantic lowering or GPU proof",
+  "census_sha256": "9725419cc7d5616f676ce8fb6a811c681abbf108bed4610ba1b00768ec2c66fd",
+  "llvm_version": "Ubuntu LLVM version 18.1.3",
+  "modules": [
+    {
+      "name": "dynamic_system_ootf_decimate",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "6e2b8b4186bd74ed344cc49d1ebfb7670ef40a3d4d2dad126a0a1b881b0c7eaf",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 1, opcode 17)",
+      "sites": [
+        {
+          "function": "dynamic_system_ootf_decimate",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "brim_jump_lpf",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "4e87d8513567a5df08c44ad53943845741f08436f7fbbe74aafeb87a79ebd372",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 11, opcode 17)",
+      "sites": [
+        {
+          "function": "brim_jump_lpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdf_gen_field_lpf",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "afecf507185e7b855e14402191f6696e08b8a1883fc1040b6df1e8e976e6ccf1",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 6, opcode 17)",
+      "sites": [
+        {
+          "function": "sdf_gen_field_lpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdf_gen_gradients_lpf",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "7183773dd773c82068e98d833a3c45c336f4f0fede02ad17dc89b40fd3691f58",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 2, opcode 17)",
+      "sites": [
+        {
+          "function": "sdf_gen_gradients_lpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "brim_outline_lpf",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "33d3d376e450b128c8329953bf2ca4814bb4550ca8f8ce63249e2d25d1cd544a",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 9, opcode 17)",
+      "sites": [
+        {
+          "function": "brim_outline_lpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rim_outline_lpf",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "efb325441a9b60ba478885f141c59af3d79dcf6398623b80104b209b2ade5695",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 9, opcode 17)",
+      "sites": [
+        {
+          "function": "rim_outline_lpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "downsample_4_compute",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "5f6b52ff4a7930f65294ac215fd00c47992ce26d8e7d9f7383416463c0cd6516",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "downsample_4_compute",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "downsample_8_compute",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "e1b0490073d87ed445ccedb790c730d457d873405e4473f7c0a80cb0646ab5db",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "downsample_8_compute",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "downsample_4_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "5b45892ba7220c388605f523afa8f6fbfe571b83d1ec4849207f5fde880abe44",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "downsample_4_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "downsample_4_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "downsample_8_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "b5823bb73965ea253e32e48b89555681719bcdc6fa8a59f6a626d8fb0b4d4ead",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "downsample_8_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "downsample_8_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "narrow_blur_7_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "15b5484f45f58298b79f43a86f3204a9a622af86fbb0b1c0adac7ed63543f00a",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "narrow_blur_7_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "narrow_blur_11_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "e9e397a62ecc588ae71c9a76b216e0bc00a3b5b8ed4e9070464cf016e91a23bb",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "narrow_blur_11_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "narrow_blur_15_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "d6e093d18fdc24aedb3b87f7eb6bc108b0431efde4649e7be71ef106be06c368",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "narrow_blur_15_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "narrow_blur_19_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "e8c8f428c40af00c72ccca20dbead8339f06b14195e3a1e90bdac01d0aa926c2",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "narrow_blur_19_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "narrow_blur_23_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "2f257629e10c47829eddd44cde2c83069a347aaa1f728b4c4f9727ad6d910c90",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "narrow_blur_23_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "narrow_blur_27_compute_final",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "c192cfd3aa5b6c70cf342630e5e33f28c2b1ab3103d2af6365399f51f51985b8",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "narrow_blur_27_compute_final",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "variable_blur_copy_base_mip_compute",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "60b57c019ed19f1258b01de4cd70c2a759d1c61ed582fb414f6338cd846bf26b",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "variable_blur_copy_base_mip_compute",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "variable_blur_copy_base_mip_compute",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "variable_blur_copy_base_mip_compute",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "read_write_surf_compute",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "b345333f21efbf5d7f2d58764c36f19a13db2dcaeb99755d2a57cd9254fd0fbc",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 2, instruction 0, opcode 17)",
+      "sites": [
+        {
+          "function": "read_write_surf_compute",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_apl",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "9c818c9abec804f047ce1381b3264cdfa3643d70410fe004037838d4ca28c568",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 3, instruction 0, opcode 17)",
+      "sites": [
+        {
+          "function": "compute_apl",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_average_luma",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "9c0b0ebe4095f632e789310137c7bb8085bdd4220dc10ddd3eb11e8e1994d0a5",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 4, instruction 0, opcode 17)",
+      "sites": [
+        {
+          "function": "compute_average_luma",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tile_simd_blur_27",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "2789eab02a7e4e26ec7301765822714396ed88c9927fa10b2119299befab6caa",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "tile_simd_blur_27",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tile_simd_blur_23",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "e4ab90cf8c29bf76ae140a86154070b2c81b748917c89e000bd5ba6b43a4b5a8",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "tile_simd_blur_23",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tile_simd_blur_19",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "38b1f240f24a814015d911e3a9ff784861b90f9d238d8e7e0c81110603e7716e",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "tile_simd_blur_19",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tile_simd_blur_15",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "f5d923ae71e4902a1fafcce33c7abfa8862a8100e99cc5bb7fd8a0eff502fe6f",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "tile_simd_blur_15",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tile_simd_blur_11",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "516d2a1c69f98003491d6d7fb5d0a2f70d00a3411cb2070ecdab5826cc01aaa7",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "tile_simd_blur_11",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tile_simd_blur_7",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "08c537671a2507367f9913a50e3a314e9fb475cfe7c8defc1684b12abc0f7e81",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "tile_simd_blur_7",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tile_simd_blur_5",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "98b3341c3e68406a849922e06df4608fe89207fb7117fbd0801ab573f0b2b1f2",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "tile_simd_blur_5",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_simd_blur_27",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "6096ea78e4164b1d591e3cc74e7e60c89e95d7c9166ca297de9ca5b451b6ef69",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "_Z17compute_simd_blurILt27EEvN5metal10imageblockI16ComputeColorDataNS0_26imageblock_layout_explicitEvEENS0_9texture2dIDhLNS0_6accessE1ELNS0_16memory_coherenceE0EvEENS5_IDhLS6_2ELS7_0EvEERU11MTLconstantKN2CA3OGL5Metal23ComputeSIMDBlurUniformsEPU11MTLconstantKDhDv2_tSI_SI_tt",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_simd_blur_23",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "2042892ecf2caf2fca9f7dd9de884fbc37d04bfde7ab48e6685a24c3e4c33283",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "_Z17compute_simd_blurILt23EEvN5metal10imageblockI16ComputeColorDataNS0_26imageblock_layout_explicitEvEENS0_9texture2dIDhLNS0_6accessE1ELNS0_16memory_coherenceE0EvEENS5_IDhLS6_2ELS7_0EvEERU11MTLconstantKN2CA3OGL5Metal23ComputeSIMDBlurUniformsEPU11MTLconstantKDhDv2_tSI_SI_tt",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_simd_blur_19",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "4df5766271d20f8c8d5879e1250dc6be8b0b813ef78b454d28f3704646e06527",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "_Z17compute_simd_blurILt19EEvN5metal10imageblockI16ComputeColorDataNS0_26imageblock_layout_explicitEvEENS0_9texture2dIDhLNS0_6accessE1ELNS0_16memory_coherenceE0EvEENS5_IDhLS6_2ELS7_0EvEERU11MTLconstantKN2CA3OGL5Metal23ComputeSIMDBlurUniformsEPU11MTLconstantKDhDv2_tSI_SI_tt",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_simd_blur_15",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "624a29281127a2c3dd728e449080d740fe7af74c15702c6264c906c4173fb104",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "_Z17compute_simd_blurILt15EEvN5metal10imageblockI16ComputeColorDataNS0_26imageblock_layout_explicitEvEENS0_9texture2dIDhLNS0_6accessE1ELNS0_16memory_coherenceE0EvEENS5_IDhLS6_2ELS7_0EvEERU11MTLconstantKN2CA3OGL5Metal23ComputeSIMDBlurUniformsEPU11MTLconstantKDhDv2_tSI_SI_tt",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_simd_blur_11",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "1c94944a76ff38255dabeaa21a14d9e49a4e3187b1d066938bbbf90f8822484f",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "_Z17compute_simd_blurILt11EEvN5metal10imageblockI16ComputeColorDataNS0_26imageblock_layout_explicitEvEENS0_9texture2dIDhLNS0_6accessE1ELNS0_16memory_coherenceE0EvEENS5_IDhLS6_2ELS7_0EvEERU11MTLconstantKN2CA3OGL5Metal23ComputeSIMDBlurUniformsEPU11MTLconstantKDhDv2_tSI_SI_tt",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_simd_blur_7",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "1aa1d7273ca5d134890895d20e8972f7c935f794dcf8ade67465a1765568590d",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "_Z17compute_simd_blurILt7EEvN5metal10imageblockI16ComputeColorDataNS0_26imageblock_layout_explicitEvEENS0_9texture2dIDhLNS0_6accessE1ELNS0_16memory_coherenceE0EvEENS5_IDhLS6_2ELS7_0EvEERU11MTLconstantKN2CA3OGL5Metal23ComputeSIMDBlurUniformsEPU11MTLconstantKDhDv2_tSI_SI_tt",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compute_simd_blur_5",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "03a5a186d9de3aa78d9ff50a08d062b0ea57ee5cc234fa77b7daf760b7c02b14",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "_Z17compute_simd_blurILt5EEvN5metal10imageblockI16ComputeColorDataNS0_26imageblock_layout_explicitEvEENS0_9texture2dIDhLNS0_6accessE1ELNS0_16memory_coherenceE0EvEENS5_IDhLS6_2ELS7_0EvEERU11MTLconstantKN2CA3OGL5Metal23ComputeSIMDBlurUniformsEPU11MTLconstantKDhDv2_tSI_SI_tt",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 1"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "brim_jump_lph",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "4a506c399724e2b9d3cdc8ca21511d330bf81829e72e7ab63858cd8f94fc8214",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 11, opcode 17)",
+      "sites": [
+        {
+          "function": "brim_jump_lph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdf_gen_field_lph",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "12a59ce33068dbc1e6413d00a52b0eef529634b3ba36fc5753da3da0612e97bd",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 6, opcode 17)",
+      "sites": [
+        {
+          "function": "sdf_gen_field_lph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdf_gen_gradients_lph",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "12d650a49a8787e8b6e498ae778813fe416b68d71ce74ff73f17a7746da823c8",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 2, opcode 17)",
+      "sites": [
+        {
+          "function": "sdf_gen_gradients_lph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "brim_outline_lph",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "445de04a7b3c3d43c8da699e0e35fc7bbd076d6ee629cf3b2df3f38ef6b42265",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 9, opcode 17)",
+      "sites": [
+        {
+          "function": "brim_outline_lph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rim_outline_lph",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "3f7e21cd06dac1c6469c434838751b5a7e858293d237ecd2646b32bebdcd73b1",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 9, opcode 17)",
+      "sites": [
+        {
+          "function": "rim_outline_lph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            },
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "read_surf_frag",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "a6affafcdba77dd440696e83c68441a2a283ee1e8e487802995e16582109a7f2",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 3, opcode 17)",
+      "sites": [
+        {
+          "function": "read_surf_frag",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 %6",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 <ssa>",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "read_surf_frag_rg_uint",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "621090f3803ea8d45b1e18700ee601da62c645bd1fae41ec4d703b5a9506e4da",
+      "first_refusal": "intrinsic: air.get_read_sampler (block 0, instruction 3, opcode 17)",
+      "sites": [
+        {
+          "function": "read_surf_frag_rg_uint",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.u.v4i32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 %6",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 <ssa>",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "backdrop_capture_compute_tile_lph",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "f844be2e6590cd08d4e6c100462350eb3c5eee851ce448bb2ec164f9e96599de",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "backdrop_capture_compute_tile_lph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "backdrop_capture_compute_tile_lph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "backdrop_capture_compute_tile_lpf",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "60d51685fd6eeb98c0fa529d342f36a47f12d9d080b0a4649b70a2bd49a51b2e",
+      "first_refusal": "interface: input air.imageblock",
+      "sites": [
+        {
+          "function": "backdrop_capture_compute_tile_lpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "backdrop_capture_compute_tile_lpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.i16.v4f32",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i16 0",
+                "i32 3"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i16> <ssa>",
+                "<2 x i16> zeroinitializer",
+                "i16 0",
+                "i32 3"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fixed_frag_lph_cph",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "daef0c56b53c8cad8cc130e83d742cef230f5c8a65debaebd39dc91855bdb5f4",
+      "first_refusal": "intrinsic: air.get_null_texture_2d (a texture name this cannot take apart) (block 1, instruction 0, opcode 17)",
+      "sites": [
+        {
+          "function": "fixed_frag_lph_cph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "fixed_frag_lph_cph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "fixed_frag_lph_cph",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fixed_frag_lph_cpf",
+      "source": "/home/smudev/iosongen2/work/ios27-port/shader-corpus/main-os/files/System/Library/Frameworks/QuartzCore.framework/default.metallib",
+      "sha256": "3d053f8b683baefb67eef67646d5662b7462f751336a91cebebb552ec03071ba",
+      "first_refusal": "intrinsic: air.get_null_texture_2d (a texture name this cannot take apart) (block 1, instruction 0, opcode 17)",
+      "sites": [
+        {
+          "function": "fixed_frag_lph_cpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "fixed_frag_lph_cpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        },
+        {
+          "function": "fixed_frag_lph_cpf",
+          "uses": [
+            {
+              "callee": "air.read_texture_2d.v4f16",
+              "operand_positions": [
+                1
+              ],
+              "operand_count": 6,
+              "trailing_operands": [
+                "i32 0",
+                "i32 0"
+              ],
+              "argument_types": [
+                "ptr addrspace(1) nocapture readonly <ssa>",
+                "ptr addrspace(2) <ssa>",
+                "<2 x i32> <ssa>",
+                "<2 x i32> zeroinitializer",
+                "i32 0",
+                "i32 0"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "consumer_intrinsics": {
+    "air.read_texture_2d.v4f32": 11,
+    "air.read_texture_2d.u.v4i32": 9,
+    "air.read_texture_2d.i16.v4f16": 54,
+    "air.read_texture_2d.v4f16": 20,
+    "air.read_texture_2d.i16.v4f32": 2
+  },
+  "non_call_uses": 0,
+  "pointer_binding_or_sampler_zero_semantics_proven": false,
+  "consumer_count": 96,
+  "six_operands_sampler_at_one": true,
+  "zero_vector_fourth_operand_count": 96,
+  "dynamic_level_count": 2,
+  "final_operand_counts": {
+    "i32 1": 30,
+    "i32 0": 50,
+    "i32 3": 16
+  },
+  "module_count": 45,
+  "site_count": 55,
+  "quartzcore_modules": 45
+}

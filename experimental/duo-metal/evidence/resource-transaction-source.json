@@ -1,0 +1,61 @@
+{
+  "scope": "host-tested fixed inline transaction parser and seal-to-Job boundary; no native dispatch or GPU proof",
+  "candidate_commit": "2a5ee1924eecc7480fdd6b043d8759ff7067bfc4",
+  "candidate_branch": "experimental/duo-resource-manifest",
+  "base_driver_commit": "805c7e4bfb7451eb6923f4a14dea8c657b9be7d2",
+  "previous_job_commit": "4341660489eb7a68bf23f117585da3d7e506a973",
+  "roots": {
+    "board_root": {
+      "path": "/home/smudev/iosongen2/work/ios27-port/unixnu",
+      "commit": "107af906532d252ef6ba7aff0c43f11e571d3fa1",
+      "native_adreno_gitlink": "160000 commit 805c7e4bfb7451eb6923f4a14dea8c657b9be7d2\tdrivers/NativeAdreno"
+    },
+    "control_root": {
+      "path": "/home/smudev/iosongen2/UniXNU",
+      "commit": "68c513467bb6c44106c053c410582c1d14f96dd7",
+      "native_adreno_gitlink": "160000 commit 805c7e4bfb7451eb6923f4a14dea8c657b9be7d2\tdrivers/NativeAdreno"
+    }
+  },
+  "request_bytes": 408,
+  "tunnel_envelope_bytes": 8,
+  "reply_bytes": 32,
+  "resource_page_max": 8,
+  "ib_page_max": 11,
+  "max_resources": 4096,
+  "max_ibs": 128,
+  "one_active_transaction_per_session": true,
+  "full_size_peak_below_bytes": 1048576,
+  "peak_excludes": [
+    "allocator metadata",
+    "existing GPU BOs"
+  ],
+  "wire_schema_only": true,
+  "method_selectors_assigned": false,
+  "capability_published": false,
+  "profile_selected": false,
+  "physical_transport_proven": false,
+  "native_source_sha256": {
+    "NativeAdrenoResources.h": "cb9953efc217b35dcd0cb9464d463318cb644294745e37a89311183b727c0bef",
+    "NativeAdrenoResources.cpp": "c0b4cd9ac4070b68f8a5c7837b50889834556ced0a8e8d4a522641e77a037da3",
+    "NativeAdrenoResourceTransaction.h": "df59f3e6767b2b2a77c6870e92729997f1d32b03b7c1e92175ca7973b9ae36ad",
+    "NativeAdrenoResourceTransaction.cpp": "e59b0541bd78b754ca14ab96a996477bbe80ce03c87d52866358f965457d89a7",
+    "tests/ResourceFixture.h": "e849e0d9bbbb515c0bbcae98b9abb49e67d2717ab14ae904f493ff49da9cb9d3",
+    "tests/test_resource_transaction.cpp": "10db7ae3060af1eeae24370fb953619b9b06d70a191c7887249f804616982f81",
+    "tests/run-resource-transactions.sh": "e9ec86b0cc7dd30249567e6676b24827e244dde4ddc73ce7d3083ad4e3b4f319"
+  },
+  "commands": [
+    "bash ../native-adreno-resources/tests/run-resource-transactions.sh",
+    "bash experimental/duo-metal/run-resource-tests.sh"
+  ],
+  "transaction_cases": 48,
+  "job_cases": 33,
+  "msm_adapter_cases": 25,
+  "sanitizers": [
+    "address",
+    "undefined"
+  ],
+  "exceptions": false,
+  "rtti": false,
+  "log_sha256": "dde7d26854f1e7e3a62ef6316d86a9e58233056269dd8e4a7543bb720bcc9665",
+  "published_air_sources_unchanged": true
+}

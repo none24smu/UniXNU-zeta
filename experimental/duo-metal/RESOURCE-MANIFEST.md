@@ -54,12 +54,12 @@ There is no established 4096-BO wire message. The new capability is an internal
 typed contract; old/missing capabilities are refused before allocation or lookup,
 and this code never invokes the old global-cache bridge as fallback.
 
-Next, implement and audit a bounded native transport and kernel job/cache hooks
-in this isolated driver branch. Choose exact-sized variable input only after
-verifying actual IOKit limits, or use a bounded immutable upload/seal/token design.
-Then wire full BO mapping holds and backing spans into actual VM/cache bodies,
-add connection identity and dirty ownership, and run recoverable physical lifetime
-tests before any opt-in profile. These steps remain unimplemented here.
+The isolated branch now has a [fixed inline transaction implementation](RESOURCE-TRANSACTIONS.md)
+for paged upload/seal/abort and immutable Job creation. Actual native dispatch,
+capability negotiation and kernel VM/cache hooks remain unintegrated. Next wire
+full BO mapping holds/backing spans, connection identity, dirty ownership and
+close-time retirement, then run recoverable physical tests before any opt-in
+profile. None of those native/physical gates is claimed by the host transaction tests.
 
 ## Tests
 

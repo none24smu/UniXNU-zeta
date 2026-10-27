@@ -1,0 +1,3 @@
+PASS: 48 bounded transaction cases (host callbacks; no IOKit/GPU execution)
+PASS: 33 resource validation/lifetime cases (host callbacks; no GPU execution)
+PASS: 25 MSM full-resource adapter cases, including 4096 BOs (host; no GPU execution)

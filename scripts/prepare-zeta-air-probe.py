@@ -20,9 +20,17 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for flag in ("workspace","artifact","control","seed-control","output","seed-output"):
         p.add_argument("--"+flag,type=Path,required=True)
+    p.add_argument("--disk-jobs-kernel",type=Path,
+                   help="Kernel directory containing kernel.macho and its .adt, with the opt-in RAM xpc view")
     a=p.parse_args();root=a.workspace.resolve();z=Path(__file__).resolve().parents[1]
     artifact=a.artifact.resolve();control=a.control.resolve();oldseed=a.seed_control.resolve()
     out=a.output.resolve();seed=a.seed_output.resolve()
+    if a.disk_jobs_kernel:
+        kernel=a.disk_jobs_kernel/"kernel.macho"
+        assert b"zeta-air: disk job view mount status" in kernel.read_bytes(), "Missing compiled AIR boot hook; use zeta_userland_trust_defconfig"
+        symbols=subprocess.check_output(["llvm-nm","--defined-only",str(kernel)],text=True)
+        for symbol in ("_sheng_boot_watchdog_policy","_native_bindfs_boot_mount","_native_gpu_addon2_stage"):
+            assert any(line.split()[-1]==symbol for line in symbols.splitlines() if line.split()), "Missing userland profile symbol: "+symbol
     meta=json.loads((artifact/"trust.json").read_text());assert len(meta["files"])==3
     assert meta["userland_ref"]=="3278f7f01796e74ecd634c0d348d2b255a37658f"
     for name,info in meta["files"].items():
@@ -50,6 +58,15 @@ def main():
     (daemons/"org.blu-sharky.adrenoprobed.plist").write_bytes(plistlib.dumps({
         "Label":"org.blu-sharky.adrenoprobed","ProgramArguments":["/private/var/ngpu/addons/air-probe/zeta-air-probe"],
         "Disabled":True,"RunAtLoad":False}))
+    if a.disk_jobs_kernel:
+        xpc=seed/"overlay/ngpu/xpc";xpc.mkdir()
+        original_xpc=root/"work/mount-os/root/System/Library/xpc"
+        assert (original_xpc/"launchd.plist").is_file()
+        for path in original_xpc.iterdir():
+            if path.name in ("launchd.plist","launchd.plist.sig"):continue
+            assert path.is_file(),path
+            shutil.copy2(path,xpc/path.name)
+        assert (xpc/"extensions.plist").is_file() and not (xpc/"launchd.plist").exists()
     shutil.copy2(oldseed/"preferences.plist",seed/"preferences.plist")
     spec=importlib.util.spec_from_file_location("trust",z/"scripts/make-zeta-trust-bundle.py")
     trust=importlib.util.module_from_spec(spec);spec.loader.exec_module(trust)
@@ -74,19 +91,33 @@ def main():
         "--busybox",root/"work/tools/apfs-guest/initramfs/bin/busybox","--mkapfs",root/"work/tools/apfsprogs-src/mkapfs/mkapfs",
         "--overlay",seed/"overlay","--preferences",seed/"preferences.plist","--skip-setup")
     for name in ("payload.img","kernel.macho","kernel.macho.adt","unixnu.toml"):shutil.copy2(control/name,out/name)
+    if a.disk_jobs_kernel:
+        for name in ("kernel.macho","kernel.macho.adt"):
+            shutil.copy2(a.disk_jobs_kernel/name,out/name)
+            run("copy-"+name,"mcopy","-o","-i",out/"payload.img",out/name,"::/EFI/UniXNU/Payloads/"+name)
+        config=(out/"unixnu.toml").read_text()
+        old_args=tomllib.loads(config)["entry"][0]["args"]
+        assert "zeta-air-probe=" not in old_args
+        config=config.replace(old_args,old_args+" zeta-air-probe=1",1)
+        (out/"unixnu.toml").write_text(config)
+        run("copy-config","mcopy","-o","-i",out/"payload.img",out/"unixnu.toml","::/EFI/UniXNU/unixnu.toml")
     args=tomllib.loads((out/"unixnu.toml").read_text())["entry"][0]["args"]
     assert len(args.encode())<1024 and "zeta-touch-listen2=0" in args
+    if a.disk_jobs_kernel:assert args.endswith(" zeta-air-probe=1")
     for source,target in ((seed/"data.dbr","scratch-data.img"),(seed/"kernel.macho.trustcache","kernel.macho.trustcache")):
         run("copy-"+target,"mcopy","-o","-i",out/"payload.img",source,"::/EFI/UniXNU/Payloads/"+target)
     run("fat-check","fsck.fat","-n",out/"payload.img")
     embedded=subprocess.check_output(["mtype","-i",str(out/"payload.img"),"::/EFI/UniXNU/unixnu.toml"])
-    assert embedded==(control/"unixnu.toml").read_bytes()
+    assert embedded==(out/"unixnu.toml").read_bytes()
     run("bootimg",root/"UniXNU/unixnu","bootimg","-D",z,"--uefi",root/"uefi-zeta","--fd",
         z/"build/bringup/highmem/dram-high-clockfix.fd","--dtb",z/"build/zeta/zeta.dtb","--ramdisk",out/"payload.img","-o",out/"boot.img")
     report=dict(control=str(control),artifact=meta,ram_boot_only=True,hardware_tested=False,
         preserved=["kernel","ADT","UEFI","boot args","system renderer","shader pack","persistent touch"],
         changes=["isolated AIR probe and public shader fixtures","one temporary launchd job","three static trust entries"],
         sha256={n:hashlib.sha256((out/n).read_bytes()).hexdigest() for n in ("kernel.macho","kernel.macho.adt","unixnu.toml","boot.img")})
+    if a.disk_jobs_kernel:
+        report["preserved"]=["UEFI","system renderer","shader pack","persistent touch"]
+        report["changes"] += ["opt-in RAM xpc view and kernel hook; original support files preserved, consolidated launchd cache absent from test view"]
     (out/"test-inputs.json").write_text(json.dumps(report,indent=2)+"\n")
     print(out/"boot.img")
 if __name__=="__main__":main()

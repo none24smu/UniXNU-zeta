@@ -55,8 +55,9 @@ typed contract; old/missing capabilities are refused before allocation or lookup
 and this code never invokes the old global-cache bridge as fallback.
 
 The isolated branch now has a [fixed inline transaction implementation](RESOURCE-TRANSACTIONS.md)
-for paged upload/seal/abort and immutable Job creation. Actual native dispatch,
-capability negotiation and kernel VM/cache hooks remain unintegrated. Next wire
+for paged upload/seal/abort and immutable Job creation. The [actual core receiver](RESOURCE-CLIENT.md)
+now exists behind a default-off validation-only source flag. Native SDK compilation,
+execution capability negotiation and VM/cache execution hooks remain open. Next wire
 full BO mapping holds/backing spans, connection identity, dirty ownership and
 close-time retirement, then run recoverable physical tests before any opt-in
 profile. None of those native/physical gates is claimed by the host transaction tests.

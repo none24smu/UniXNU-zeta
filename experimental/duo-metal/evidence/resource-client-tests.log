@@ -1,0 +1,7 @@
+PASS: default native resource staging/mapping methods unavailable
+PASS: 1 userspace-to-kernel round trip including CPU mapping leases and queue lifecycle, 1 version mismatch, 1 altered-size rejection and 8 client-side refusals over software SMMU/CP peers
+PASS: actual core staging/generation lookup, real VM permissions, cross-owner refusal and zero GPU/cache side effects (host peers)
+PASS: 1 userspace-to-kernel round trip including CPU mapping leases and queue lifecycle, 1 version mismatch, 1 altered-size rejection and 8 client-side refusals over software SMMU/CP peers
+PASS: 49 bounded transaction cases (host callbacks; no IOKit/GPU execution)
+PASS: 33 resource validation/lifetime cases (host callbacks; no GPU execution)
+PASS: 25 MSM full-resource adapter cases, including 4096 BOs (host; no GPU execution)

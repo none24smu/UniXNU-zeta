@@ -1,5 +1,5 @@
 diff --git a/NativeAdrenoMemory.cpp b/NativeAdrenoMemory.cpp
-index cec75a7..30f1eb1 100644
+index cec75a7..d42fefd 100644
 --- a/NativeAdrenoMemory.cpp
 +++ b/NativeAdrenoMemory.cpp
 @@ -115,7 +115,13 @@ IOReturn NativeAdrenoMemory::allocate(size_t bytes,unsigned bits,bool contiguous
@@ -17,6 +17,35 @@ index cec75a7..30f1eb1 100644
                  else status=NativeAdrenoMaintainOwnedPages(mapping_,bytes,NativeAdrenoClean);
                  if(status!=kIOReturnSuccess) {(void)release();return status;}
                  native_adreno_pool_stats[1]=native_adreno_pool_stats[1]+1;
+@@ -291,6 +297,13 @@ IOReturn NativeAdrenoMemory::acquireDeviceWrites(size_t offset,size_t bytes)
+     if(write_combined_)return kIOReturnSuccess;
+     return NativeAdrenoMaintainOwnedPages(static_cast<unsigned char *>(mapping_)+offset,bytes,NativeAdrenoInvalidate);
+ }
++IOReturn NativeAdrenoMemory::acquireScopedDeviceWrites(size_t offset,size_t bytes)
++{
++    if(!backed() || !prepared_ || quarantined_)return kIOReturnNotReady;
++    if(!bytes || ((offset|bytes)&4095) || offset>bytes_ || bytes>bytes_-offset)return kIOReturnBadArgument;
++    if(imported_ || write_combined_)return maintainImported(offset,bytes,NativeAdrenoInvalidate);
++    return NativeAdrenoMaintainOwnedPages(static_cast<unsigned char *>(mapping_)+offset,bytes,NativeAdrenoInvalidate);
++}
+ /* Imported pages have no kernel mapping here (and write-combined ones only a non-cacheable one); maintain each span's part of
+  * [offset, offset+bytes) by physical address. */
+ IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation op)
+diff --git a/NativeAdrenoMemory.h b/NativeAdrenoMemory.h
+index f91b19e..c6d54fc 100644
+--- a/NativeAdrenoMemory.h
++++ b/NativeAdrenoMemory.h
+@@ -96,6 +96,10 @@ public:
+      * for a client whose view turned out to be cacheable after all (NativeAdrenoVm::distrustWriteCombined). */
+     IOReturn publishForDevice(size_t offset,size_t bytes,bool device_writes,bool include_write_combined=false);
+     IOReturn acquireDeviceWrites(size_t offset,size_t bytes);
++    /* Scoped full-ownership path only: after proven completion and CPU exclusion,
++     * invalidate GPU-written pages, including write-combined aliases. Never clean
++     * CPU dirt back over GPU results. Not selected by legacy acquireImported(). */
++    IOReturn acquireScopedDeviceWrites(size_t offset,size_t bytes);
+     bool quarantined() const {return quarantined_;}
+     uint32_t deviceReferences() const {return device_references_;}
+     size_t bytes() const {return bytes_;}
 diff --git a/NativeAdrenoPublish.cpp b/NativeAdrenoPublish.cpp
 index 1d74546..ce43d50 100644
 --- a/NativeAdrenoPublish.cpp
@@ -218,9 +247,190 @@ index 0000000..6e86cf2
 +static_assert(sizeof(NativeAdrenoResourceMappingRequest)==8,"mapping request layout");
 +static_assert(sizeof(NativeAdrenoResourceMappingReply)==40,"mapping reply layout");
 +#endif
+diff --git a/NativeAdrenoResourceQueue.cpp b/NativeAdrenoResourceQueue.cpp
+new file mode 100644
+index 0000000..eadb79d
+--- /dev/null
++++ b/NativeAdrenoResourceQueue.cpp
+@@ -0,0 +1,130 @@
++/* SPDX-License-Identifier: MIT */
++#include "NativeAdrenoResourceQueue.h"
++#include "AdrenoPM4.h"
++namespace nr=NativeAdrenoResources;
++namespace {
++nr::Error convert(IOReturn status) {
++    if(status==kIOReturnSuccess)return nr::Error::Ok;
++    if(status==kIOReturnBusy)return nr::Error::Busy;
++    if(status==kIOReturnBadArgument)return nr::Error::Stale;
++    if(status==kIOReturnUnsupported)return nr::Error::Unsupported;
++    return nr::Error::Backend;
++}
++bool same(const nr::Mapping &a,const nr::Mapping &b) {
++    return a.handle==b.handle && a.generation==b.generation && a.owner==b.owner &&
++        a.backing==b.backing && a.mapping==b.mapping && a.iova==b.iova && a.bytes==b.bytes &&
++        a.backing_offset==b.backing_offset && a.permissions==b.permissions && !a.reserved && !b.reserved;
++}
++}
++nr::Error NativeAdrenoResourceQueue::lookup(uint64_t handle,nr::Mapping *out) {
++    if(!owner_ || !by_handle_ || !out)return nr::Error::Invalid;
++    const auto status=by_handle_(context_,handle,out);
++    if(status!=nr::Error::Ok)return status;
++    return out->owner==owner_?nr::Error::Ok:nr::Error::Ownership;
++}
++nr::Error NativeAdrenoResourceQueue::revalidate(const nr::Mapping &mapping) {
++    nr::Mapping current{};const auto status=lookup(mapping.handle,&current);
++    if(status!=nr::Error::Ok)return status;
++    if(!same(mapping,current))return nr::Error::Stale;
++    uint64_t iova=0;size_t bytes=0;unsigned permissions=0;
++    if(vm_.describe(mapping.mapping,&iova,&bytes,&permissions) || iova!=mapping.iova ||
++       bytes!=mapping.bytes || permissions!=mapping.permissions)return nr::Error::Stale;
++    return nr::Error::Ok;
++}
++nr::Error NativeAdrenoResourceQueue::cacheMapping(const nr::CacheSpan &span,nr::Mapping *out) {
++    if(!by_backing_ || span.reserved || !span.bytes || !span.access ||
++       (span.access&~uint32_t(nr::Read|nr::Write|nr::Execute)))return nr::Error::Invalid;
++    auto status=by_backing_(context_,span.backing,out);if(status!=nr::Error::Ok)return status;
++    status=revalidate(*out);if(status!=nr::Error::Ok)return status;
++    // Initial path owns complete used BOs. Partial/shared imported-page aliases
++    // need a canonical backing+CPU ownership implementation before acceptance.
++    if(out->backing!=span.backing || out->backing_offset || span.offset || span.bytes!=out->bytes)
++        return nr::Error::Unsupported;
++    if((span.access&uint32_t(nr::Read|nr::Write))&~out->permissions)return nr::Error::Permission;
++    return nr::Error::Ok;
++}
++nr::Error NativeAdrenoResourceQueue::maintain(const nr::CacheSpan *spans,size_t count,bool acquire) {
++    if(!spans || !count || count>nr::MaxResources)return nr::Error::Invalid;
++    // No CPU maintenance while any prior job may still use the mapping. This
++    // initial path intentionally admits one native Job, never a legacy fallback.
++    if(!acquire && ring_.outstanding())return nr::Error::Busy;
++    for(size_t i=0;i<count;++i) {
++        nr::Mapping mapping{};const auto status=cacheMapping(spans[i],&mapping);
++        if(status!=nr::Error::Ok)return status;
++    }
++    for(size_t i=0;i<count;++i) {
++        if(acquire && !(spans[i].access&nr::Write))continue;
++        nr::Mapping mapping{};const auto status=cacheMapping(spans[i],&mapping);
++        if(status!=nr::Error::Ok)return status;
++        const auto maintained=acquire?vm_.acquireHeld(mapping.mapping):vm_.publishHeld(mapping.mapping);
++        if(maintained)return convert(maintained);
++    }
++    return nr::Error::Ok;
++}
++nr::SubmitResult NativeAdrenoResourceQueue::enqueue(uint64_t owner,uint64_t queue,const nr::Use *uses,
++    size_t use_count,const nr::Command *commands,size_t count) {
++    auto reject=[](nr::Error e){return nr::SubmitResult{e,nr::Acceptance::Rejected,0};};
++    if(owner!=owner_ || queue!=queue_)return reject(nr::Error::Ownership);
++    if(!uses || !use_count || use_count>nr::MaxResources || !commands || !count || count>nr::MaxIbs)
++        return reject(nr::Error::Invalid);
++    if(ring_.outstanding())return reject(nr::Error::Busy);
++    if(ring_.poisoned() || vm_.poisoned() || ring_.lastSubmitted()==UINT32_MAX)return reject(nr::Error::Backend);
++    for(size_t i=0;i<use_count;++i) {
++        const auto valid=revalidate(uses[i].mapping);if(valid!=nr::Error::Ok)return reject(valid);
++    }
++    uint32_t words[nr::MaxIbs*4];size_t word_count=0;
++    for(size_t i=0;i<count;++i) {
++        const auto &command=commands[i];
++        if(!command.bytes || (command.iova&3) || (command.bytes&3) || command.bytes>0xfffffu*4u)
++            return reject(nr::Error::Bounds);
++        bool covered=false;
++        for(size_t j=0;j<use_count;++j) {
++            const auto &use=uses[j];
++            if((use.access&(nr::Read|nr::Execute))!=(nr::Read|nr::Execute) ||
++               use.offset>use.mapping.bytes || use.bytes>use.mapping.bytes-use.offset)continue;
++            const uint64_t begin=use.mapping.iova+use.offset;
++            if(command.iova>=begin && command.iova-begin<=use.bytes &&
++               command.bytes<=use.bytes-(command.iova-begin)) {covered=true;break;}
++        }
++        if(!covered)return reject(nr::Error::Permission);
++        uint32_t header=0;if(AdrenoPM4Type7(0x3f,3,&header)!=AdrenoPM4Success)return reject(nr::Error::Backend);
++        words[word_count++]=header;words[word_count++]=uint32_t(command.iova);
++        words[word_count++]=uint32_t(command.iova>>32);words[word_count++]=uint32_t(command.bytes/4);
++    }
++    if(vm_.invalidateTlb())return reject(nr::Error::Backend);
++    uint32_t fence=0;const auto status=ring_.submitFramed(words,word_count,&fence);
++    if(!status && fence)return {nr::Error::Ok,nr::Acceptance::Accepted,fence};
++    if(ring_.poisoned() || fence)return {nr::Error::Backend,nr::Acceptance::Uncertain,fence};
++    return reject(convert(status));
++}
++nr::Hooks NativeAdrenoResourceQueue::hooks() {
++    return {this,[](void *p,uint64_t handle,nr::Mapping *out) {
++        return static_cast<NativeAdrenoResourceQueue *>(p)->lookup(handle,out);
++    },[](void *p,const nr::Mapping &mapping) {
++        auto &q=*static_cast<NativeAdrenoResourceQueue *>(p);const auto valid=q.revalidate(mapping);
++        return valid==nr::Error::Ok?convert(q.vm_.holdJob(mapping.mapping)):valid;
++    },[](void *p,const nr::Mapping &mapping,nr::Release why) {
++        auto &q=*static_cast<NativeAdrenoResourceQueue *>(p);const auto valid=q.revalidate(mapping);
++        if(valid!=nr::Error::Ok)return valid;
++        return convert(why==nr::Release::BeforeSubmit?q.vm_.releaseUnsubmittedJob(mapping.mapping):
++                       q.vm_.retireJobAfterCompletion(mapping.mapping));
++    },[](void *p,const nr::CacheSpan *spans,size_t count) {
++        return static_cast<NativeAdrenoResourceQueue *>(p)->maintain(spans,count,false);
++    },[](void *p,uint64_t owner,uint64_t queue,const nr::Use *uses,size_t use_count,const nr::Command *commands,size_t count) {
++        return static_cast<NativeAdrenoResourceQueue *>(p)->enqueue(owner,queue,uses,use_count,commands,count);
++    },[](void *p,uint64_t fence) {
++        auto &q=*static_cast<NativeAdrenoResourceQueue *>(p);
++        if(!fence || fence>UINT32_MAX)return nr::Completion::Uncertain;
++        const auto status=q.ring_.wait(uint32_t(fence),&q.clock_,0,nullptr);
++        return status==NativeAdrenoRingFenceComplete?nr::Completion::Complete:
++            status==NativeAdrenoRingFenceTimeout?nr::Completion::Pending:nr::Completion::Uncertain;
++    },[](void *p,const nr::CacheSpan *spans,size_t count) {
++        return static_cast<NativeAdrenoResourceQueue *>(p)->maintain(spans,count,true);
++    },[](void *){return false;}, // No timeout/client-exit/reset assumption.
++    [](void *p,uint64_t owner,uint64_t queue) {
++        auto &q=*static_cast<NativeAdrenoResourceQueue *>(p);
++        if(owner!=q.owner_ || queue!=q.queue_)return nr::Error::Ownership;
++        if(q.ring_.poisoned() || q.vm_.poisoned() || q.ring_.lastSubmitted()==UINT32_MAX)return nr::Error::Backend;
++        return q.ring_.outstanding()?nr::Error::Busy:nr::Error::Ok;
++    }};
++}
+diff --git a/NativeAdrenoResourceQueue.h b/NativeAdrenoResourceQueue.h
+new file mode 100644
+index 0000000..9c892af
+--- /dev/null
++++ b/NativeAdrenoResourceQueue.h
+@@ -0,0 +1,39 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef NATIVE_ADRENO_RESOURCE_QUEUE_H
++#define NATIVE_ADRENO_RESOURCE_QUEUE_H
++#include "NativeAdrenoResources.h"
++#include "NativeAdrenoVm.h"
++#include "NativeAdrenoRing.h"
++
++/* Internal single-in-flight complete-resource path; NOT a wire method or a
++ * readiness capability. Caller owns this context, all callback storage, the VM
++ * and ring until every Job is destroyed. All namespace/cache/queue operations
++ * require one gate, exclusive CPU access to whole used BOs, no physical import
++ * aliases and no competing legacy submissions. These are caller obligations,
++ * not established by configuring this object. No reset/quiescence is invented.
++ * Source profile stays disabled pending actual native/ownership qualification. */
++class NativeAdrenoResourceQueue final {
++public:
++    using Lookup=NativeAdrenoResources::Error (*)(void *,uint64_t,NativeAdrenoResources::Mapping *);
++    NativeAdrenoResourceQueue(NativeAdrenoVm &vm,NativeAdrenoRing &ring,
++        const NativeAdrenoRingClock &clock,uint64_t owner,uint64_t queue,
++        void *context,Lookup by_handle,Lookup by_backing):
++        vm_(vm),ring_(ring),clock_(clock),owner_(owner),queue_(queue),
++        context_(context),by_handle_(by_handle),by_backing_(by_backing) {}
++    NativeAdrenoResources::Hooks hooks();
++private:
++    NativeAdrenoVm &vm_;
++    NativeAdrenoRing &ring_;
++    NativeAdrenoRingClock clock_;
++    uint64_t owner_,queue_;
++    void *context_;
++    Lookup by_handle_,by_backing_;
++    NativeAdrenoResources::Error lookup(uint64_t,NativeAdrenoResources::Mapping *);
++    NativeAdrenoResources::Error revalidate(const NativeAdrenoResources::Mapping &);
++    NativeAdrenoResources::Error cacheMapping(const NativeAdrenoResources::CacheSpan &,
++                                            NativeAdrenoResources::Mapping *);
++    NativeAdrenoResources::Error maintain(const NativeAdrenoResources::CacheSpan *,size_t,bool acquire);
++    NativeAdrenoResources::SubmitResult enqueue(uint64_t,uint64_t,const NativeAdrenoResources::Use *,size_t,
++                                               const NativeAdrenoResources::Command *,size_t);
++};
++#endif
 diff --git a/NativeAdrenoResourceTransaction.cpp b/NativeAdrenoResourceTransaction.cpp
 new file mode 100644
-index 0000000..8f1b967
+index 0000000..a270553
 --- /dev/null
 +++ b/NativeAdrenoResourceTransaction.cpp
 @@ -0,0 +1,186 @@
@@ -260,7 +470,7 @@ index 0000000..8f1b967
 +    // as native execution readiness. Private Job storage never escapes Session.
 +    Hooks h{context,lookup,
 +        [](void *,const Mapping &){return Error::Unsupported;},
-+        [](void *,const Mapping &,Release){},
++        [](void *,const Mapping &,Release){return Error::Unsupported;},
 +        [](void *,const CacheSpan *,size_t){return Error::Unsupported;},
 +        [](void *,uint64_t,uint64_t,const Use *,size_t,const Command *,size_t){
 +            return SubmitResult{Error::Unsupported,Acceptance::Rejected,0};},
@@ -515,10 +725,10 @@ index 0000000..58058b2
 +#endif
 diff --git a/NativeAdrenoResources.cpp b/NativeAdrenoResources.cpp
 new file mode 100644
-index 0000000..ab8d12e
+index 0000000..0f26e76
 --- /dev/null
 +++ b/NativeAdrenoResources.cpp
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,175 @@
 +/* SPDX-License-Identifier: MIT */
 +#include "NativeAdrenoResources.h"
 +#include <new>
@@ -616,23 +826,44 @@ index 0000000..ab8d12e
 +    }
 +    *out=job;return Error::Ok;
 +}
-+void Job::releaseAll(Release reason) {
-+    while(held_)hooks_.release(hooks_.context,pins_[--held_],reason);
++Error Job::releaseAll(Release reason) {
++    while(held_) {
++        const Error e=hooks_.release(hooks_.context,pins_[held_-1],reason);
++        if(e!=Error::Ok)return e;
++        --held_;
++    }
++    return Error::Ok;
++}
++Error Job::finishRelease(Release reason,State final_state) {
++    pending_release_=reason;released_state_=final_state;release_pending_=true;
++    const Error e=releaseAll(reason);
++    if(e!=Error::Ok) {state_=State::Uncertain;return e;}
++    release_pending_=false;state_=final_state;return Error::Ok;
 +}
 +Error Job::submit() {
 +    if(state_!=State::Prepared)return Error::Busy;
++    if(hooks_.admit) {
++        const Error e=hooks_.admit(hooks_.context,owner_,queue_);
++        if(e!=Error::Ok) {state_=State::Rejected;return e;}
++    }
 +    for(;held_<pin_count_;++held_) {
 +        const Error e=hooks_.hold(hooks_.context,pins_[held_]);
-+        if(e!=Error::Ok) { releaseAll(Release::BeforeSubmit);state_=State::Rejected;return e; }
++        if(e!=Error::Ok) {
++            const Error release=finishRelease(Release::BeforeSubmit,State::Rejected);
++            return release==Error::Ok?e:release;
++        }
 +    }
 +    Error e=hooks_.publish(hooks_.context,spans_,span_count_);
-+    if(e!=Error::Ok) { releaseAll(Release::BeforeSubmit);state_=State::Rejected;return e; }
++    if(e!=Error::Ok) {
++        const Error release=finishRelease(Release::BeforeSubmit,State::Rejected);
++        return release==Error::Ok?e:release;
++    }
 +    const SubmitResult result=hooks_.enqueue(hooks_.context,owner_,queue_,uses_,use_count_,commands_,command_count_);
 +    fence_=result.fence;
 +    fence_covers_work_=result.acceptance==Acceptance::Accepted && fence_;
 +    if(result.acceptance==Acceptance::Rejected && !fence_) {
-+        releaseAll(Release::BeforeSubmit);state_=State::Rejected;
-+        return result.error==Error::Ok?Error::Backend:result.error;
++        const Error release=finishRelease(Release::BeforeSubmit,State::Rejected);
++        return release!=Error::Ok?release:result.error==Error::Ok?Error::Backend:result.error;
 +    }
 +    if(result.acceptance==Acceptance::Accepted && fence_ && result.error==Error::Ok) {
 +        state_=State::InFlight;return Error::Ok;
@@ -641,6 +872,7 @@ index 0000000..ab8d12e
 +    return result.error==Error::Ok?Error::Backend:result.error;
 +}
 +Error Job::poll() {
++    if(release_pending_)return finishRelease(pending_release_,released_state_);
 +    if(state_==State::Completed)return Error::Ok;
 +    if((state_!=State::InFlight && state_!=State::Uncertain) || !fence_covers_work_)return Error::Busy;
 +    const Completion c=hooks_.completion(hooks_.context,fence_);
@@ -651,14 +883,15 @@ index 0000000..ab8d12e
 +    /* Even after completion, acquisition failure keeps pins for retry/recovery. */
 +    const Error e=hooks_.acquire(hooks_.context,spans_,span_count_);
 +    if(e!=Error::Ok) {state_=State::Uncertain;return e;}
-+    releaseAll(Release::Completed);state_=State::Completed;return Error::Ok;
++    return finishRelease(Release::Completed,State::Completed);
 +}
 +Error Job::recover() {
++    if(release_pending_)return finishRelease(pending_release_,released_state_);
 +    if(state_!=State::InFlight && state_!=State::Uncertain)return Error::Busy;
 +    if(!hooks_.quiesce(hooks_.context))return Error::Busy;
 +    const Error e=hooks_.acquire(hooks_.context,spans_,span_count_);
 +    if(e!=Error::Ok)return e;
-+    releaseAll(Release::Quiesced);state_=State::Completed;return Error::Ok;
++    return finishRelease(Release::Quiesced,State::Completed);
 +}
 +Error Job::destroy(Job *job) {
 +    if(!job)return Error::Invalid;
@@ -673,10 +906,10 @@ index 0000000..ab8d12e
 +}
 diff --git a/NativeAdrenoResources.h b/NativeAdrenoResources.h
 new file mode 100644
-index 0000000..458454e
+index 0000000..e055571
 --- /dev/null
 +++ b/NativeAdrenoResources.h
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,106 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef NATIVE_ADRENO_RESOURCES_H
 +#define NATIVE_ADRENO_RESOURCES_H
@@ -721,7 +954,9 @@ index 0000000..458454e
 +    /* hold must atomically revalidate the entire mapping snapshot and ownership,
 +     * then pin it. A failed hold must not acquire a reference. */
 +    Error (*hold)(void *,const Mapping &);
-+    void (*release)(void *,const Mapping &,Release);
++    /* Failure MUST leave this pin held. Job retains the failed mapping and
++     * retries retirement; successful pins are never released twice. */
++    Error (*release)(void *,const Mapping &,Release);
 +    Error (*publish)(void *,const CacheSpan *,size_t);
 +    /* One transaction, full referenced set + separate commands. Accepted means
 +     * its fence covers ALL accepted work, even on a partial-submit error. If an
@@ -731,6 +966,9 @@ index 0000000..458454e
 +    Completion (*completion)(void *,uint64_t);
 +    Error (*acquire)(void *,const CacheSpan *,size_t);
 +    bool (*quiesce)(void *); /* true ONLY after proven GPU cancel/quiescence */
++    /* Optional backend admission before hold/cache side effects. Native queue
++     * adapters must authenticate their bound queue and availability here. */
++    Error (*admit)(void *,uint64_t owner,uint64_t queue)=nullptr;
 +};
 +class Job final {
 +public:
@@ -756,7 +994,8 @@ index 0000000..458454e
 +    ~Job()=default;
 +    Job(const Job &)=delete;
 +    Job &operator=(const Job &)=delete;
-+    void releaseAll(Release);
++    Error releaseAll(Release);
++    Error finishRelease(Release,State);
 +    Allocator allocator_;
 +    Hooks hooks_;
 +    Use *uses_=nullptr;
@@ -768,7 +1007,9 @@ index 0000000..458454e
 +    State state_=State::Prepared;
 +    uint64_t fence_=0;
 +    uint64_t owner_=0,queue_=0;
-+    bool fence_covers_work_=false;
++    bool fence_covers_work_=false,release_pending_=false;
++    Release pending_release_=Release::BeforeSubmit;
++    State released_state_=State::Rejected;
 +};
 +/* External serialization must cover lookup/creation through hold/submit and all
 + * mutation of the client namespace. Callbacks cannot reenter or throw. Lookup
@@ -792,10 +1033,10 @@ index 238ebb6..ac01609 100644
       * IB sat in a CPU cache. While write-combined BOs are trusted, every line of this submission's IBs is compared as a CPU cache and
       * DRAM hold it (bounded). A dirty line means a client view still caches its BOs: maintain every BO from now on, this submission
 diff --git a/NativeAdrenoUserClient.cpp b/NativeAdrenoUserClient.cpp
-index b3dd3b6..8ff8c1c 100644
+index b3dd3b6..27a1e19 100644
 --- a/NativeAdrenoUserClient.cpp
 +++ b/NativeAdrenoUserClient.cpp
-@@ -21,6 +21,96 @@ static void noteImport(IOReturn status,uint32_t stage,uint64_t bytes,uint64_t ad
+@@ -21,6 +21,119 @@ static void noteImport(IOReturn status,uint32_t stage,uint64_t bytes,uint64_t ad
  }
  #include <IOKit/IOLib.h>
  #include <string.h>
@@ -863,6 +1104,29 @@ index b3dd3b6..8ff8c1c 100644
 +    memcpy(output,&reply,sizeof(reply));return kIOReturnSuccess;
 +}
 +#endif
++NativeAdrenoResources::Error NativeAdrenoUserClient::describeResource(uint64_t handle,NativeAdrenoResources::Mapping *out)
++{
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    return resourceLookup(this,handle,out);
++#else
++    (void)handle;(void)out;return NativeAdrenoResources::Error::Unsupported;
++#endif
++}
++NativeAdrenoResources::Error NativeAdrenoUserClient::describeResourceBacking(uint64_t backing,NativeAdrenoResources::Mapping *out)
++{
++#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    if(!open_ || !out || !backing)return nr::Error::Stale;
++    for(size_t i=0;i<entry_count_;++i) {
++        Entry &entry=entries_[i];
++        if(!entry.used || entry.resource_backing!=backing)continue;
++        if(entry.memory.imported())return nr::Error::Unsupported;
++        return resourceLookup(this,entry.handle,out);
++    }
++    return nr::Error::Stale;
++#else
++    (void)backing;(void)out;return NativeAdrenoResources::Error::Unsupported;
++#endif
++}
 +bool NativeAdrenoUserClient::resourceStagingActive() const
 +{
 +#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
@@ -892,7 +1156,7 @@ index b3dd3b6..8ff8c1c 100644
  NativeAdrenoUserClient::Entry *NativeAdrenoUserClient::find(uint64_t handle)
  {
      if(handle)for(size_t i=0;i<entry_count_;++i)if(entries_[i].used && entries_[i].handle==handle)return &entries_[i];
-@@ -31,6 +121,9 @@ void NativeAdrenoUserClient::clear(Entry &entry)
+@@ -31,6 +144,9 @@ void NativeAdrenoUserClient::clear(Entry &entry)
      entry.handle=0;entry.mapped=0;entry.iova=0;entry.used=false;
      entry.mapped_state=false;entry.unreleasable=false;entry.metadata_bytes=0;
      entry.token=0;entry.mapping_leases=0;
@@ -902,7 +1166,7 @@ index b3dd3b6..8ff8c1c 100644
  }
  NativeAdrenoUserClient::Entry *NativeAdrenoUserClient::free()
  {
-@@ -57,12 +150,19 @@ IOReturn NativeAdrenoUserClient::open(uint32_t abi_version,NativeAdrenoVm *vm,
+@@ -57,12 +173,19 @@ IOReturn NativeAdrenoUserClient::open(uint32_t abi_version,NativeAdrenoVm *vm,
      if(!vm || !submit || !ring || input_bits<31 || input_bits>48 ||
          output_bits<32 || output_bits>48 || vm->poisoned() || submit->poisoned() ||
          ring->poisoned())return kIOReturnBadArgument;
@@ -922,7 +1186,7 @@ index b3dd3b6..8ff8c1c 100644
      queues_[0]={0,true};
      /* Each client is a new GPU context for the CP: its first submission clears the BR/BV synchronization state. */
      ring_->requestContextReset();
-@@ -82,6 +182,7 @@ IOReturn NativeAdrenoUserClient::setScope(uint32_t queue_base,uint64_t window_st
+@@ -82,6 +205,7 @@ IOReturn NativeAdrenoUserClient::setScope(uint32_t queue_base,uint64_t window_st
  IOReturn NativeAdrenoUserClient::close()
  {
      if(!open_)return kIOReturnNotReady;
@@ -930,7 +1194,7 @@ index b3dd3b6..8ff8c1c 100644
      if(liveObjects() || submit_->rangeOutstanding(queue_base_,NativeAdrenoAbiMaxQueues))return kIOReturnBusy;
      for(size_t i=1;i<NativeAdrenoAbiMaxQueues;++i)if(queues_[i].active)return kIOReturnBusy;
      IODeleteData(entries_,Entry,entry_count_);entry_count_=0;
-@@ -93,6 +194,7 @@ IOReturn NativeAdrenoUserClient::releaseAll(const NativeAdrenoRingClock *clock,u
+@@ -93,6 +217,7 @@ IOReturn NativeAdrenoUserClient::releaseAll(const NativeAdrenoRingClock *clock,u
  {
      if(!open_)return kIOReturnNotReady;
      if(!clock)return kIOReturnBadArgument;
@@ -938,7 +1202,7 @@ index b3dd3b6..8ff8c1c 100644
      IOReturn status=submit_->waitRange(queue_base_,NativeAdrenoAbiMaxQueues,clock,timeout_us);
      if(status)return status;
      for(size_t index=0;index<entry_count_;++index) {
-@@ -133,6 +235,9 @@ IOReturn NativeAdrenoUserClient::allocBo(const NativeAdrenoAbiBoAlloc *request,
+@@ -133,6 +258,9 @@ IOReturn NativeAdrenoUserClient::allocBo(const NativeAdrenoAbiBoAlloc *request,
          return kIOReturnBadArgument;
      Entry *entry=free();
      if(!entry)return kIOReturnNoResources;
@@ -948,7 +1212,7 @@ index b3dd3b6..8ff8c1c 100644
      /* A scattered allocation costs one VM span per physical page (int-030: 16 MiB came back as 4096 single-page spans, the
       * whole span table), so larger objects try one contiguous run first and fall back to scattered pages unless the
       * caller demanded contiguity. */
-@@ -160,6 +265,9 @@ IOReturn NativeAdrenoUserClient::allocBo(const NativeAdrenoAbiBoAlloc *request,
+@@ -160,6 +288,9 @@ IOReturn NativeAdrenoUserClient::allocBo(const NativeAdrenoAbiBoAlloc *request,
      }
      entry->used=true;entry->handle=next_handle_++;entry->token=(uint32_t)(entry-entries_)+1;
      entry->mapped=0;entry->iova=0;entry->mapped_state=false;
@@ -958,7 +1222,7 @@ index b3dd3b6..8ff8c1c 100644
      reply->handle=entry->handle;
      return kIOReturnSuccess;
  }
-@@ -176,6 +284,9 @@ IOReturn NativeAdrenoUserClient::importBo(const NativeAdrenoAbiBoImport *request
+@@ -176,6 +307,9 @@ IOReturn NativeAdrenoUserClient::importBo(const NativeAdrenoAbiBoImport *request
      }
      Entry *entry=free();
      if(!entry) {noteImport(kIOReturnNoResources,2,request->bytes,request->address);return kIOReturnNoResources;}
@@ -968,7 +1232,7 @@ index b3dd3b6..8ff8c1c 100644
      const IOReturn status=entry->memory.importTask(task,request->address,(size_t)request->bytes,output_bits_,(size_t)request->bytes);
      if(status) {
          noteImport(status,native_adreno_import_stage,request->bytes,request->address);
-@@ -185,6 +296,9 @@ IOReturn NativeAdrenoUserClient::importBo(const NativeAdrenoAbiBoImport *request
+@@ -185,6 +319,9 @@ IOReturn NativeAdrenoUserClient::importBo(const NativeAdrenoAbiBoImport *request
      }
      entry->used=true;entry->handle=next_handle_++;entry->token=(uint32_t)(entry-entries_)+1;
      entry->mapped=0;entry->iova=0;entry->mapped_state=false;
@@ -978,7 +1242,7 @@ index b3dd3b6..8ff8c1c 100644
      reply->handle=entry->handle;
      return kIOReturnSuccess;
  }
-@@ -208,10 +322,16 @@ IOReturn NativeAdrenoUserClient::mapBo(const NativeAdrenoAbiBoMap *request,
+@@ -208,10 +345,16 @@ IOReturn NativeAdrenoUserClient::mapBo(const NativeAdrenoAbiBoMap *request,
       * write-back inner-shareable (Linux's IOMMU_CACHE PTE) and the CPU caches over it need no maintenance. The GPU's own BOs stay
       * non-cacheable: their CPU view is write-combined, and a snoop could find a stale line of the kernel's cacheable alias. */
      const bool coherent=entry->memory.imported() && native_adreno_io_coherent;
@@ -995,7 +1259,7 @@ index b3dd3b6..8ff8c1c 100644
      if(end>window_peak_)window_peak_=end;
      reply->iova=request->iova;
      return kIOReturnSuccess;
-@@ -321,6 +441,10 @@ IOReturn NativeAdrenoUserClient::status(NativeAdrenoAbiStatus *reply)
+@@ -321,6 +464,10 @@ IOReturn NativeAdrenoUserClient::status(NativeAdrenoAbiStatus *reply)
  size_t NativeAdrenoUserClient::inputSize(uint32_t method)
  {
      switch(method) {
@@ -1006,7 +1270,7 @@ index b3dd3b6..8ff8c1c 100644
      case NativeAdrenoMethodQuery:
      case NativeAdrenoMethodGetTimestamp:
      case NativeAdrenoMethodGetStatus:
-@@ -343,6 +467,10 @@ size_t NativeAdrenoUserClient::inputSize(uint32_t method)
+@@ -343,6 +490,10 @@ size_t NativeAdrenoUserClient::inputSize(uint32_t method)
  size_t NativeAdrenoUserClient::outputSize(uint32_t method)
  {
      switch(method) {
@@ -1017,7 +1281,7 @@ index b3dd3b6..8ff8c1c 100644
      case NativeAdrenoMethodQuery:return sizeof(NativeAdrenoAbiParams);
      case NativeAdrenoMethodBoAlloc:return sizeof(NativeAdrenoAbiBoAllocReply);
      case NativeAdrenoMethodBoMap:return sizeof(NativeAdrenoAbiBoMapReply);
-@@ -389,6 +517,12 @@ IOReturn NativeAdrenoUserClient::dispatch(uint32_t method,const void *input,
+@@ -389,6 +540,12 @@ IOReturn NativeAdrenoUserClient::dispatch(uint32_t method,const void *input,
      if((expected_in && !input) || (expected_out && !output))return kIOReturnBadArgument;
      IOReturn status=kIOReturnSuccess;
      switch(method) {
@@ -1031,7 +1295,7 @@ index b3dd3b6..8ff8c1c 100644
          NativeAdrenoAbiParams reply{};
          status=query(&reply);
 diff --git a/NativeAdrenoUserClient.h b/NativeAdrenoUserClient.h
-index bcd1728..24313db 100644
+index bcd1728..f720694 100644
 --- a/NativeAdrenoUserClient.h
 +++ b/NativeAdrenoUserClient.h
 @@ -5,6 +5,7 @@
@@ -1066,7 +1330,7 @@ index bcd1728..24313db 100644
      Entry *find(uint64_t);
      Entry *free();
      static void clear(Entry &);
-@@ -68,6 +79,11 @@ public:
+@@ -68,6 +79,15 @@ public:
      /* Connection teardown: waits for every outstanding job, then unmaps and frees every object, closes every queue and
       * closes the client. The first failure stops it and leaves what remains live; nothing is forced. */
      IOReturn releaseAll(const NativeAdrenoRingClock *,uint32_t timeout_us);
@@ -1075,15 +1339,97 @@ index bcd1728..24313db 100644
 +    IOReturn closeResourceStaging();
 +    IOReturn pollResourceStagingRetirement();
 +    bool resourceStagingActive() const;
++    /* Trusted kernel queue callbacks only; not external methods/readiness.
++     * Backing lookup refuses imports until physical alias ownership is tracked. */
++    NativeAdrenoResources::Error describeResource(uint64_t,NativeAdrenoResources::Mapping *);
++    NativeAdrenoResources::Error describeResourceBacking(uint64_t,NativeAdrenoResources::Mapping *);
      /* Backing object of a token returned by cpuMap while its lease is held (clientMemoryForType); null otherwise. */
      NativeAdrenoMemory *memoryForToken(uint32_t token);
      IOReturn query(NativeAdrenoAbiParams *);
+diff --git a/NativeAdrenoVm.cpp b/NativeAdrenoVm.cpp
+index 917cbd9..5cbcbca 100644
+--- a/NativeAdrenoVm.cpp
++++ b/NativeAdrenoVm.cpp
+@@ -427,6 +427,34 @@ IOReturn NativeAdrenoVm::peekWords(uint64_t iova,uint32_t *out,size_t count) con
+     }
+     return kIOReturnBadArgument;
+ }
++static void addScopedStat(uint64_t &value,uint64_t amount)
++{value=amount>UINT64_MAX-value?UINT64_MAX:value+amount;}
++IOReturn NativeAdrenoVm::publishHeld(uint64_t handle)
++{
++    if(!attached_ || poisoned_)return kIOReturnNotReady;
++    Mapping *m=find(handle);if(!m || !m->jobs || m->mapped_spans!=m->spans)return kIOReturnBadArgument;
++    const IOReturn status=m->memory->publishForDevice(0,m->memory->bytes(),true,true);
++    if(status)return status; // Job keeps every pin; no enqueue on failure.
++    addScopedStat(scoped_cache_.publish_objects,1);addScopedStat(scoped_cache_.publish_bytes,m->memory->bytes());
++    return kIOReturnSuccess;
++}
++IOReturn NativeAdrenoVm::acquireHeld(uint64_t handle)
++{
++    if(!attached_ || poisoned_)return kIOReturnNotReady;
++    Mapping *m=find(handle);
++    if(!m || !m->jobs || m->mapped_spans!=m->spans || !(m->permissions&ArmSmmu4KWrite))return kIOReturnBadArgument;
++    const IOReturn status=m->memory->acquireScopedDeviceWrites(0,m->memory->bytes());
++    if(status)return status; // Retain pins for retry; no legacy global fallback.
++    addScopedStat(scoped_cache_.acquire_objects,1);addScopedStat(scoped_cache_.acquire_bytes,m->memory->bytes());
++    return kIOReturnSuccess;
++}
++IOReturn NativeAdrenoVm::releaseUnsubmittedJob(uint64_t handle)
++{
++    if(!attached_ || poisoned_)return kIOReturnNotReady;
++    Mapping *record=find(handle);if(!record || !record->jobs)return kIOReturnBadArgument;
++    const IOReturn status=record->memory->retireAfterQuiescence();if(status)return status;
++    --record->jobs;return kIOReturnSuccess;
++}
+ IOReturn NativeAdrenoVm::holdJob(uint64_t handle)
+ {
+     if(!attached_ || poisoned_)return kIOReturnNotReady;
+diff --git a/NativeAdrenoVm.h b/NativeAdrenoVm.h
+index c82544d..938c89d 100644
+--- a/NativeAdrenoVm.h
++++ b/NativeAdrenoVm.h
+@@ -8,6 +8,9 @@ struct NativeAdrenoVmRegion {
+     ArmSmmu4KLiveArena *arena;
+     ArmSmmu4KLiveState *state;
+ };
++struct NativeAdrenoScopedCacheStats {
++    uint64_t publish_objects=0,publish_bytes=0,acquire_objects=0,acquire_bytes=0;
++};
+ struct NativeAdrenoVmResult {
+     ArmSmmu4KStatus operation,quarantine;
+     size_t completed_spans;
+@@ -54,6 +57,7 @@ class NativeAdrenoVm final {
+     uint64_t next_handle_=1;
+     bool attached_=false,poisoned_=false,distrust_write_combined_=false;
+     NativeAdrenoVmResult result_{};
++    NativeAdrenoScopedCacheStats scoped_cache_{};
+     ArmSmmu4KLiveRegion region(unsigned) const;
+     ArmSmmu4KStatus observe() const;
+     /* The route check alone: the table walk is the update's own (it verifies every region before the first store and after the last), so
+@@ -82,6 +86,16 @@ public:
+         unsigned permissions,unsigned writeback,unsigned shareability,uint64_t *handle);
+     IOReturn unmap(uint64_t handle);
+     IOReturn holdJob(uint64_t handle);
++    /* Internal resource hook building blocks, never ABI-v1 readiness. All calls
++     * require the namespace/queue gate. Only a held, whole live mapping is
++     * maintained; inactive resident BOs are not scanned. Caller must enforce CPU
++     * exclusion, complete alias coverage and real GPU completion before acquire.
++     * No IO-coherence or write-combine bit skips scoped maintenance. */
++    IOReturn publishHeld(uint64_t handle);
++    IOReturn acquireHeld(uint64_t handle);
++    NativeAdrenoScopedCacheStats scopedCacheStats() const {return scoped_cache_;}
++    /* Roll back only this caller's never-enqueued pin. Not a GPU cancellation. */
++    IOReturn releaseUnsubmittedJob(uint64_t handle);
+     /* TLBIALL for the context bank plus TLBSYNC: drops every cached translation of the bank whatever its ASID. Unmap already
+      * synchronizes by ASID; this is the stronger form the submit path uses before each submission (int-070: on sheng the CP read
+      * zeros from an IB whose table entry and DRAM were both correct, after the address had been mapped to other pages before). */
 diff --git a/RESOURCE-INTEGRATION.md b/RESOURCE-INTEGRATION.md
 new file mode 100644
-index 0000000..46c3a64
+index 0000000..e1eaff3
 --- /dev/null
 +++ b/RESOURCE-INTEGRATION.md
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,132 @@
 +# Native user-client staging integration, default off
 +
 +The isolated branch wires the parser into the actual `NativeAdrenoUserClient`
@@ -1188,10 +1534,12 @@ index 0000000..46c3a64
 +was available. `NativeAdrenoPublish.cpp` was not SDK-compiled. Full native SDK/
 +kernel-header compilation of the wrapper is a required gate before selecting it.
 +
-+Next integrate queue/context ownership, all-resource mapping pins and real scoped
-+cache/dirty ownership, canonical import aliases, actual completion/quiescence,
-+and capability negotiation. Then qualify native receiver/lifetime behavior on
-+hardware. Until then both native execution readiness and profile selection stay off.
++The separate internal [resource queue](RESOURCE-QUEUE.md) now wires actual VM
++mapping pins, whole-used-BO maintenance and Ring/CP-fence retirement for an initial
++single-in-flight owned-BO path. The wire receiver remains validation-only: it does
++not expose this queue or establish CPU exclusion, imported aliases, actual reset,
++capability negotiation or safe native context ownership. Those and hardware
++qualification remain open; execution readiness and profile selection stay off.
 +
 +### Native header compile gate
 +
@@ -1199,7 +1547,8 @@ index 0000000..46c3a64
 +`IOPlatformExpert.cpo.json` left by the matching XNU build, preserving its target,
 +configuration includes, generated headers and working directory. It compiles
 +`NativeAdrenoPublish`, core, VM, immutable Job and transaction units with staging
-+both off and on into ten plain ARM64 Mach-O objects. `-H` traces and SHA-256 binds
++both off and on; the current gate also includes actual memory and the new resource
++queue for fourteen plain ARM64 Mach-O objects. `-H` traces and SHA-256 binds
 +actual IOLib/IOUserClient/OSObject/IOMemoryDescriptor headers to explicitly declared
 +real source/SDK roots; a declaration-only substitute outside those roots fails.
 +It records each exact command, source/object hashes, failures and header hashes.
@@ -1290,6 +1639,76 @@ index 0000000..ceeffd8
 +all 4096 full BOs and strict old-capability refusal. These are host callback/fault
 +tests; native IOKit transport, cache maintenance and physical GPU lifetime behavior
 +are still unproven for this new boundary.
+diff --git a/RESOURCE-QUEUE.md b/RESOURCE-QUEUE.md
+new file mode 100644
+index 0000000..2d8ff8b
+--- /dev/null
++++ b/RESOURCE-QUEUE.md
+@@ -0,0 +1,64 @@
++# Native complete-resource queue, source-only and unselected
++
++`NativeAdrenoResourceQueue` now connects the immutable resource Job to actual
++`NativeAdrenoUserClient` descriptions, `NativeAdrenoVm` pin/cache methods and
++`NativeAdrenoRing` PM4/fence code. This is executable driver source exercised over
++host SMMU/CP peers. It is not a new wire method, negotiated capability or enabled
++system renderer. The staging receiver remains validation-only and default-off.
++
++The first path deliberately admits one Job on an idle ring. Admission authenticates
++its kernel-bound owner/queue before pins or cache operations, rejects poison and
++fence-counter exhaustion, and never falls back to legacy `NativeAdrenoSubmit`.
++The Job holds every used BO, including non-IB textures/shader/descriptors. Holds
++revalidate exact client generation, backing/mapping incarnation, real IOVA, extent
++and permission against the actual VM before incrementing mapping+memory references.
++
++Scoped maintenance covers only complete **used** BOs. CPU clean/invalidate occurs
++before GPU access regardless of write-combine or speculative coherency flags.
++After an actual CP timestamp completion, only declared GPU-written BOs are
++invalidated; this path never writes CPU dirt back over GPU results. Inactive
++resident BOs are not scanned. Four saturating VM counters record successful object
++and byte counts. There is no dirty epoch/precise range/barrier batching claim yet.
++
++The enqueue path independently revalidates resources and command coverage, emits
++up to128 complete IB packets into one framed ring commit, and invalidates the
++actual context TLB. A poisoned/uncertain commit retains every resource. No prefix
++fence, timeout, task exit or missing watchdog proves quiescence; recovery currently
++returns false until a real reset/cancel implementation exists.
++
++Pin retirement is now failure-aware. A failed native release retains that pin and
++all remaining pins plus Job storage; subsequent poll/recover retries only the
++unreleased pins. Successful pins are never dropped twice. Completed CPU acquire
++and proven quiescence are not repeated merely because a release failed. A closed
++Session remains pollable by its retained retirement owner until destroy succeeds.
++
++The initial kernel backing callback refuses all imports: distinct imported
++IOSurface mappings still need canonical physical aliases and CPU/GPU ownership.
++The caller must hold the namespace/queue gate, maintain exclusive CPU access and
++retain the queue, callback context, VM and Ring until every Job is destroyed.
++Those are trusted kernel caller preconditions, not enforcement established by
++constructing this class. Enabling arbitrary app submissions requires real CPU
++PREP/FINI or equivalent ownership, imported-plane/layout validation, fences and
++native connection/capability negotiation. The current user-client does not expose
++this execution path, and it does not own a queue context for in-flight Sessions.
++
++## Meaningful source tests
++
++`tests/run-resource-client.py` runs actual core, VM, memory, Ring and new queue
++bodies under ASan/UBSan with staging off/on over software SMMU/CP peers. A Job with
++three used4KiB BOs plus one inactive BO publishes12KiB, acquires4KiB, holds the
++non-IB resources through a delayed CP fence, refuses free while in flight and
++performs no legacy/global submit. Wrong queue and competing in-flight admission
++produce no pins/cache/CP side effects. Acquisition failure retains all references
++for retry; partial publication failure cannot enqueue; stale namespace detection
++rolls back earlier holds without cache work. Host physical cache callbacks record
++the invalidate operation; they do not emulate actual CPU cache coherency.
++
++Separate39 Job cases cover partial release failures after completion, pre-submit
++rollback, quiesced recovery and admission. The50 Session cases prove failed native
++retirement keeps a closed Session alive and pollable. The25 MSM adapter tests still
++pass. Existing software SMMU fixture roots intentionally remain mounted, so that
++core fixture uses leak detection off; Job and Session suites keep ordinary leak
++checks. Actual XNU SDK object compilation, final native linking and hardware queue
++behavior remain separate required gates. No 60/90Hz, wallpaper or compositor
++performance follows from host success.
 diff --git a/RESOURCE-TRANSACTION.md b/RESOURCE-TRANSACTION.md
 new file mode 100644
 index 0000000..a9f9c97
@@ -1411,10 +1830,10 @@ index 0000000..a9f9c97
 +quiescence. This proves host parser/state/lifetime behavior only.
 diff --git a/tests/ResourceFixture.h b/tests/ResourceFixture.h
 new file mode 100644
-index 0000000..ff2e5ec
+index 0000000..1660fd3
 --- /dev/null
 +++ b/tests/ResourceFixture.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,96 @@
 +/* SPDX-License-Identifier: MIT -- host harness, never a GPU emulator */
 +#pragma once
 +#include "NativeAdrenoResources.h"
@@ -1435,7 +1854,7 @@ index 0000000..ff2e5ec
 +    size_t live_bytes=0,peak_bytes=0;
 +    std::map<void *,size_t> allocation_sizes;
 +    size_t lookups=0,holds=0,releases=0,publishes=0,enqueues=0,acquires=0,quiesces=0;
-+    size_t enqueue_uses=0,enqueue_commands=0,fail_hold=0;
++    size_t enqueue_uses=0,enqueue_commands=0,fail_hold=0,release_attempts=0,fail_release=0;
 +    nr::Error publish_error=nr::Error::Ok,acquire_error=nr::Error::Ok;
 +    nr::SubmitResult result{nr::Error::Ok,nr::Acceptance::Accepted,77};
 +    nr::Completion completion=nr::Completion::Pending;
@@ -1475,8 +1894,11 @@ index 0000000..ff2e5ec
 +               p->backing_offset!=m.backing_offset || p->permissions!=m.permissions)return nr::Error::Stale;
 +            ++f.pins[m.mapping];return nr::Error::Ok;
 +        },[](void *ctx,const nr::Mapping &m,nr::Release why) {
-+            auto &f=*static_cast<Fixture *>(ctx);++f.releases;
++            auto &f=*static_cast<Fixture *>(ctx);
++            if(++f.release_attempts==f.fail_release)return nr::Error::Backend;
++            ++f.releases;
 +            assert(f.pins[m.mapping]>0);--f.pins[m.mapping];f.release_reasons.push_back(why);
++            return nr::Error::Ok;
 +        },[](void *ctx,const nr::CacheSpan *s,size_t n) {
 +            auto &f=*static_cast<Fixture *>(ctx);++f.publishes;f.published.assign(s,s+n);return f.publish_error;
 +        },[](void *ctx,uint64_t owner,uint64_t queue,const nr::Use *,size_t n,const nr::Command *,size_t c) {
@@ -1509,9 +1931,18 @@ index 0000000..ff2e5ec
 +};
 +}
 diff --git a/tests/XnuMemoryFixture.h b/tests/XnuMemoryFixture.h
-index 5d1fa13..bee9fe3 100644
+index 5d1fa13..980175d 100644
 --- a/tests/XnuMemoryFixture.h
 +++ b/tests/XnuMemoryFixture.h
+@@ -31,7 +31,7 @@ struct MemoryFixture {
+     uint64_t next_physical=0x30000000;
+     size_t contiguous_limit=0;   /* nonzero: physically contiguous requests above this many bytes fail (a fragmented tablet) */
+     unsigned imported=0,imports_live=0;
+-    unsigned physical_calls=0;size_t physical_bytes=0;   /* NativeAdrenoMaintainPhysicalPages doubles */
++    unsigned physical_calls=0,physical_fail_call=0;size_t physical_bytes=0;   /* NativeAdrenoMaintainPhysicalPages doubles */
+     IOReturn cpu_status=kIOReturnSuccess;
+     SegmentMode mode=Contiguous;
+     std::vector<IOBufferMemoryDescriptor *> live;
 @@ -49,6 +49,8 @@ inline void fixtureMetadataFree(void *p) {
  }
  #define IONewData(type,count) static_cast<type *>(fixtureMetadata(sizeof(type)*(count)))
@@ -1591,10 +2022,10 @@ index 0000000..301a97a
 +print('PASS: 6 plain ARMv8-A Mach-O objects; declaration-only, no XNU SDK or runtime proof')
 diff --git a/tests/compile-resource-client-xnu.py b/tests/compile-resource-client-xnu.py
 new file mode 100644
-index 0000000..d978224
+index 0000000..237840c
 --- /dev/null
 +++ b/tests/compile-resource-client-xnu.py
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,128 @@
 +#!/usr/bin/env python3
 +"""Compile isolated resource units with an existing real XNU C++ build record.
 +
@@ -1611,7 +2042,8 @@ index 0000000..d978224
 +import subprocess
 +
 +UNITS = ('NativeAdrenoPublish', 'NativeAdrenoUserClient', 'NativeAdrenoVm',
-+         'NativeAdrenoResources', 'NativeAdrenoResourceTransaction')
++         'NativeAdrenoResources', 'NativeAdrenoResourceTransaction',
++         'NativeAdrenoMemory', 'NativeAdrenoResourceQueue')
 +
 +
 +def sha(path):
@@ -1717,14 +2149,14 @@ index 0000000..d978224
 +    manifest['native_publish_compiled'] = True
 +    manifest['passed'] = True
 +    result_path.write_text(json.dumps(manifest, indent=2) + '\n')
-+    print('PASS: 10 real XNU-header ARM64 objects; no linking, execution or selected profile')
++    print('PASS: 14 real XNU-header ARM64 objects; no linking, execution or selected profile')
 +
 +
 +if __name__ == '__main__':
 +    main()
 diff --git a/tests/run-resource-client.py b/tests/run-resource-client.py
 new file mode 100644
-index 0000000..c4573dc
+index 0000000..4ac44bb
 --- /dev/null
 +++ b/tests/run-resource-client.py
 @@ -0,0 +1,32 @@
@@ -1751,7 +2183,7 @@ index 0000000..c4573dc
 +        obj=out/(source.stem+'.o')
 +        subprocess.run(['clang','-std=c11',*flags,'-c',str(source),'-o',str(obj)],check=True);objects.append(obj)
 +    names=['NativeAdrenoMemory','NativeAdrenoSmmuMemory','NativeAdrenoVm','NativeAdrenoRing','NativeAdrenoSubmit',
-+           'NativeAdrenoUserClient','NativeAdrenoClient','NativeAdrenoTimer','NativeAdrenoResources','NativeAdrenoResourceTransaction']
++           'NativeAdrenoUserClient','NativeAdrenoClient','NativeAdrenoTimer','NativeAdrenoResources','NativeAdrenoResourceTransaction','NativeAdrenoResourceQueue']
 +    for enabled in [0,1]:
 +        executable=out/('test-client-'+str(enabled))
 +        subprocess.run(['clang++','-std=c++23',*flags,'-DNATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING='+str(enabled),
@@ -1792,14 +2224,111 @@ index 0000000..d649fd5
 +  "$root/NativeAdrenoResources.cpp" "$root/tests/test_resources.cpp" -o "$out/test-resources"
 +"$out/test-resources"
 diff --git a/tests/test_client.cpp b/tests/test_client.cpp
-index 7a27f98..d82c81d 100644
+index 7a27f98..5d722ca 100644
 --- a/tests/test_client.cpp
 +++ b/tests/test_client.cpp
-@@ -247,6 +247,94 @@ int main()
+@@ -3,6 +3,7 @@
+ #include "XnuMemoryFixture.h"
+ #include "NativeAdrenoClient.h"
+ #include "NativeAdrenoUserClient.h"
++#include "NativeAdrenoResourceQueue.h"
+ #include <cstdio>
+ #include <cstring>
+ #include <vector>
+@@ -15,7 +16,7 @@ IOReturn NativeAdrenoMaintainOwnedPages(void *mapping,size_t bytes,NativeAdrenoC
+ {
+     CHECK(mapping && bytes && !(((uintptr_t)mapping|bytes)&4095));
+     CHECK(op==NativeAdrenoClean || op==NativeAdrenoCleanInvalidate || op==NativeAdrenoInvalidate);
+-    ++fixture.cache_calls;
++    fixture.cache_operations.push_back(unsigned(op));++fixture.cache_calls;
+     return fixture.cache_calls==fixture.cache_fail_call?kIOReturnIOError:kIOReturnSuccess;
+ }
+ static uint32_t mmio[SMMU_BYTES/4];
+@@ -247,6 +248,174 @@ int main()
          CHECK(wire.calls==calls);
          CHECK(client.close()==kIOReturnSuccess);
      }
 +#if NATIVE_ADRENO_EXPERIMENTAL_RESOURCE_STAGING
++    {
++        namespace nr=NativeAdrenoResources;
++        Path p;CHECK(exposed(p)==kIOReturnSuccess);
++        NativeAdrenoAbiBoAlloc alloc{4096,12,1};
++        NativeAdrenoAbiBoAllocReply bo[4]{};nr::Mapping mapping[4]{};
++        for(size_t i=0;i<4;++i) {
++            CHECK(p.client.allocBo(&alloc,&bo[i])==kIOReturnSuccess);
++            NativeAdrenoAbiBoMap map{bo[i].handle,0x800000+i*4096,3,0,2,0};NativeAdrenoAbiBoMapReply reply{};
++            CHECK(p.client.mapBo(&map,&reply)==kIOReturnSuccess);
++            CHECK(p.client.describeResource(bo[i].handle,&mapping[i])==nr::Error::Ok);
++        }
++        auto by_handle=[](void *context,uint64_t handle,nr::Mapping *out) {
++            return static_cast<NativeAdrenoUserClient *>(context)->describeResource(handle,out);
++        };
++        auto by_backing=[](void *context,uint64_t backing,nr::Mapping *out) {
++            return static_cast<NativeAdrenoUserClient *>(context)->describeResourceBacking(backing,out);
++        };
++        NativeAdrenoResourceQueue queue(p.vm,p.ring,ringclock,mapping[0].owner,0,&p.client,by_handle,by_backing);
++        auto allocator=nr::Allocator{nullptr,[](void *,size_t n)->void *{return IOMalloc(n);},
++            [](void *,void *memory,size_t n){IOFree(memory,n);}};
++        nr::Resource resources[]={{bo[0].handle,mapping[0].generation,0,4096,nr::Read|nr::Execute,0},
++            {bo[1].handle,mapping[1].generation,0,4096,nr::Write,0},
++            {bo[2].handle,mapping[2].generation,0,4096,nr::Read,0}};
++        nr::Ib ib{bo[0].handle,mapping[0].generation,0,64};nr::Job *job=nullptr;
++        CHECK(nr::Job::create({1,7,1024,128},mapping[0].owner,0,resources,3,&ib,1,allocator,queue.hooks(),&job)==nr::Error::Ok);
++        CHECK(!p.vm.scopedCacheStats().publish_objects);
++        nr::Job *wrong_queue=nullptr;
++        CHECK(nr::Job::create({1,7,1024,128},mapping[0].owner,1,resources,3,&ib,1,allocator,queue.hooks(),&wrong_queue)==nr::Error::Ok);
++        CHECK(wrong_queue->submit()==nr::Error::Ownership && !p.vm.scopedCacheStats().publish_objects && !p.ring.submissions());
++        CHECK(nr::Job::destroy(wrong_queue)==nr::Error::Ok);
++        CHECK(job->submit()==nr::Error::Ok && job->fence()==1);
++        auto stats=p.vm.scopedCacheStats();CHECK(stats.publish_objects==3 && stats.publish_bytes==12288);
++        CHECK(!stats.acquire_objects && !p.execbuf.outstanding()); // no legacy/global submit
++        for(size_t i=0;i<3;++i) {
++            CHECK(p.client.memoryOf(bo[i].handle)->deviceReferences()==2); // mapping + resource Job
++            NativeAdrenoAbiBoFree free{bo[i].handle};CHECK(p.client.freeBo(&free)==kIOReturnBusy);
++        }
++        CHECK(p.client.memoryOf(bo[3].handle)->deviceReferences()==1); // inactive BO never held/maintained
++        CHECK(job->poll()==nr::Error::Busy && nr::Job::destroy(job)==nr::Error::Busy);
++        CHECK(job->recover()==nr::Error::Busy); // no watchdog/reset/quiescence assumption
++        nr::Job *competing=nullptr;
++        CHECK(nr::Job::create({1,7,1024,128},mapping[0].owner,0,resources,3,&ib,1,allocator,queue.hooks(),&competing)==nr::Error::Ok);
++        CHECK(competing->submit()==nr::Error::Busy && p.vm.scopedCacheStats().publish_objects==3 && p.ring.submissions()==1);
++        CHECK(nr::Job::destroy(competing)==nr::Error::Ok);
++        for(size_t i=0;i<3;++i)CHECK(p.client.memoryOf(bo[i].handle)->deviceReferences()==2);
++        fencemem[1]=uint32_t(job->fence());
++        fixture.physical_fail_call=fixture.physical_calls+1;
++        CHECK(job->poll()==nr::Error::Backend && nr::Job::destroy(job)==nr::Error::Busy);
++        CHECK(p.vm.scopedCacheStats().acquire_objects==0);
++        for(size_t i=0;i<3;++i)CHECK(p.client.memoryOf(bo[i].handle)->deviceReferences()==2);
++        fixture.physical_fail_call=0;
++        CHECK(job->poll()==nr::Error::Ok);
++        stats=p.vm.scopedCacheStats();CHECK(stats.acquire_objects==1 && stats.acquire_bytes==4096);
++        CHECK(fixture.cache_operations.back()==NativeAdrenoInvalidate);
++        CHECK(nr::Job::destroy(job)==nr::Error::Ok);
++        // Partial cache publication failure cannot submit, lose pins or maintain
++        // the inactive BO. Previously successful CPU maintenance may be retried.
++        const auto old_stats=p.vm.scopedCacheStats();const uint32_t old_submissions=p.ring.submissions();
++        CHECK(nr::Job::create({1,7,1024,128},mapping[0].owner,0,resources,3,&ib,1,allocator,queue.hooks(),&job)==nr::Error::Ok);
++        fixture.physical_fail_call=fixture.physical_calls+2;
++        CHECK(job->submit()==nr::Error::Backend && job->state()==nr::Job::State::Rejected);
++        fixture.physical_fail_call=0;
++        CHECK(p.ring.submissions()==old_submissions && p.vm.scopedCacheStats().publish_objects==old_stats.publish_objects+1);
++        CHECK(nr::Job::destroy(job)==nr::Error::Ok);
++        // Stale live namespace after immutable planning fails at hold; earlier
++        // holds roll back without any cache or ring side effects.
++        CHECK(nr::Job::create({1,7,1024,128},mapping[0].owner,0,resources,3,&ib,1,allocator,queue.hooks(),&job)==nr::Error::Ok);
++        NativeAdrenoAbiBoFree stale{bo[2].handle};CHECK(p.client.freeBo(&stale)==kIOReturnSuccess);
++        const auto after_cache_failure=p.vm.scopedCacheStats();
++        CHECK(job->submit()==nr::Error::Stale && p.ring.submissions()==old_submissions);
++        CHECK(p.vm.scopedCacheStats().publish_objects==after_cache_failure.publish_objects);
++        CHECK(nr::Job::destroy(job)==nr::Error::Ok);
++        for(size_t i=0;i<4;++i) {
++            if(i==2)continue; // deliberately freed for stale-generation test
++            CHECK(p.client.memoryOf(bo[i].handle)->deviceReferences()==1);
++            NativeAdrenoAbiBoFree free{bo[i].handle};CHECK(p.client.freeBo(&free)==kIOReturnSuccess);
++        }
++        CHECK(p.client.close()==kIOReturnSuccess);
++        std::printf("PASS: actual complete-resource Job -> scoped VM cache/pins -> native Ring CP-fence retirement; inactive pool excluded (software peers)\n");
++    }
 +    {
 +        namespace rt=NativeAdrenoResources::Transaction;
 +        Path p;CHECK(exposed(p)==kIOReturnSuccess);
@@ -1890,12 +2419,21 @@ index 7a27f98..d82c81d 100644
      std::printf("PASS: 1 userspace-to-kernel round trip including CPU mapping leases and queue lifecycle, 1 version mismatch, 1 altered-size rejection and 8 client-side refusals over software SMMU/CP peers\n");
  }
  /* Physical-page maintenance (imported BOs): record it; no host page is touched. */
+@@ -257,5 +426,7 @@ IOReturn NativeAdrenoReassertWriteCombined(const NativeAdrenoPhysicalSpan *spans
+ IOReturn NativeAdrenoMaintainPhysicalPages(uint64_t physical,size_t bytes,NativeAdrenoCacheOperation op)
+ {
+     if(!physical || !bytes || ((physical|bytes)&4095) || op>NativeAdrenoInvalidate)std::abort();
+-    ++fixture.physical_calls;fixture.physical_bytes+=bytes;return kIOReturnSuccess;
++    fixture.cache_operations.push_back(unsigned(op));
++    ++fixture.physical_calls;fixture.physical_bytes+=bytes;
++    return fixture.physical_calls==fixture.physical_fail_call?kIOReturnIOError:kIOReturnSuccess;
+ }
 diff --git a/tests/test_resource_transaction.cpp b/tests/test_resource_transaction.cpp
 new file mode 100644
-index 0000000..5f3352a
+index 0000000..f964a4d
 --- /dev/null
 +++ b/tests/test_resource_transaction.cpp
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,270 @@
 +/* SPDX-License-Identifier: MIT */
 +#include "NativeAdrenoResourceTransaction.h"
 +#include "ResourceFixture.h"
@@ -2155,14 +2693,23 @@ index 0000000..5f3352a
 +        assert(!h.f.holds && !h.f.publishes && !h.f.enqueues);
 +        assert(h.session->state()==tx::State::Sealed);h.destroy();++cases;
 +    }
++    {
++        Harness h;h.sealed();assert(h.session->submitSealed(99,h.session->token())==nr::Error::Ok);
++        h.f.completion=nr::Completion::Complete;h.f.fail_release=2;
++        assert(h.session->poll()==nr::Error::Backend && h.f.releases==1);
++        assert(tx::Session::destroy(h.session)==nr::Error::Busy && h.f.live_allocations);
++        // Closed sessions remain pollable under retained native retirement owner.
++        assert(h.session->poll()==nr::Error::Ok && h.f.releases==3);
++        assert(h.f.acquires==1);h.destroy();++cases;
++    }
 +    std::printf("PASS: %zu bounded transaction cases (host callbacks; no IOKit/GPU execution)\n",cases);
 +}
 diff --git a/tests/test_resources.cpp b/tests/test_resources.cpp
 new file mode 100644
-index 0000000..9e856cb
+index 0000000..9956400
 --- /dev/null
 +++ b/tests/test_resources.cpp
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,177 @@
 +/* SPDX-License-Identifier: MIT */
 +#include "ResourceFixture.h"
 +#include <cstdio>
@@ -2297,6 +2844,46 @@ index 0000000..9e856cb
 +        nr::Ib ib{1,11,0,64};nr::Job *j=nullptr;
 +        assert(nr::Job::create(f.caps(),99,1,r.data(),r.size(),&ib,1,f.allocator(),f.hooks(),&j)==nr::Error::Permission);
 +        assert(!j && !f.enqueues && !f.live_allocations);++cases;
++    }
++    for(size_t failure=1;failure<=3;++failure) {
++        Fixture f;auto *j=f.make();assert(j->submit()==nr::Error::Ok);
++        f.completion=nr::Completion::Complete;f.fail_release=failure;
++        assert(j->poll()==nr::Error::Backend && j->state()==nr::Job::State::Uncertain);
++        assert(nr::Job::destroy(j)==nr::Error::Busy && f.releases==failure-1);
++        const size_t acquired=f.acquires;
++        assert(j->poll()==nr::Error::Ok && j->state()==nr::Job::State::Completed);
++        assert(f.releases==3 && f.acquires==acquired && !f.quiesces);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);
++        for(auto pin:f.pins)assert(pin.second==0);
++        ++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();f.fail_hold=2;f.fail_release=1;
++        assert(j->submit()==nr::Error::Backend && j->state()==nr::Job::State::Uncertain);
++        assert(!f.enqueues && !f.publishes && f.pins[1001]==1 && nr::Job::destroy(j)==nr::Error::Busy);
++        assert(j->poll()==nr::Error::Ok && j->state()==nr::Job::State::Rejected);
++        assert(!f.acquires && !f.quiesces && f.releases==1 && f.release_reasons[0]==nr::Release::BeforeSubmit);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;auto *j=f.make();f.result={nr::Error::Backend,nr::Acceptance::Uncertain,0};
++        assert(j->submit()==nr::Error::Backend);f.quiescent=true;f.fail_release=2;
++        assert(j->recover()==nr::Error::Backend && nr::Job::destroy(j)==nr::Error::Busy);
++        assert(f.quiesces==1 && f.acquires==1 && f.releases==1);
++        // Quiescence and CPU acquire already succeeded: retry only unreleased pins.
++        f.quiescent=false;assert(j->recover()==nr::Error::Ok);
++        assert(f.quiesces==1 && f.acquires==1 && f.releases==3);
++        assert(nr::Job::destroy(j)==nr::Error::Ok && !f.live_allocations);++cases;
++    }
++    {
++        Fixture f;auto hooks=f.hooks();hooks.admit=[](void *,uint64_t owner,uint64_t queue) {
++            assert(owner==99 && queue==1);return nr::Error::Ownership;
++        };
++        auto resources=f.resources();nr::Ib ib{1,11,0,64};nr::Job *job=nullptr;
++        assert(nr::Job::create(f.caps(),99,1,resources.data(),resources.size(),&ib,1,f.allocator(),hooks,&job)==nr::Error::Ok);
++        assert(job->submit()==nr::Error::Ownership && job->state()==nr::Job::State::Rejected);
++        assert(!f.holds && !f.publishes && !f.enqueues && !f.releases);
++        assert(nr::Job::destroy(job)==nr::Error::Ok && !f.live_allocations);++cases;
 +    }
 +    std::printf("PASS: %zu resource validation/lifetime cases (host callbacks; no GPU execution)\n",cases);
 +}

@@ -1,0 +1,33 @@
+{
+  "translator": {
+    "repository": "https://github.com/steelbrain/metal2vulkan",
+    "base_commit": "720ef1ce9ae2a2068999a8675717418b9416283e",
+    "source_commit": "3539c97cefc4d7513dc20de40acef5fdc269f473",
+    "patch": "external-provider-translator.patch",
+    "patch_sha256": "b0fc348193a950d91ef8a4671b904dc597b14e29c80258aaaac859310703cb3a"
+  },
+  "frontend": {
+    "repository": "https://github.com/UniXNU/NativeMetal",
+    "base_commit": "ff0c70d7249a04ee381d9854c214069324a34d5c",
+    "source_commit": "c7622a58c48cdea112b97ae6442031a47112c29c",
+    "patch": "external-provider-frontend.patch",
+    "patch_sha256": "54d4b16a3144323b84213b1ad9e8413fc3f8cb703055ff53955cd8b954a2ade6"
+  },
+  "scope": "isolated actual NativeMetal frontend candidate, explicit immutable owned provider; not selected system driver",
+  "default_provider_enabled": false,
+  "semantics_version": 1700,
+  "preserved_runtime_patches": 17,
+  "preserved_board_frontend_patches": 23,
+  "native_objc_namespace": "NB identifiers -> NBE identifiers; dynamic device DuoExternalStageMetalDevice",
+  "producer_tool_sha256": "8e8d428fe22094dd0b55092415c4fb6ab7b4714e4e5e8ddc373e81c2b3331cef",
+  "source_inputs_sha256": {
+    "fixtures/duo_external_owned_inputs.h": "a570481aa4d2231b9085d277cbb6723db59cda94b73315c5819c8aa1604abd79",
+    "fixtures/duo_air_spirv_owned.h": "51c876ab51d2136126503c452afb6aa776f9872ca2a4b49b452b9ce733ead1bb",
+    "src/external-frontend-probe.mm": "aa27742f5dcfbfcf791c6aa6e1941ecc385847b4a81b3755808160ff48890e91"
+  },
+  "owned_provider_tests": 2,
+  "importer_tests": 8,
+  "production_unorm8_emission_differential_passed": true,
+  "full_rust_cabi_compile_passed": true,
+  "physical_frontend_execution_proven": false
+}

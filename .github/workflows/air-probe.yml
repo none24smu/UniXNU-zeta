@@ -6,6 +6,10 @@ on:
         description: Replay actual retained resource SDK headers from a completed root CI run
         type: string
         default: ""
+      frontend_only:
+        description: Build only the isolated owned Metal frontend import candidate and readback probe
+        type: boolean
+        default: false
       spirv_only:
         description: Build only the owned AIR-to-SPIR-V native draw probe
         type: boolean
@@ -40,7 +44,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   build:
-    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only && inputs.resource_snapshot_run == '' }}
+    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only && !inputs.frontend_only && inputs.resource_snapshot_run == '' }}
     runs-on: macos-26
     timeout-minutes: 20
     env:
@@ -137,5 +141,25 @@ jobs:
         with:
           name: resource-sdk-replay
           path: resource-sdk-replay/
+          if-no-files-found: error
+          retention-days: 14
+
+  build_external_frontend:
+    if: inputs.frontend_only == true
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install owned fixture and target build tools
+        run: |
+          brew install llvm
+          rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios
+      - name: Build signed isolated frontend and owned actual MTL readback probe
+        run: python3 experimental/duo-metal/build-external-frontend-probe.py --work "$RUNNER_TEMP/external-frontend-work" --output "$RUNNER_TEMP/external-frontend-probe"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-frontend-native-probe
+          path: ${{ runner.temp }}/external-frontend-probe/
           if-no-files-found: error
           retention-days: 14

@@ -5,12 +5,14 @@ import difflib
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED = {
     "air_to_nir.c": "56b45563792db03700c275e3440260bf7e97720cbd69fbbf6337f9a698d160f4",
     "air_intrinsics.c": "f5f06bfa01f100acb044bde9c6ea58149a889484505ed308a3a9cc511eb23910",
+    "meson.build": "5f34a52018ca5cac4609f1c2ae6903867f813b526a68b0c54480005e3a9f973c",
 }
 
 
@@ -25,10 +27,16 @@ def prepare(source, output):
     if source == output or source in output.parents or output in source.parents:
         raise ValueError("candidate must be separate from source tree")
     output.mkdir(parents=True, exist_ok=True)
-    files = sorted(path for path in source.iterdir() if path.is_file() and path.suffix in (".c", ".h"))
+    files = sorted(path for path in source.iterdir()
+                   if path.is_file() and (path.suffix in (".c", ".h") or path.name == "meson.build"))
     inputs = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
     if any(inputs.get(name) != digest for name, digest in EXPECTED.items()):
         raise ValueError("AIR compiler critical source SHA-256 differs from pinned donor")
+    # AIR currently has no separate generator inputs. Verify every C/header input
+    # named by its pinned Meson configuration before preparing a deployable tree.
+    required = set(re.findall(r"['\"]([^'\"\n]+\.(?:c|h))['\"]", (source / "meson.build").read_text()))
+    if any(name not in inputs for name in required):
+        raise ValueError("AIR Meson source input is missing")
     for path in files:
         shutil.copyfile(path, output / path.name)
     shutil.copyfile(ROOT / "compiler/duo_air_sampler.h", output / "duo_air_sampler.h")
@@ -81,7 +89,8 @@ def prepare(source, output):
     (output / "duo-air.patch").write_text("".join(patches))
     (output / "duo-air-inputs.json").write_text(json.dumps({
         "donor_revision": "3278f7f01796e74ecd634c0d348d2b255a37658f", "input_sha256": inputs,
-        "candidate_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in output.glob("*.[ch]")},
+        "candidate_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in output.iterdir()
+                             if path.is_file() and (path.suffix in (".c", ".h") or path.name == "meson.build")},
         "scope": "constant sampler representation and scalar LLVM unsigned arithmetic; no shader execution"}, indent=2) + "\n")
 
 

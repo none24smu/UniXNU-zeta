@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <string>
 static FILE *stream;
 static std::atomic<unsigned> records;
@@ -28,7 +29,8 @@ static id tracePipeline(id self,SEL s,MTLRenderPipelineDescriptor *d,NSError **e
  logline("R pipeline=%p label=%s vertex=%s fragment=%s",(__bridge void *)result,d.label.UTF8String?:"-",d.vertexFunction.name.UTF8String?:"-",d.fragmentFunction.name.UTF8String?:"-");return result;
 }
 static void install() {
- Class re=objc_getClass("NBRenderEncoder"), cb=objc_getClass("NBCommandBuffer"), dm=objc_getClass("NBDeviceMethods");
+ Class re=objc_getClass("NBRenderEncoder"), cb=objc_getClass("NBCommandBuffer"), dm=objc_getClass("NativeBridgeMetalDevice");
+ if(!dm)dm=objc_getClass("NBDeviceMethods");
  if(!re||!cb||!dm){logline("ERROR required classes missing");return;}
  {
   SEL s=sel_registerName("renderCommandEncoderWithDescriptor:");Method m=class_getInstanceMethod(cb,s);IMP orig=method_getImplementation(m);
@@ -72,12 +74,19 @@ static void install() {
  }
  logline("READY unchanged render argument tracing installed");
 }
-__attribute__((constructor)) static void start() {
+static void *waitForFrontend(void *) {
  @autoreleasepool {
-  char dir[1024]={};confstr(_CS_DARWIN_USER_TEMP_DIR,dir,sizeof dir);std::string path=std::string(dir)+"metal-live-draws-"+std::to_string(getpid())+".log";stream=fopen(path.c_str(),"a");
-  Dl_info image={};if(!dladdr((const void *)&start,&image)||!image.dli_fname){logline("ERROR loader path");return;}
-  std::string dependency=image.dli_fname;dependency.resize(dependency.rfind('/')+1);dependency+="NativeAdrenoMetal.msaa";
-  if(!dlopen(dependency.c_str(),RTLD_NOW|RTLD_LOCAL)){logline("ERROR dlopen %s",dlerror());return;}
-  install();
+  for(unsigned i=0;i<5000;i++) {
+   if(objc_getClass("NBRenderEncoder") && objc_getClass("NBDeviceMethods")){logline("INSTALL frontend classes present");install();return nullptr;}
+   usleep(1000);
+  }
+  logline("ERROR frontend classes did not load");
  }
+ return nullptr;
+}
+__attribute__((constructor)) static void start() {
+ // This journal is already writable by the running wallpaper renderer. Avoid
+ // directory-service queries or nested dlopen during process startup.
+ stream=fopen("/private/var/mobile/tmp/m2v/pipelines.log","a");logline("LOADER injected trace initialized");
+ pthread_t t;if(!pthread_create(&t,nullptr,waitForFrontend,nullptr))pthread_detach(t);
 }

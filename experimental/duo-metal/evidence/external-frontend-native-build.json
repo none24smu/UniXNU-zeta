@@ -1,0 +1,36 @@
+{
+  "scope": "signed isolated native frontend/probe build and independent Mach-O CodeDirectory/page verification; no native frontend execution yet",
+  "ci": "https://github.com/none24smu/UniXNU-zeta/actions/runs/40598369340",
+  "board_commit": "d227d530587e3af6177e835619114420baa51d73",
+  "artifact": "external-frontend-native-probe",
+  "sdk_version": "26.5",
+  "target": "arm64-apple-ios17.0",
+  "files": [
+    {
+      "file": "libduoexternalmetal.dylib",
+      "sha256": "69785e78d88330ff9dafba42799386ea4e6159f50fe2ce6911badb2acffec37c",
+      "bytes": 35427472,
+      "cdhash": "d7517171fe3dc8ace36c74303b63ddb8b8fdf68c",
+      "code_slots": 8578,
+      "page_size": 4096,
+      "all_code_hashes_verified": true
+    },
+    {
+      "file": "duo-external-frontend-probe",
+      "sha256": "5e95096bd522cc3261534610b183ada68bec747c61bd3cdaa99909eaf237afad",
+      "bytes": 113776,
+      "cdhash": "f1713a2ef83eed6fa8ccaeef4c0cfe08dd80535d",
+      "code_slots": 23,
+      "page_size": 4096,
+      "all_code_hashes_verified": true
+    }
+  ],
+  "new_trust_cache_leaves": 2,
+  "namespace": "NBE*; DuoExternalStageMetalDevice",
+  "rust_feature": "external-owned-provider",
+  "default_feature_enabled": false,
+  "selected_system_replacement": false,
+  "new_kernel_built": false,
+  "physical_frontend_execution_proven": false,
+  "full_ios27_boot_blocked_by_this": false
+}

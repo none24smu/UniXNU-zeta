@@ -34,7 +34,7 @@ pending until the parent stages and runs the signed artifacts.
 
 ## Build and runtime contract
 
-CI40598369340 builds the already underway native-only package. Reproduce with:
+CI[40598369340](https://github.com/none24smu/UniXNU-zeta/actions/runs/40598369340) passed and produced the signed native-only package. The [build checkpoint](evidence/external-frontend-native-build.json) records both exact trust leaves and independent CodeDirectory/page verification. Physical frontend execution remains pending. Reproduce with:
 
 ```sh
 gh workflow run air-probe.yml --ref port/ios27-userspace -f frontend_only=true

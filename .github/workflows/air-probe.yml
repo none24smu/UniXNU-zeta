@@ -39,7 +39,9 @@ jobs:
           python-version: '3.12'
       - name: Install AIR shader build tools
         run: |
-          brew install meson ninja pkgconf
+          brew install meson ninja pkgconf bison flex
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
           python3 -m pip install Mako PyYAML packaging
       - name: Build the isolated AIR shader backend and probe
         run: python3 experimental/duo-metal/build-air-shader-probe.py --work "$RUNNER_TEMP/air-shader-work" --output "$RUNNER_TEMP/air-shader-probe"

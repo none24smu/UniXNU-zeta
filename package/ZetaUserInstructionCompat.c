@@ -59,8 +59,25 @@ ZetaUserInstructionResult ZetaUserInstructionCompatEmulate(
         return ZETA_INSTRUCTION_EMULATED;
     }
 
+    // MADDPT uses ZR for every register31 field, never SP. With effective
+    // CPTA OFF, architectural EffectiveCPTM is also OFF. ON would additionally
+    // require a separately validated CPTM policy, which this API does not infer.
+    if ((instruction & UINT32_C(0xffe08000)) == UINT32_C(0x9b600000)) {
+        if (effectiveCpta != ZETA_CPTA_OFF) {
+            return ZETA_INSTRUCTION_NEEDS_CPTA_POLICY;
+        }
+        unsigned ra = (instruction >> 10) & 31;
+        result = readZeroRegister(state, rn) * readZeroRegister(state, rm) +
+                 readZeroRegister(state, ra);
+        if (rd != 31) {
+            state->x[rd] = result;
+        }
+        return ZETA_INSTRUCTION_EMULATED;
+    }
+
     uint32_t unary = instruction & UINT32_C(0x7ffffc00);
-    if (unary == UINT32_C(0x5ac01800) || unary == UINT32_C(0x5ac02000)) {
+    if (unary == UINT32_C(0x5ac01800) || unary == UINT32_C(0x5ac02000) ||
+        unary == UINT32_C(0x5ac01c00)) {
         uint64_t operand = readZeroRegister(state, rn) & mask;
         if (unary == UINT32_C(0x5ac01800)) {
             unsigned count = 0;
@@ -69,6 +86,12 @@ ZetaUserInstructionResult ZetaUserInstructionCompatEmulate(
                 operand >>= 1;
             }
             result = count;
+        } else if (unary == UINT32_C(0x5ac01c00)) {
+            result = 0;
+            for (unsigned bit = 0; bit < width; ++bit) {
+                result += operand & 1;
+                operand >>= 1;
+            }
         } else {
             uint64_t sign = UINT64_C(1) << (width - 1);
             result = (operand & sign) ? (UINT64_C(0) - operand) & mask : operand;
@@ -115,8 +138,13 @@ int ZetaUserInstructionCompatLowerPointerOff(
     uint32_t *loweredInstruction)
 {
     if (effectiveCpta != ZETA_CPTA_OFF || !loweredInstruction ||
-        !isPointerArithmetic(instruction)) {
+        (!isPointerArithmetic(instruction) &&
+         (instruction & UINT32_C(0xffe08000)) != UINT32_C(0x9b600000))) {
         return 0;
+    }
+    if ((instruction & UINT32_C(0xffe08000)) == UINT32_C(0x9b600000)) {
+        *loweredInstruction = UINT32_C(0x9b000000) | (instruction & UINT32_C(0x001f7fff));
+        return 1;
     }
     unsigned rd = instruction & 31;
     unsigned rn = (instruction >> 5) & 31;

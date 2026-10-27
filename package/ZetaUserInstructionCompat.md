@@ -7,23 +7,23 @@ performed. A successful call changes only the architectural destination; a
 failure leaves the supplied state unchanged.
 
 Supported exact scalar forms: UMIN/UMAX/SMIN/SMAX with register or imm8 operands,
-CTZ and ABS, each in 32/64-bit form. W writes clear the upper X bits. ZR reads
+CTZ, CNT and ABS, each in 32/64-bit form. W writes clear the upper X bits. ZR reads
 return zero and ZR writes are discarded. CTZ(0) returns the operand width;
 ABS(INT_MIN) retains that bit pattern. NZCV and the rest of PSTATE are preserved.
 The pure state has x0..x30 and a separate SP; it is not XNU's saved-state layout.
 
 ADDPT/SUBPT additionally require explicit UNKNOWN/OFF/ON effective-CPTA policy.
-UNKNOWN or an invalid policy rejects the operation. ON applies the architectural
+UNKNOWN or an invalid policy rejects the operation. MADDPT accepts only OFF, which also disables effective CPTM by architectural definition; ON needs a separate CPTM policy and is rejected. ON for ADDPT/SUBPT applies the architectural
 poison check; OFF retains modulo-64-bit arithmetic. No inference from the host
 CPU or a persona string selects a policy. The helper does not emulate CPA load/
 store instrumentation, TPRO, MTE, PAC, or unrelated instructions.
 
 ## Exact single-word pointer lowering under explicit OFF
 
-The planning API emits an ordinary nonflag ADD/SUB instruction only for explicit
+The planning API emits an ordinary nonflag ADD/SUB/MADD instruction only for explicit
 CPTA OFF. With Rn/Rd other than 31 it uses shifted-register LSL #0..7. If either
 is 31 it uses extended-register UXTX, whose shift must be 0..4; larger shifts are
-rejected. This preserves the distinction between SP and ZR. Output is unchanged
+rejected. This preserves the distinction between SP and ZR. MADDPT lowers to ordinary MADD with the same registers; every31 field is ZR. Output is unchanged
 on rejection. It neither writes executable memory nor changes the generic PAC
 rewriter. CPTA ON cannot use this lowering because it would lose poison checks.
 
@@ -37,9 +37,9 @@ python3 work/ios27-port/board/scripts/check-zeta-user-instruction-compat.py \
 
 The actual source compiles as a freestanding plain ARM64/iOS26 object with
 `-march=armv8-a -mgeneral-regs-only`; it imports no symbols. The current check
-passes 93312 host mathematical-oracle cases, 200000 address/undefined-behavior
-sanitizer iterations, 288 CSSC LLVM assembler encoding cases, 216 exact OFF
-lowering LLVM encoding cases, and 64512 AArch64 differential cases. Pointer ON
+passes 124272 host mathematical-oracle cases, 200000 address/undefined-behavior
+sanitizer iterations, 300 CSSC LLVM assembler encoding cases, 288 exact OFF
+lowering LLVM encoding cases, and 75264 AArch64 differential cases. Pointer ON
 edge cases include existing poison, top-byte changes, wrapping arithmetic and
 all shifts. UNKNOWN/OFF/ON and invalid policies, register aliasing, SP/ZR,
 reserved encodings, zero operands and signed boundaries are covered.
@@ -110,7 +110,7 @@ branch/literal relocation and flag-liveness proof, rather than blindly inserting
 CMP/CSEL (which changes NZCV).
 
 Primary semantic source: [Arm A64 ISA 2025-09, including shared pseudocode](https://documentation-service.arm.com/static/68da52dfbd7cab51328c0622),
-pages 16, 24, 337, 692-693, 695-696, 826, 874-877, 4522-4523 and 4623 as relevant;
+pages 16, 24, 337, 540, 692-693, 695-696, 826, 874-877, 4522-4523 and 4623 as relevant;
 encoding cross-check: [LLVM AArch64 definitions](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/AArch64/AArch64InstrInfo.td)
 and [formats](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/AArch64/AArch64InstrFormats.td).
 Exact downloaded-document and code hashes, logs, masks and the read-only site

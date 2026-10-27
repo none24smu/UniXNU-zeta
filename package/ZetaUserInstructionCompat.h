@@ -30,15 +30,16 @@ typedef enum {
     ZETA_INSTRUCTION_INVALID_STATE = 3
 } ZetaUserInstructionResult;
 
-// Supported: scalar UMIN/UMAX/SMIN/SMAX register and imm8, CTZ/ABS, all W/X
-// forms; ADDPT/SUBPT with explicit effective-CPTA policy. Failure leaves all
+// Supported: scalar UMIN/UMAX/SMIN/SMAX register and imm8, CTZ/CNT/ABS, all W/X
+// forms; ADDPT/SUBPT with explicit effective-CPTA policy, MADDPT only with
+// effective CPTA OFF (which also disables effective CPTM). Failure leaves all
 // state unchanged. Success only changes the architectural destination.
 ZetaUserInstructionResult ZetaUserInstructionCompatEmulate(
     uint32_t instruction, ZetaUserInstructionState *state,
     ZetaUserInstructionCpta effectiveCpta);
 
 // Planning helper only: no executable rewriting or runtime integration.
-// Writes one ordinary nonflag ADD/SUB encoding only under explicit CPTA OFF.
+// Writes one ordinary nonflag ADD/SUB/MADD only under explicit CPTA OFF.
 // SP forms use UXTX and require shift<=4; non-SP forms use LSL shift<=7.
 // Returns 1 on an exact single-word lowering, 0 otherwise; output unchanged
 // on rejection. This is NOT a claim that OFF is correct for the target task.

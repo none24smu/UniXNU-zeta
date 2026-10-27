@@ -30,7 +30,7 @@ def clone(s):return State.from_buffer_copy(data(s))
 def signed(v,width):return v-(1<<width) if v>>(width-1) else v
 regbase={'smax':0x1ac06000,'umax':0x1ac06400,'smin':0x1ac06800,'umin':0x1ac06c00}
 immbase={'smax':0x11c00000,'umax':0x11c40000,'smin':0x11c80000,'umin':0x11cc0000}
-unary={'ctz':0x5ac01800,'abs':0x5ac02000}
+unary={'ctz':0x5ac01800,'cnt':0x5ac01c00,'abs':0x5ac02000}
 # Each entry uses an independent mathematical oracle; masks are checked against LLVM.
 cases=[]
 for bits in [32,64]:
@@ -65,6 +65,7 @@ for word,op,bits,rd,rn,rm,imm,_ in cases:
   first=(0 if rn==31 else s.x[rn])&mask
   if op=='ctz':value=bits if first==0 else (first&-first).bit_length()-1
   elif op=='abs':value=abs(signed(first,bits))&mask
+  elif op=='cnt':value=first.bit_count()
   else:
    second=imm if imm is not None else ((0 if rm==31 else s.x[rm])&mask)
    left=signed(first,bits) if op[0]=='s' else first
@@ -110,12 +111,32 @@ for sub in [False,True]:
        assert em(word,C.byref(s),policy)==(1 if policy in [1,2] else 2)
        assert data(s)==data(expected),(hex(word),policy)
        checks+=1
+# MADDPT: every31 is ZR. OFF also disables effective CPTM by definition.
+for rd in [0,31]:
+ for rn in [0,1,31]:
+  for rm in [0,2,31]:
+   for ra in [0,1,2,31]:
+    word=0x9b600000|rd|(rn<<5)|(rm<<16)|(ra<<10)
+    reg=lambda n:'xzr' if n==31 else f'x{n}'
+    output=C.c_uint32(0xdeadbeef);assert lower(word,1,C.byref(output))==1
+    lowered.append((word,output.value,f'madd {reg(rd)},{reg(rn)},{reg(rm)},{reg(ra)}'))
+    for policy in [0,1,2,17]:
+     for n in range(100):
+      state=make_state();expected=clone(state)
+      if n<len(edges):state.x[0]=edges[n];state.x[1]=edges[-n-1];state.x[2]=edges[(n+3)%len(edges)];expected=clone(state)
+      get=lambda r:0 if r==31 else state.x[r]
+      if policy==1 and rd!=31:expected.x[rd]=(get(rn)*get(rm)+get(ra))&MASK
+      assert em(word,C.byref(state),policy)==(1 if policy==1 else 2)
+      assert data(state)==data(expected)
+      checks+=1
+     if policy!=1:
+      output=C.c_uint32(0xdeadbeef);assert lower(word,policy,C.byref(output))==0 and output.value==0xdeadbeef
 assembly=run([mc,'-triple=aarch64','-show-encoding'],input=('\n'.join(x[2] for x in lowered)+'\n').encode()).stdout.decode()
 encodings=[int.from_bytes(bytes(int(x,16) for x in re.findall('0x([0-9a-f]{2})',line)),'little') for line in assembly.splitlines() if 'encoding:' in line]
 assert encodings==[x[1] for x in lowered], 'OFF pointer lowerings disagree with LLVM'
 (out/'pointer-off-llvm-encodings.txt').write_text(assembly)
 # Unsupported/reserved-bit words must not mutate state, PC, flags, or output.
-for word in [0,0xffffffff,0xd5940000,0xd5900040,0xd503201f,0x9a004000,0x9a002000^(1<<29),0x5ac01c00,0x1ac006c0]:
+for word in [0,0xffffffff,0xd5940000,0xd5900040,0xd503201f,0x9a004000,0x9a002000^(1<<29),0x5ac01000,0x1ac006c0]:
  s=make_state();before=data(s);assert em(word,C.byref(s),1)==0 and data(s)==before
  v=C.c_uint32(0xdeadbeef);assert lower(word,1,C.byref(v))==0 and v.value==0xdeadbeef
 assert em(cases[0][0],None,0)==3
@@ -155,6 +176,8 @@ for i,c in enumerate(cases):
  d,n=reg(rd),reg(rn)
  if op=='ctz':sequence=f'rbit {d},{n}\n clz {d},{d}'
  elif op=='abs':sequence=f'cmp {n},{g}zr\n cneg {d},{n},mi'
+ elif op=='cnt':
+  sequence=f'mov {g}11,{n}\n mov {g}8,#0\n '+('and '+g+'12,'+g+'11,#1\n add '+g+'8,'+g+'8,'+g+'12\n lsr '+g+'11,'+g+'11,#1\n ')*bits+f'mov {d},{g}8'
  else:
   rhs=reg(rm) if rm is not None else g+'8'
   init='' if rm is not None else f'mov {rhs},#{imm}\n '

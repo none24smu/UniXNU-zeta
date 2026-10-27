@@ -6,14 +6,32 @@ on:
         description: Run only the native ARM64 instruction semantics check
         type: boolean
         default: false
+      cpu_probe_only:
+        description: Build only the signed instruction probe
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   instruction-semantics:
     if: inputs.semantics_only
     uses: ./.github/workflows/isa-semantics.yml
+  instruction-probe:
+    if: inputs.cpu_probe_only
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build signed baseline ARM64 instruction probe
+        run: python3 experimental/isa-compat/build-probe.py --output isa-probe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isa-probe
+          path: isa-probe/
+          if-no-files-found: error
+          retention-days: 14
   build:
-    if: ${{ !inputs.semantics_only }}
+    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only }}
     runs-on: macos-26
     timeout-minutes: 20
     env:

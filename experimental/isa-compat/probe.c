@@ -94,7 +94,8 @@ static void benchmark(const char *name, instruction_fn fn) {
            name, caught, completed, failures, end >= start ? end - start : 0,
            start && end >= start ? "true" : "false");
 }
-int main(void) {
+int main(int argc, char **argv, char **envp, char **apple) {
+    (void)argc; (void)argv; (void)envp;
     setvbuf(stdout, NULL, _IONBF, 0);
     struct sigaction action;
     memset(&action, 0, sizeof(action));
@@ -105,6 +106,16 @@ int main(void) {
         if (sigaction(signals[i], &action, NULL)) return 126;
     }
     printf("{\"kind\":\"start\",\"pid\":%d,\"time\":%lld,\"target\":\"baseline-arm64\",\"tchange_executed\":false}\n", getpid(), (long long)time(NULL));
+    const char *apple_keys[] = {"has_sec_transition", "dyld_hw_tpro", "dyld_hw_tpro_pagers", "security_config", NULL};
+    for (unsigned k = 0; apple_keys[k]; ++k) {
+        int present = 0;
+        if (apple) for (unsigned i = 0; i < 256 && apple[i]; ++i) {
+            size_t n = strlen(apple_keys[k]);
+            if (!strncmp(apple[i], apple_keys[k], n) && apple[i][n] == '=') present = 1;
+        }
+        printf("{\"kind\":\"apple-parameter\",\"name\":\"%s\",\"vector_present\":%s,\"present\":%s}\n",
+               apple_keys[k], apple ? "true" : "false", present ? "true" : "false");
+    }
     typedef int (*csops_fn)(pid_t, unsigned int, void *, size_t);
     csops_fn csops_call = (csops_fn)dlsym(RTLD_DEFAULT, "csops");
     uint32_t csflags = 0;

@@ -52,6 +52,24 @@ POE2_EXACT = {0xd5900040: ('tchangef', 'x0, #2'),
               0xd5940000: ('tchangeb', 'x0, #0')}
 
 
+def decode_permission_transition(word):
+    """Architectural TCHANGE encodings, for code boundaries only; never lowered.
+
+    Arm/LLVM exact masks and fields: register or imm7, forward/backward, Rd,
+    optional NB bit17. These have ordinary successful fallthrough plus faults.
+    """
+    immediate=word&0xfffdf000
+    register=word&0xfffdfc00
+    if immediate in (0xd5900000,0xd5940000):
+        operand='#'+str((word>>5)&127)
+    elif register in (0xd5800000,0xd5840000):
+        rn=(word>>5)&31;operand='xzr' if rn==31 else 'x'+str(rn)
+    else:return None
+    rd=word&31;destination='xzr' if rd==31 else 'x'+str(rd)
+    mnemonic='tchangeb' if word&0x40000 else 'tchangef'
+    return mnemonic,destination+', '+operand+(', nb' if word&0x20000 else '')
+
+
 def uleb128(data, at, end):
     value = shift = 0
     while True:
@@ -262,8 +280,8 @@ def decode(data, sections, oracle=None):
             lr = pauth.decode_lr(word)
             if lr:
                 table[section['addr']+offset] = lr[:2]
-            elif word in POE2_EXACT:
-                table[section['addr']+offset] = POE2_EXACT[word]
+            elif decode_permission_transition(word):
+                table[section['addr']+offset] = decode_permission_transition(word)
     if oracle:
         unknown = {}
         for section in sections:
@@ -388,7 +406,10 @@ def walk(insns, data, va_to_off, roots, code, data_words, strict, boundaries, ex
                 work.append(int(target.group(1), 0))
                 break
             if mnemonic == 'bl' or mnemonic.startswith(('b.', 'bc.')) or mnemonic in CONDITIONAL:
-                work.append(int(target.group(1), 0))
+                destination=int(target.group(1), 0)
+                work.append(destination)
+                if mnemonic == 'bl' and external is not None and getattr(external,'is_noreturn',lambda _:False)(destination):
+                    break
             elif mnemonic in STOPS:
                 break
             elif mnemonic in INDIRECT:

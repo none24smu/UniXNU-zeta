@@ -50,6 +50,9 @@ import sys
 import numpy as np
 
 import zeta_dyld_cache as dc
+import zeta_x1_compat as x1
+import zeta_userland_pauth as pauth
+import zeta_userland_code as code
 
 CSMAGIC_EMBEDDED_SIGNATURE, CSMAGIC_CODEDIRECTORY = 0xfade0cc0, 0xfade0c02
 CS_HASHTYPE_SHA256 = 2
@@ -208,10 +211,62 @@ def load_edits(proof_dir, summary):
     for entry in entries:
         if not entry['edit_count']:
             continue
-        edits = np.load(proof_dir / entry['result_file'])['edits']
+        result_path=proof_dir / entry['result_file']
+        if summary.get('experimental_profile'):
+            rewriter.require(entry.get('result_sha256')==hashlib.sha256(result_path.read_bytes()).hexdigest(),
+                             'x1 proof edit-array hash mismatch: '+str(result_path))
+        edits = np.load(result_path)['edits']
+        if summary.get('experimental_profile'):
+            for row in edits:
+                lowering=x1.lower_pointer_off(int(row[2]),'off') or pauth.lower(int(row[2]))
+                rewriter.require(lowering is not None and lowering[1]==int(row[3]),'x1 proof contains a nonqualified lowering')
         by_file.setdefault(entry['file'], []).append(edits[:, 1:4])
         grades.update(Counter(int(g) for g in edits[:, 4]))
     return {index: np.concatenate(parts) for index, parts in by_file.items()}, grades
+
+
+def x1_metadata_edits(cache):
+    """Declared cache/image headers only; never a sweep for subtype-shaped data."""
+    edits={}
+    magic=b'dyld_v1  arm64e\0'
+    for index,item in enumerate(cache.files):
+        for offset in range(0,16,4):
+            old=struct.unpack_from('<I',item.data,offset)[0]
+            new=struct.unpack_from('<I',magic,offset)[0]
+            if old!=new:edits.setdefault(index,[]).append((offset,old,new))
+    for address,path in cache.images:
+        index,offset,room=cache.locate(address)
+        require=rewriter.require
+        require(room>=12,'cached image header crosses mapping')
+        magic,cpu,subtype=struct.unpack_from('<3I',cache.files[index].data,offset)
+        require(magic==0xfeedfacf and cpu==0x100000c,'cached image is not ARM64 Mach-O: '+path)
+        if subtype&0xffffff==12:
+            edits.setdefault(index,[]).append((offset+8,subtype,0))
+        else:
+            require(subtype&0xffffff in (0,2),'unexpected cached image subtype: '+path)
+    return {i:np.array(rows,dtype=np.uint64).reshape(-1,3) for i,rows in edits.items()}
+
+
+def qualify_x1_summary(summary,cache,contract):
+    rewriter.require(summary.get('experimental_profile')==x1.PROFILE,'cache proof is not an explicit x1 plan')
+    rewriter.require(summary.get('complete_image_set') is True and len(summary.get('images',{}))+len(summary.get('empty_images',[]))==len(cache.images),
+                     'x1 conversion requires a complete cache image proof')
+    for name in ['unproven','unlowerable']:
+        rewriter.require(not summary['totals'].get(name),'x1 cache proof has '+name+' instruction candidates')
+    rewriter.require(not summary.get('anomaly_counts'),'x1 cache proof has unresolved code-boundary anomalies')
+    remaining=summary.get('remaining_isa_counts',{})
+    rewriter.require(not remaining.get('unknown-isa'),'x1 cache has unresolved ISA requirements')
+    for kind,count in remaining.items():
+        if kind.startswith('retained-') and count:
+            rewriter.require(x1.retained_authorized(contract,kind[9:],summary.get('original_file_manifest_sha256')),'x1 cache retained feature lacks evidence: '+kind[9:])
+    expected_tools={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [
+        Path(__file__).with_name('prove-zeta-dyld-cache.py'),Path(dc.__file__),Path(code.__file__),Path(pauth.__file__),Path(x1.__file__)]}
+    rewriter.require(summary.get('tool_hashes')==expected_tools,'x1 proof tool/source hashes are stale')
+    originals=summary.get('original_files',[])
+    rewriter.require(len(originals)==len(cache.files),'cache proof lacks original file hashes')
+    for record,item in zip(originals,cache.files):
+        rewriter.require(record['name']==item.path.name and record['sha256']==hashlib.sha256(item.data).hexdigest(),
+                         'cache proof input hash mismatch: '+item.path.name)
 
 
 def main(argv=None):
@@ -223,10 +278,17 @@ def main(argv=None):
     parser.add_argument('--page-shift', type=int, choices=(12, 14),
                         help='rebuild every file\'s signature with pages of this shift (12 for a 4 KiB-page kernel)')
     parser.add_argument('--report', required=True, type=Path)
+    parser.add_argument('--x1-contract',type=Path,help='validated exact-kernel experimental x1 contract')
     args = parser.parse_args(argv)
     try:
         summary = json.loads((args.proof / 'summary.json').read_text())
-        cache = dc.Cache(args.cache)
+        contract=x1.load_contract(args.x1_contract) if args.x1_contract else None
+        cache = dc.Cache(args.cache,allow_x1_analysis=contract is not None)
+        experimental=cache.architecture=='arm64e.x1'
+        if experimental:
+            rewriter.require(args.page_shift==contract['policy']['signature_page_shift'],'x1 output signature page shift does not match kernel contract')
+            cache.validate_family()
+            qualify_x1_summary(summary,cache,contract)
         if Path(summary['cache']).name != args.cache.name:
             raise ValueError('the proof was made for another cache')
         trusted = {}
@@ -234,15 +296,19 @@ def main(argv=None):
             kind, payload = rewriter.im4p_payload(path.read_bytes())
             trusted.update(rewriter.trust_cache_entries(payload))
         edits, grades = load_edits(args.proof, summary)
+        metadata=x1_metadata_edits(cache) if experimental else {}
+        for index,rows in metadata.items():
+            edits[index]=np.concatenate([edits.get(index,np.zeros((0,3),dtype=np.uint64)),rows])
         seals = fips_seals(cache)
         args.output.mkdir(parents=True, exist_ok=False)
         files = []
         for index, cache_file in enumerate(cache.files):
-            target = args.output / cache_file.path.name
+            output_name=cache_file.path.name.replace('dyld_shared_cache_arm64e_x1','dyld_shared_cache_arm64e',1) if experimental else cache_file.path.name
+            target = args.output / output_name
             original = hashlib.sha256(cache_file.data).hexdigest()
             signature_offset, signature_size = cache_file.signature
             original_cdhash = verify_signature(cache_file.data, signature_offset, signature_size)
-            entry = dict(name=cache_file.path.name, original_sha256=original, original_cdhash=original_cdhash)
+            entry = dict(name=output_name,original_name=cache_file.path.name, original_sha256=original, original_cdhash=original_cdhash,metadata_edits=len(metadata.get(index,[])))
             if index not in edits and index not in seals and args.page_shift is None:
                 shutil.copyfile(cache_file.path, target)
                 files.append(dict(entry, edits=0, sha256=original, cdhash=original_cdhash))
@@ -301,6 +367,11 @@ def main(argv=None):
                   proof=str(args.proof.resolve()), output=str(args.output.resolve()), proof_totals=summary['totals'],
                   edits=sum(f['edits'] for f in files), files_changed=sum(1 for f in files if f['edits']),
                   page_shift=args.page_shift, files=files, hardware_tested=False)
+    if experimental:
+        report.update(experimental_profile=x1.PROFILE,kernel_contract_sha256=contract['sha256'],
+                      kernel_sha256=contract['kernel']['image']['sha256'],effective_cpta='off',
+                      apple_cpta_on_checks_preserved=False,boot_qualified=False,
+                      retained_features_unchanged=True)
     args.report.write_text(json.dumps(report, indent=1) + '\n')
     print(json.dumps({key: report[key] for key in ('edits', 'files_changed')}))
     return 0

@@ -43,6 +43,7 @@ import sys
 
 import zeta_userland_code as code_proof
 import zeta_userland_pauth as pauth
+import zeta_x1_compat as x1
 
 CPU_TYPE_ARM64 = 0x0100000c
 CPU_SUBTYPE_ARM64_ALL = 0
@@ -129,7 +130,7 @@ def va_to_off(info):
     return translate
 
 
-def lower(data, info):
+def lower(data, info, *, experimental_x1=False):
     """Edits for proven-code PAC instructions; fails on any unproven PAC word."""
     sections = instruction_sections(info)
     if not sections:
@@ -148,7 +149,7 @@ def lower(data, info):
             word = struct.unpack_from('<I', data, fileoff)[0]
             mnemonic = insns[address][0]
             try:
-                lowered = pauth.lower(word)
+                lowered = (x1.lower_pointer_off(word, 'off') if experimental_x1 else None) or pauth.lower(word)
             except ValueError as error:
                 if address in code and fileoff not in dice:
                     raise ValueError(f'unlowerable PAC instruction in proven code at {address:#x}: {error}')
@@ -172,6 +173,25 @@ def lower(data, info):
                  jump_table_entries=sum(t['entries'] for t in tables), kept=dict(kept),
                  edits_by_evidence=dict(Counter(edit['evidence'] for edit in edits)),
                  anomalies=dict(Counter(a['kind'] for a in anomalies)))
+    if experimental_x1:
+        # Exact tested lowerings are planned first. Remaining words stay intact;
+        # unsupported ISA is never silently treated as a successful conversion.
+        replacements={e['fileoff']:int(e['ordinary_word'],16) for e in edits}
+        words=[]
+        for section in sections:
+            for address in range(section['addr'],section['addr']+section['size'],4):
+                if address not in code:continue
+                offset=section['offset']+address-section['addr']
+                word=struct.unpack_from('<I',data,offset)[0]
+                words.append((address,offset,word,replacements.get(offset,word),insns[address][0]))
+        rejected=x1.rejected_by_baseline(w[3] for w in words)
+        remaining=[]
+        for address,offset,word,ordinary,mnemonic in words:
+            family=x1.retained_feature(word,mnemonic)
+            if ordinary in rejected or family:
+                kind='cssc-trap' if x1.cssc(word) else 'retained-'+family if family else 'unknown-isa'
+                remaining.append(dict(va=hex(address),fileoff=offset,word=hex(word),mnemonic=mnemonic,kind=kind))
+        proof['x1_isa']=dict(input_sha256=hashlib.sha256(data).hexdigest(),remaining_counts=dict(Counter(e['kind'] for e in remaining)),remaining_sites=remaining)
     return edits, proof
 
 
@@ -207,10 +227,44 @@ def resign(data, directory):
         data[slot:slot + 32] = hashlib.sha256(page).digest()
 
 
-def rewrite(original):
-    info = parse(original)
+def verify_code_pages(data, directory):
+    for index in range(directory['code_slots']):
+        page=data[index*4096:min((index+1)*4096,directory['code_limit'])]
+        slot=directory['at']+directory['hash_offset']+32*index
+        require(data[slot:slot+32]==hashlib.sha256(page).digest(),f'code signature page {index} mismatch')
+
+
+def plan(original):
+    """Read-only x1 plan; this does not validate a kernel or emit executable bytes."""
+    info=parse(original,allow_x1_analysis=True)
+    require(info['architecture']=='arm64e.x1','x1 plan requires original x1 input')
+    directory=code_directory(original,info);verify_code_pages(original,directory)
+    edits,proof=lower(original,info,experimental_x1=True)
+    return dict(schema='zeta-x1-image-plan-v1',input_sha256=hashlib.sha256(original).hexdigest(),
+                original_cdhash=cdhash(original,directory).hex(),identifier=directory['identifier'],
+                architecture=info['architecture'],edits=edits,code_proof=proof,
+                instruction_counts=dict(Counter(e['mnemonic'] for e in edits)),
+                instruction_edits=len(edits),executable_output_written=False,boot_qualified=False,
+                contract_required=True)
+
+
+def qualify_x1_proof(proof,contract):
+    require(not proof['anomalies'],'x1 code proof has unresolved anomalies')
+    remaining=proof.get('x1_isa',{}).get('remaining_counts',{})
+    require(not remaining.get('unknown-isa'),'x1 code contains unresolved ISA instructions')
+    for kind,count in remaining.items():
+        if kind.startswith('retained-') and count:
+            require(x1.retained_authorized(contract,kind[9:],proof['x1_isa']['input_sha256']),'x1 retained feature lacks evidence: '+kind[9:])
+
+
+def rewrite(original, *, x1_contract=None):
+    contract=x1.load_contract(x1_contract) if x1_contract is not None else None
+    info = parse(original,allow_x1_analysis=contract is not None)
     directory = code_directory(original, info)
-    edits, proof = lower(original, info)
+    verify_code_pages(original,directory)
+    experimental=info['architecture']=='arm64e.x1'
+    edits, proof = lower(original, info,experimental_x1=experimental)
+    if experimental:qualify_x1_proof(proof,contract)
     data = bytearray(original)
     for edit in edits:
         at = edit['fileoff']
@@ -224,6 +278,7 @@ def rewrite(original):
     old_hash = cdhash(original, directory)
     resign(data, directory)
     new_hash = cdhash(data, directory)
+    verify_code_pages(data,directory)
     # Every byte outside the edits, the subtype word and the code-page hashes is unchanged.
     changed = [i for i in range(len(data)) if data[i] != original[i]]
     owned = set(range(8, 12)) | set(range(directory['at'] + CD_FLAGS, directory['at'] + CD_FLAGS + 4))
@@ -240,6 +295,11 @@ def rewrite(original):
                   instruction_edits=len(edits), code_proof=proof, data_in_code_ranges=len(info['dice']),
                   code_slots=directory['code_slots'], original_cdhash=old_hash.hex(), cdhash=new_hash.hex(),
                   chained_fixups_unchanged=True, hardware_tested=False)
+    if experimental:
+        report.update(experimental_profile=x1.PROFILE,kernel_contract_sha256=contract['sha256'],
+                      kernel_sha256=contract['kernel']['image']['sha256'],effective_cpta='off',
+                      apple_cpta_on_checks_preserved=False,boot_qualified=False,
+                      retained_features_unchanged=True)
     return bytes(data), report
 
 
@@ -272,14 +332,22 @@ def trust_cache_entries(raw):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--input', required=True, type=Path)
-    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--output', type=Path)
     parser.add_argument('--apple-trust-cache', required=True, action='append', type=Path,
                         help='IM4P trust cache that lists the original image (repeatable)')
     parser.add_argument('--report', required=True, type=Path)
+    parser.add_argument('--plan-only',action='store_true',help='read-only x1 edits and ISA gates; no executable output')
+    parser.add_argument('--x1-contract',type=Path,help='validated exact-kernel experimental x1 contract')
     args = parser.parse_args(argv)
-    require(not args.output.exists() and not args.report.exists(), 'refusing to overwrite output')
+    require(not args.report.exists(), 'refusing to overwrite report')
+    require(args.plan_only or args.output is not None,'--output is required unless --plan-only')
+    require(args.output is None or not args.output.exists(),'refusing to overwrite output')
     original = args.input.read_bytes()
-    data, report = rewrite(original)
+    if args.plan_only:
+        require(args.output is None,'--plan-only cannot have an executable output')
+        report=plan(original);data=None
+    else:
+        data, report = rewrite(original,x1_contract=args.x1_contract)
     entries = {}
     for path in args.apple_trust_cache:
         kind, raw = im4p_payload(path.read_bytes())
@@ -287,16 +355,20 @@ def main(argv=None):
     attributes = entries.get(bytes.fromhex(report['original_cdhash']))
     require(attributes is not None, 'the original image is not in the supplied Apple trust caches')
     report.update(input=dict(path=str(args.input), sha256=hashlib.sha256(original).hexdigest()),
-                  output_sha256=hashlib.sha256(data).hexdigest(),
-                  trust_cache_entry=dict(cdhash=report['cdhash'], hash_type=attributes[0], flags=attributes[1],
+                  output_sha256=hashlib.sha256(data).hexdigest() if data is not None else None,
+                  trust_cache_entry=dict(cdhash=report.get('cdhash'), hash_type=attributes[0], flags=attributes[1],
                                          constraint_category=attributes[2], copied_from_original=True))
-    with args.output.open('xb') as stream:
-        stream.write(data)
-    args.output.chmod(0o755)
+    if data is None:
+        report['original_trust_cache_attributes']=dict(hash_type=attributes[0],flags=attributes[1],constraint_category=attributes[2])
+        report.pop('trust_cache_entry',None)
+    if data is not None:
+        with args.output.open('xb') as stream:
+            stream.write(data)
+        args.output.chmod(0o755)
     with args.report.open('x') as stream:
         json.dump(report, stream, indent=2)
         stream.write('\n')
-    print(json.dumps({key: report[key] for key in ('identifier', 'instruction_edits', 'original_cdhash', 'cdhash')}))
+    print(json.dumps({key: report[key] for key in ('identifier', 'instruction_edits', 'original_cdhash')}))
     return 0
 
 

@@ -31,6 +31,7 @@ import json
 import multiprocessing
 from pathlib import Path
 import sys
+import struct
 import time
 
 import numpy as np
@@ -38,16 +39,18 @@ import numpy as np
 import zeta_dyld_cache as dc
 import zeta_userland_code as code
 import zeta_userland_pauth as pauth
+import zeta_x1_compat as x1
 
 GRADES = ('unwind', 'pointer', 'landing', 'stub', 'call', 'start', 'gap')
 PAC_MASKS = ((0xffff0000, 0xdac10000), (0xffe0fc00, 0x9ac03000), (0xfffff81f, 0xd61f081f),
              (0xfffff81f, 0xd63f081f), (0xfffff800, 0xd71f0800), (0xfffff800, 0xd73f0800),
-             (0xfffffbff, 0xd65f0bff), (0xfffffbff, 0xd69f0bff), (0xff200400, 0xf8200400))
+             (0xfffffbff, 0xd65f0bff), (0xfffffbff, 0xd69f0bff), (0xff200400, 0xf8200400),
+             (0xfffffbff,0xdac1a3fe),(0xffc0001f,0xf380001f),(0xffc0001f,0x5500001f))
 
 STATE = {}
 
 
-def pac_candidates(words):
+def pac_candidates(words, experimental_x1=False):
     """Indexes of words whose encoding is a non-hint PAC instruction class."""
     hit = np.zeros(words.shape, dtype=bool)
     for mask, value in PAC_MASKS:
@@ -55,12 +58,29 @@ def pac_candidates(words):
         if value == 0xdac10000:
             match &= ((words >> np.uint32(10)) & np.uint32(0x3f)) <= np.uint32(0x11)
         hit |= match
+    if experimental_x1:
+        hit |= ((words & np.uint32(0xffe0e000))==np.uint32(0x9a002000)) | ((words & np.uint32(0xffe0e000))==np.uint32(0xda002000)) | ((words & np.uint32(0xffe08000))==np.uint32(0x9b600000))
     return np.nonzero(hit)[0]
 
 
-def init(cache_path, ranges, targets, work):
-    STATE['cache'] = dc.Cache(cache_path)
-    STATE['coverage'] = dc.Coverage(ranges)
+def init(cache_path, ranges, targets, work, experimental_x1=False):
+    STATE['experimental_x1']=experimental_x1
+    STATE['cache'] = dc.Cache(cache_path,allow_x1_analysis=experimental_x1)
+    noreturn={}
+    if experimental_x1:
+        for address,path in STATE['cache'].images:
+            if path.endswith('/libsystem_c.dylib'):
+                noreturn.update(dc.Image(STATE['cache'],address,path).export_addresses({'___assert_rtn'}))
+            elif path.endswith('/libsystem_kernel.dylib'):
+                exits=dc.Image(STATE['cache'],address,path).export_addresses({'__exit','___exit'})
+                # Darwin syscall1 terminates the process; bind the name to its
+                # actual MOV X16,#1;SVC #0x80 stub, not an arbitrary export alias.
+                for name,target in exits.items():
+                    if STATE['cache'].read(target,8)!=struct.pack('<II',0xd2800030,0xd4001001):
+                        raise ValueError('exit export does not match Darwin syscall1 stub')
+                    noreturn[name]=target
+    STATE['noreturn_exports']=noreturn
+    STATE['coverage'] = dc.Coverage(ranges,STATE['cache'],allow_detached_stubs=experimental_x1,noreturn_exports=noreturn.values())
     STATE['targets'] = targets
     STATE['work'] = work
 
@@ -93,12 +113,12 @@ def prove_code(cache, sections, strong, weak, starts, ordered, label):
     edits, unproven, unlowerable, kept = [], [], [], Counter()
     for section in sections:
         words = np.frombuffer(data, dtype='<u4', count=section['size'] // 4, offset=section['offset'])
-        for index in pac_candidates(words):
+        for index in pac_candidates(words,STATE.get('experimental_x1',False)):
             address = section['addr'] + 4 * int(index)
             word = int(words[index])
             if address in proven:
                 try:
-                    lowered = pauth.lower(word)
+                    lowered = (x1.lower_pointer_off(word,'off') if STATE.get('experimental_x1') else None) or pauth.lower(word)
                 except ValueError as error:
                     unlowerable.append(dict(va=hex(address), word=hex(word), reason=str(error)))
                     continue
@@ -113,9 +133,30 @@ def prove_code(cache, sections, strong, weak, starts, ordered, label):
                 kept['table'] += 1
             else:
                 unproven.append((address, word))
+    isa={}
+    if STATE.get('experimental_x1'):
+        replacements={e[0]:e[3] for e in edits}
+        rows=[]
+        for section in sections:
+            for address in range(section['addr'],section['addr']+section['size'],4):
+                if address not in proven:continue
+                offset=section['offset']+address-section['addr']
+                word=struct.unpack_from('<I',data,offset)[0]
+                rows.append((address,offset,word,replacements.get(address,word),insns[address][0]))
+        rejected=x1.rejected_by_baseline(r[3] for r in rows)
+        counts=Counter();examples={};mnemonics=Counter()
+        for address,offset,word,ordinary,mnemonic in rows:
+            family=x1.retained_feature(word,mnemonic)
+            if ordinary not in rejected and not family:continue
+            kind='cssc-trap' if x1.cssc(word) else 'retained-'+family if family else 'unknown-isa'
+            counts[kind]+=1
+            mnemonics[kind+':'+mnemonic]+=1
+            if len(examples.setdefault(kind,[]))<16:
+                examples[kind].append(dict(va=hex(address),fileoff=offset,word=hex(word),mnemonic=mnemonic))
+        isa=dict(remaining_counts=dict(counts),mnemonics=dict(mnemonics),examples=examples)
     return dict(edits=edits, unproven=unproven, unlowerable=unlowerable, kept=dict(kept),
                 reached=sorted(coverage.reached), file=file_index, proven_instructions=len(proven),
-                tables=len(tables), roots=roots, anomalies=dict(Counter(a['kind'] for a in anomalies)))
+                tables=len(tables), roots=roots, x1_isa=isa, anomaly_examples=anomalies[:32], anomalies=dict(Counter(a['kind'] for a in anomalies)))
 
 
 def result_name(path):
@@ -142,6 +183,8 @@ def prove_image(job):
     name = result_name(path)
     result = save(STATE['work'], name, result)
     result.update(result_file=f'{name}.npz', reproven_with_calls=bool(called))
+    if STATE.get('experimental_x1'):
+        (STATE['work']/f'{name}.json').write_text(json.dumps(dict(result,image=path),indent=2)+'\n')
     return index, result, reached
 
 
@@ -150,7 +193,7 @@ def save(work, name, result):
     unproven = np.array(result.pop('unproven'), dtype=np.uint64).reshape(-1, 2)
     reached = np.array(result.pop('reached', []), dtype=np.uint64)
     np.savez_compressed(work / f'{name}.npz', edits=edits, unproven=unproven, reached=reached)
-    result.update(edit_count=len(edits), unproven_count=len(unproven),
+    result.update(result_sha256=hashlib.sha256((work/f'{name}.npz').read_bytes()).hexdigest(),edit_count=len(edits), unproven_count=len(unproven),
                   edits_by_evidence=dict(Counter(GRADES[int(g)] for g in edits[:, 4])) if len(edits) else {})
     return result
 
@@ -160,10 +203,14 @@ def main(argv=None):
     parser.add_argument('--cache', required=True, type=Path, help='main cache file (subcaches beside it)')
     parser.add_argument('--work', required=True, type=Path)
     parser.add_argument('--jobs', type=int, default=8)
+    parser.add_argument('--experimental-x1-plan',action='store_true',help='read-only x1 code/ISA plan; never emits executable cache')
     parser.add_argument('--only', action='append', help='prove only images whose path ends with this')
     args = parser.parse_args(argv)
     args.work.mkdir(parents=True, exist_ok=True)
-    cache = dc.Cache(args.cache)
+    tool_paths=[Path(__file__),Path(dc.__file__),Path(code.__file__),Path(pauth.__file__),Path(x1.__file__)]
+    tool_hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in tool_paths}
+    cache = dc.Cache(args.cache,allow_x1_analysis=args.experimental_x1_plan)
+    family=cache.validate_family() if args.experimental_x1_plan else None
     images = [dc.Image(cache, address, path) for address, path in cache.images]
     ranges = [(s['addr'], s['addr'] + s['size']) for image in images for s in image.sections
               if s['flags'] & dc.INSTRUCTIONS and s['size']]
@@ -179,12 +226,13 @@ def main(argv=None):
         order = [i for i in order if any(images[i].path.endswith(o) for o in args.only)]
     summary = dict(schema='zeta-dyld-cache-proof-v1', cache=str(args.cache), images={})
     multiprocessing.set_start_method('fork', force=True)
-    init(args.cache, ranges, targets, args.work)
+    init(args.cache, ranges, targets, args.work,args.experimental_x1_plan)
+    if args.experimental_x1_plan:summary['known_noreturn_exports']=STATE['noreturn_exports']
 
     def run(jobs, label):
         results, reached = {}, {}
         with multiprocessing.Pool(args.jobs, initializer=init,
-                                  initargs=(args.cache, ranges, targets, args.work)) as pool:
+                                  initargs=(args.cache, ranges, targets, args.work,args.experimental_x1_plan)) as pool:
             for count, (index, result, found) in enumerate(pool.imap_unordered(prove_image, jobs), 1):
                 if result is not None:
                     results[index], reached[index] = result, found
@@ -209,6 +257,26 @@ def main(argv=None):
     results.update(second)
     for index, result in results.items():
         summary['images'][images[index].path] = result
+    # Recognize narrowly structured x1 detached thunks from proven inbound
+    # branches. Mapping flags0 do not make every TEXT-tail byte code.
+    detached=[]
+    if args.experimental_x1_plan:
+        coverage=STATE['coverage'];covered=[]
+        for address in sorted(inbound):
+            if coverage.known(address) or any(lo<=address<hi for lo,hi in covered):continue
+            first=coverage.detached_stub(address)
+            if first is None:continue
+            low,high=address,address+16
+            # Batch adjacent structurally identical slots to avoid per-stub
+            # decoder subprocesses. Only proven inbound roots are walked.
+            while coverage.detached_stub(low-16) is not None:low-=16
+            while coverage.detached_stub(high) is not None:high+=16
+            index,offset,room=cache.locate(low)
+            if room<high-low:raise ValueError('detached thunk pool crosses mapping')
+            covered.append((low,high));detached.append((low,high,index,offset))
+        islands+=detached
+        # Every image can now transfer to a structurally owned detached pool.
+        STATE['coverage']=dc.Coverage(ranges+[(lo,hi) for lo,hi,_,_ in detached],cache,allow_detached_stubs=True,noreturn_exports=STATE['noreturn_exports'].values())
     # Stub islands: from the calls that reached them.
     island_results = []
     for start, end, file_index, fileoff in islands:
@@ -228,6 +296,21 @@ def main(argv=None):
         for grade, count in entry['edits_by_evidence'].items():
             totals['edits:' + grade] += count
     summary['totals'] = dict(totals)
+    if args.experimental_x1_plan:
+        originals=[dict(name=f.path.name,sha256=hashlib.sha256(f.data).hexdigest()) for f in cache.files]
+        if tool_hashes!={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in tool_paths}:
+            raise ValueError('proof tool source changed during run; results cannot qualify conversion')
+        isa_counts=Counter();anomaly_counts=Counter();mnemonics=Counter()
+        for entry in list(summary['images'].values())+island_results:
+            isa_counts.update(entry.get('x1_isa',{}).get('remaining_counts',{}))
+            anomaly_counts.update(entry.get('anomalies',{}))
+            mnemonics.update(entry.get('x1_isa',{}).get('mnemonics',{}))
+        summary.update(experimental_profile=x1.PROFILE,plan_only=True,boot_qualified=False,
+                       family_validation=family,detached_thunk_pools=[dict(address=hex(lo),size=hi-lo,file=i,offset=o) for lo,hi,i,o in detached],remaining_isa_counts=dict(isa_counts),
+                       anomaly_counts=dict(anomaly_counts),remaining_mnemonics=dict(mnemonics),complete_image_set=len(order)==len(images),
+                       original_files=originals,original_file_manifest_sha256=hashlib.sha256(json.dumps(originals,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+                       empty_images=[im.path for im in images if not im.instruction_sections()],
+                       tool_hashes=tool_hashes)
     (args.work / 'summary.json').write_text(json.dumps(summary, indent=1) + '\n')
     print(json.dumps(summary['totals'], indent=1))
     return 0

@@ -76,6 +76,32 @@ class Cache:
             address, _, _, path_offset = struct.unpack_from('<QQQI', header, offset + 32 * index)
             self.images.append((address, header[path_offset:header.find(b'\0', path_offset)].decode()))
 
+    def validate_family(self):
+        """Strict read-only geometry/UUID/slide checks before an x1 plan or rewrite."""
+        header=self.files[0].data
+        offset,count=struct.unpack_from('<II',header,HEADER_SUBCACHES)
+        if offset+count*SUBCACHE_ENTRY>len(header):
+            raise ValueError('subcache entries leave main file')
+        for index,item in enumerate(self.files):
+            if index:
+                expected=header[offset+(index-1)*SUBCACHE_ENTRY:offset+(index-1)*SUBCACHE_ENTRY+16]
+                if bytes(item.data[0x58:0x68])!=bytes(expected):
+                    raise ValueError(item.path.name+': subcache UUID mismatch')
+            signature,signature_size=item.signature
+            if signature+signature_size>len(item.data) or signature<=0:
+                raise ValueError(item.path.name+': signature geometry leaves file')
+            for address,size,fileoff,maxprot,initprot in item.mappings:
+                if size<=0 or fileoff+size>signature or initprot&~maxprot:
+                    raise ValueError(item.path.name+': invalid mapping geometry/protection')
+            for address,size,fileoff,info,info_size,flags,maxprot,initprot in item.slid:
+                if fileoff+size>signature or info+info_size>signature:
+                    raise ValueError(item.path.name+': slide mapping leaves signed content')
+                if info_size and struct.unpack_from('<I',item.data,info)[0]!=5:
+                    raise ValueError(item.path.name+': x1 slide version is not the handled v5')
+        for before,after in zip(self.regions,self.regions[1:]):
+            if before[0]+before[1]>after[0]:raise ValueError('overlapping cache mappings')
+        return {'files':len(self.files),'images':len(self.images),'slide_version':5,'uuid_and_geometry_validated':True}
+
     def locate(self, address):
         """(file index, file offset, bytes left in the mapping) of an unslid address."""
         index = bisect.bisect_right(self.starts, address) - 1
@@ -91,7 +117,10 @@ class Cache:
             raise ValueError(f'{address:#x}+{length:#x} crosses a mapping')
         return self.files[index].data[offset:offset + length]
 
-    def executable_regions(self):
+    def executable_regions(self, initial_only=False):
+        if initial_only:
+            return [(address,size,index,fileoff) for index,item in enumerate(self.files)
+                    for address,size,fileoff,_,initial in item.mappings if initial & VM_PROT_EXECUTE]
         return [(start, size, index, fileoff) for start, size, index, fileoff, prot in self.regions
                 if prot & VM_PROT_EXECUTE]
 
@@ -131,6 +160,7 @@ class Image:
             raise ValueError(f'{path}: no 64-bit Mach-O header at {address:#x}')
         commands = cache.read(address + 32, sizeofcmds)
         self.segments, self.sections, self.function_starts_command = {}, [], None
+        self.export_command = None
         at = 0
         for _ in range(ncmds):
             command, size = struct.unpack_from('<II', commands, at)
@@ -144,9 +174,37 @@ class Image:
                     flags, _, reserved2 = struct.unpack_from('<III', commands, base + 64)
                     self.sections.append(dict(segment=name, name=commands[base:base + 16].split(b'\0', 1)[0].decode(),
                                               addr=addr, size=length, fileoff=fileoff, flags=flags, reserved2=reserved2))
+            elif command == 0x80000033:  # LC_DYLD_EXPORTS_TRIE
+                self.export_command = struct.unpack_from('<II', commands, at + 8)
+            elif command in (0x22,0x80000022) and self.export_command is None:
+                self.export_command = struct.unpack_from('<II', commands, at + 40)
             elif command == LC_FUNCTION_STARTS:
                 self.function_starts_command = struct.unpack_from('<II', commands, at + 8)
             at += size
+
+    def export_addresses(self, names):
+        """Exact regular export addresses from the image's bounded export trie."""
+        if not self.export_command or not self.export_command[1]:return {}
+        offset,size=self.export_command;linkedit=self.segments['__LINKEDIT']
+        blob=self.cache.read(linkedit['vmaddr']+offset-linkedit['fileoff'],size)
+        found={};pending=[(0,'',frozenset())]
+        while pending:
+            at,name,ancestors=pending.pop()
+            if at in ancestors or at>=len(blob):raise ValueError('invalid export trie edge')
+            ancestors=ancestors|{at};terminal,cursor=code.uleb128(blob,at,len(blob));end=cursor+terminal
+            if end>=len(blob):raise ValueError('export trie terminal leaves blob')
+            if terminal and name in names:
+                flags,value_at=code.uleb128(blob,cursor,end)
+                if flags&0x1f==0: # regular address; no reexport, resolver or thread local kind
+                    relative,_=code.uleb128(blob,value_at,end)
+                    found[name]=self.address+relative
+            children=blob[end];cursor=end+1
+            for _ in range(children):
+                stop=blob.find(b'\0',cursor)
+                if stop<0:raise ValueError('unterminated export trie edge')
+                edge=blob[cursor:stop].decode();target,cursor=code.uleb128(blob,stop+1,len(blob))
+                if any(wanted.startswith(name+edge) for wanted in names):pending.append((target,name+edge,ancestors))
+        return found
 
     def instruction_sections(self):
         """Instruction sections with the file and offset that hold them, all in one cache file."""
@@ -225,12 +283,67 @@ class Image:
 
 class Coverage:
     """Address ranges of code other proofs own; membership tests and a record of what was reached."""
-    def __init__(self, ranges):
+    def __init__(self, ranges, cache=None, allow_detached_stubs=False, noreturn_exports=()):
+        self.cache=cache
+        self.noreturn_exports=set(noreturn_exports)
+        self.allow_detached_stubs=allow_detached_stubs
+        self.detached_stubs={}
         ranges = sorted(ranges)
         self.begins = [begin for begin, end in ranges]
         self.ends = [end for begin, end in ranges]
         self.reached = set()
 
-    def __contains__(self, address):
-        index = bisect.bisect_right(self.begins, address) - 1
-        return index >= 0 and address < self.ends[index]
+    def known(self,address):
+        index=bisect.bisect_right(self.begins,address)-1
+        return index>=0 and address<self.ends[index]
+
+    def detached_stub(self,address):
+        """Exact x1 detached selector thunk, admitted only via a proven branch.
+
+        An unflagged executable TEXT-tail pool uses16-byte ADRP X1;ADD X1;
+        B owned code;BRK#1 records. Do not classify an arbitrary mapping gap
+        as code, and do not accept a branch to data/unknown stub chains.
+        """
+        if address&15 or self.cache is None or any(self.known(address+i) for i in (0,4,8,12)):
+            return None
+        try:
+            index,offset,room=self.cache.locate(address)
+            if room<16:return None
+            if not any(start<=address and address+16<=start+size for start,size,_,_ in self.cache.executable_regions(initial_only=True)):
+                return None
+            words=struct.unpack('<4I',self.cache.read(address,16))
+        except (KeyError,ValueError,struct.error):return None
+        if (words[0]&0x9f00001f)!=0x90000001 or (words[1]&0xffc003ff)!=0x91000021 or (words[2]&0xfc000000)!=0x14000000 or words[3]!=0xd4200020:
+            return None
+        immediate=words[2]&0x3ffffff
+        if immediate&0x2000000:immediate-=0x4000000
+        target=address+8+immediate*4
+        if not self.known(target):return None
+        return dict(address=address,size=16,file=index,offset=offset,target=target,words=list(words))
+
+    def is_noreturn(self,address):
+        """Direct exported noreturn function, or exact ADRP/ADD/BR/BRK forwarding stub.
+
+        This never treats an arbitrary terminal call as noreturn. The caller supplies
+        symbol-resolved known noreturn exports; the forwarding stub must be executable.
+        """
+        if address in self.noreturn_exports:return True
+        if not self.cache or address&15:return False
+        try:
+            if not any(a<=address and address+16<=a+n for a,n,_,_ in self.cache.executable_regions(initial_only=True)):return False
+            w0,w1,w2,w3=struct.unpack('<4I',self.cache.read(address,16))
+        except (KeyError,ValueError,struct.error):return False
+        if w0&0x9f00001f!=0x90000010 or w1&0xffc003ff!=0x91000210 or w2!=0xd61f0200 or w3!=0xd4200020:return False
+        immediate=((w0>>29)&3)|(((w0>>5)&0x7ffff)<<2)
+        if immediate&(1<<20):immediate-=1<<21
+        target=(address&~0xfff)+(immediate<<12)+((w1>>10)&0xfff)
+        return target in self.noreturn_exports
+
+    def __contains__(self,address):
+        if self.known(address):return True
+        if self.allow_detached_stubs:
+            entry=self.detached_stub(address)
+            if entry is not None:
+                self.detached_stubs[address]=entry
+                return True
+        return False

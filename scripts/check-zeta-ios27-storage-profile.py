@@ -40,8 +40,10 @@ def check(enabled, roots=None, data=None, metadata=None, header=None, providers=
             if provider_root else providers['source_files_sha256'])
     for path,expected in hashes.items():
         if hash_file(Path(path))!=expected:raise ValueError('native provider source/header hash changed: '+path)
-    if (not roots.get('all_three_namespaces_preserved') or not roots.get('preboot_scaffold') or
-            {x['name'] for x in roots['windows']}!={'OS','SystemOS','AppOS','Preboot'}):
+    names={x['name'] for x in roots['windows']}
+    standalone=roots.get('preboot_scaffold') and names=={'OS','SystemOS','AppOS','Preboot'}
+    in_main=roots.get('owner_scaffold_in_main') and names in [{'OS','SystemOS','AppOS'},{'OS','SystemOS','AppOS','RecoveryOS26'}]
+    if not roots.get('all_three_namespaces_preserved') or not (standalone or in_main):
         raise ValueError('require complete OS/SystemOS/AppOS immutable windows and original symlink Preboot scaffold')
     if not data.get('store_full_data_readback_passed') or not data.get('anchor_apfs_metadata_readback_passed') or data.get('loader_limit_changed'):
         raise ValueError('bounded full Data direct-store inputs not qualified')

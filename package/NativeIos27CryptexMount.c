@@ -83,9 +83,16 @@ int native_ios27_cryptex_prepare(proc_t p,user_addr_t scratch)
         actual!=expected || strcmp(vfs_statfs(os)->f_fstypename,"apfs")) goto done;
     native_ios27_cryptex_stage=2;
     dev_t system=NODEV,app=NODEV,preboot=NODEV;
+#if defined(ZETA_IOS27_PREBOOT_VOLUME_UUID)
     error=mount_one(p,scratch,ZETA_IOS27_PREBOOT_VOLUME_UUID,"/private/preboot",&preboot);
     if (error) goto done;
-    native_ios27_preboot_device=preboot;native_ios27_cryptex_stage=3;
+    native_ios27_preboot_device=preboot;
+#else
+    /* The qualified unsealed Main owns only the three empty mountpoint
+     * directories; original stock /System/Cryptexes symlinks stay intact. */
+    printf("Ios27Cryptex: Preboot mountpoints supplied by qualified owner root\n");
+#endif
+    native_ios27_cryptex_stage=3;
     error=mount_one(p,scratch,ZETA_IOS27_SYSTEMOS_VOLUME_UUID,"/System/Cryptexes/OS",&system);
     if (error) goto done;
     native_ios27_systemos_device=system;native_ios27_cryptex_stage=4;

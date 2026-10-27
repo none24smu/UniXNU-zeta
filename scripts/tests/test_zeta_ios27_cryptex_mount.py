@@ -78,13 +78,21 @@ int main(void){
 '''
 
 class CryptexMountTests(unittest.TestCase):
-    def test_actual_mount_helper_refusals(self):
+    def run_helper(self,builtin=False):
         body='\n'.join(line for line in SOURCE.read_text().splitlines() if not line.startswith('#include'))
+        prelude=PRELUDE;main=MAIN
+        if builtin:
+            prelude=prelude.replace('#define ZETA_IOS27_PREBOOT_VOLUME_UUID "PREBOOT"','')
+            prelude=prelude.replace('mounts==1?"/private/preboot":mounts==2?"/System/Cryptexes/OS":"/System/Cryptexes/App"','mounts==1?"/System/Cryptexes/OS":"/System/Cryptexes/App"')
+            prelude=prelude.replace('scenario==10&&mounts==3','scenario==10&&mounts==2')
+            main=main.replace('mounts==3','mounts==2')
         with tempfile.TemporaryDirectory() as tmp:
-            source=Path(tmp)/'test.c';exe=Path(tmp)/'test';source.write_text(PRELUDE+body+MAIN)
+            source=Path(tmp)/'test.c';exe=Path(tmp)/'test';source.write_text(prelude+body+main)
             r=subprocess.run(['clang','-std=c11','-Wall','-Wextra','-Werror','-O1','-g','-fsanitize=address,undefined',str(source),'-o',str(exe)],capture_output=True,text=True)
             self.assertEqual(r.returncode,0,r.stdout+r.stderr)
             r=subprocess.run([str(exe)],capture_output=True,text=True)
             self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+    def test_actual_mount_helper_refusals(self):self.run_helper()
+    def test_qualified_main_empty_mountpoint_variant(self):self.run_helper(True)
 
 if __name__=='__main__':unittest.main()

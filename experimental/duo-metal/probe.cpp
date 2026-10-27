@@ -212,7 +212,7 @@ std::shared_ptr<ImageAllocation> allocateImage(const std::shared_ptr<Runtime>& r
     require(r->vkBindImageMemory(r->device, allocation->image, allocation->memory, 0), "bind_image_memory");
     return allocation;
 }
-VulkanImageBinding bind(const std::shared_ptr<ImageAllocation>& allocation, uint64_t id) {
+VulkanImageBinding makeImageBinding(const std::shared_ptr<ImageAllocation>& allocation, uint64_t id) {
     const auto& i = allocation->info;
     ImageDescriptor descriptor;
     descriptor.resourceId = descriptor.allocationId = id;
@@ -270,7 +270,8 @@ bool test(const std::shared_ptr<Runtime>& r, uint32_t samples, uint32_t timeoutM
     auto source = allocateImage(r, samples, false, samples == 1);
     auto target = samples == 1 ? source : allocateImage(r, 1, true, true);
     auto readback = allocateReadback(r);
-    auto sourceBinding = bind(source, 1), targetBinding = samples == 1 ? sourceBinding : bind(target, 2);
+    auto sourceBinding = makeImageBinding(source, 1);
+    auto targetBinding = samples == 1 ? sourceBinding : makeImageBinding(target, 2);
     auto d = encoderDevice(r);
     std::vector<VulkanImageBinding> bindings{sourceBinding};
     if (samples > 1) bindings.push_back(targetBinding);

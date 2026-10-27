@@ -56,3 +56,18 @@ read the actual sysctls. No boot image was built or deployed for this change.
 The iOS 27 `arm64e.x1` executable/cache conversion gate remains closed: identity
 coherence does not provide ADDPT/SUBPT, CSSC, MTE, POE2, or remaining system/kernel
 compatibility. See the board's existing x1 audit artifacts for exact counts.
+
+At the 2026-10-27 static checkpoint, the existing LLVM Cortex-A55 baseline audit
+still reports the following in proven code after ordinary-pointer PAC lowering:
+
+| Original binary | Remaining baseline-rejected instructions |
+| --- | --- |
+| dyld (157392 proven instructions) | ADDPT 1164; SUBPT 4; TCHANGEB 120; TCHANGEF 116; UMIN 40; UMAX 34; CTZ 4; SMIN 1; ABS 1; LDG 7; STG 11; IRG 5; SHA512H 40; SHA512SU0 32; SHA512H2 40; SHA512SU1 32 (1651 total) |
+| launchd (94991 proven instructions) | ADDPT 62; UMIN 4; UMAX 5 (71 total) |
+
+These counts are static baseline rejections, not evidence that all paths execute
+or that every listed feature is absent on every SM8350 core. They require
+correct feature selection, established per-core capabilities, or verified
+semantics-preserving conversion before x1 deployment. The shared-cache family
+and remaining kernel/userspace ABI also need qualification. Changing platform
+identity does not clear any of those gates.

@@ -98,6 +98,22 @@ still reports kernel compilation/runtime as unverified until measured.
 
 ## Native APFS and loader gates
 
+`zeta_ios27_stock_mount_defconfig` selects the native cryptex helpers in the
+kernel/archive build and the resume-only NativeRamBlock export. It uses
+`NativeIos27StockStorageProfile.h`, generated from the original four stock
+storage windows, rather than the later compact unsealed UUIDs. Its purpose is
+to capture native mounts and the first exec boundary; it does not qualify
+arm64e.x1, convert sealed caches, install storage or claim launchd success.
+The ordinary configuration keeps this feature disabled. Bootstrap compiles
+the new kern_exec calls out until their actual native archive exists.
+
+After that build, `check-zeta-ios27-native-objects.py --tree ASSEMBLED_TREE
+--profile-header GENERATED_HEADER --provider-manifest
+package/NativeIos27ProviderPins.json --output NEW_DIRECTORY` checks the three
+storage objects using the actual BSD and storage compile records. It retains
+compiler/source/header hashes and refuses missing records or changed provider
+pins. It does not substitute host stubs, link a kernel or prove native mounts.
+
 Actual27 MainOS feature/incompatibility masks match the stock/proven26 OS
 counterpart; actual27 SystemOS/AppOS match the26 sealed SystemOS masks. This
 removes a new feature-bit mismatch as evidence, but does not establish native

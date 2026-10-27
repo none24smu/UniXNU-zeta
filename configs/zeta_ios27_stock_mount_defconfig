@@ -1,0 +1,77 @@
+# Surface Duo 2 (zeta): the owner-root APFS profile plus the static trust cache runtime, for userland
+# rewritten to the ordinary arm64 ABI (rewrite-zeta-userland.py).
+# The kernel is a DEVELOPMENT BCM2837 build of UniXNU patches/xnu-12377. Only the options that
+# build-xnu-12377.sh reads apply; the other xnu-10063 options (CONFIG_XNU_OWNER_*, ...) do not yet.
+CONFIG_XNU_BUILD_SCRIPT="build-xnu-12377.sh"
+
+# No Raspberry Pi timer routing: on SM8350 its address is the disabled second PCIe controller.
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+# The CNTP_CTL_EL0 write in fiq_context_init faults on the boot core; CNTV is usable.
+CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
+# Register the source crypto provider before platform UUID hashing.
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+# Register the public source pthread provider through XNU's versioned shims.
+CONFIG_XNU_SOURCE_PTHREAD=y
+# Build public IOStorageFamily and the Duo-specific UFS path; MMIO is opt-in.
+CONFIG_XNU_NATIVE_UFS_SM8350=y
+# Link the real DT platform expert and GICv3 boot CPU provider into XNU 12377.
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+# Each secondary core's reset-path steps, MMU-off ones included, for the boot progress smp line.
+CONFIG_XNU_NATIVE_SMP_TRACE=y
+# Polling CDC ACM transport after ExitBootServices; ADT selects the USB0 aperture.
+CONFIG_XNU_NATIVE_DWC3_CONSOLE=y
+# Cortex-A55/A78/X1 are ARMv8.2 (Arm TRMs), so PAN is present.
+CONFIG_XNU_NATIVE_PAN=y
+# Panic log from the device tree's pram node, not the Raspberry Pi address 0x3c0fc000.
+CONFIG_XNU_DT_PANIC_REGION=y
+# Load the boot trust bundle (make-zeta-trust-bundle.py) as the static trust cache. The runtime
+# needs AppleImage4 and AMFI registered first; both start in the security-extension pass.
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+# Seed the dyld comm page flags from dyld_flags=; PID 1 then honours dyld_flags=0x8 (skip libignition,
+# whose cryptex graft needs an Apple-personalized manifest) and maps the root shared cache.
+CONFIG_XNU_DYLD_FLAGS_BOOTARG=y
+# Print every exec, spawn and exit on the console: launchd's children are otherwise invisible.
+CONFIG_XNU_PROC_TRACE_CONSOLE=y
+# The UniXNU boot progress layer (package/BootProgress.c): the diagnostic page with the last checkpoints and the
+# user fault probe. Inert unless boot-progress=1 or 2; console output still reaches the USB log.
+CONFIG_XNU_BOOT_PROGRESS=y
+# The Data volume: the packed Data seed (scripts/make-zeta-data-seed.py) served by NativeRamBlock and mounted
+# read-write at /private/var by the kernel before launchd, as on sheng. The seed's volume UUID selects it.
+CONFIG_XNU_NATIVE_RAM_BLOCK=y
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="288C85FB-CE8C-478B-994A-48109BA10DF0"
+# vfs.generic.apfs.edt_fstab from /filesystems/fstab: getfsent() reads only this on an APFS root, and the
+# KDK APFS kext lacks it. Its ephemeral entry is the Data volume, a tmpfs mount(8) builds from /private/var.
+CONFIG_XNU_EDT_FSTAB=y
+# The GOP display (package/NativeLegacyDisplay.cpp, UniXNU NativeLegacyDisplay with offline-legacy-start): the
+# firmware framebuffer as the original IOMobileFramebufferLegacy under /arm-io, bound by name to the prelinked
+# KDK IOMobileGraphicsFamily. Inert unless offline-mobile-graphics-load=1; needs keepsyms=1.
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+# iOS IOSurface.framework matches IOCoreSurfaceRoot; the KDK IOSurface kext publishes IOSurfaceRoot.
+CONFIG_XNU_NATIVE_IOS_CLASS_ALIASES=y
+
+# Signed policies are read from bounded UFS extents; only the public owner anchor is built in.
+CONFIG_XNU_NATIVE_UFS_VERIFIED_ROOT=y
+
+# APFS profile with an explicit owner-signed, read-only root policy.
+# Every kernel/provider C++ object must share this reserved-slot/alignment profile.
+CONFIG_XNU_KDK_IOKIT_ABI=y
+# Real scalar SHA3/pair KPIs plus additional runtime known-answer checks.
+CONFIG_XNU_APFS_CRYPTO_KPIS=y
+# Real XNU policy implementation, restrictive when no local policy is supplied.
+CONFIG_XNU_APFS_CSR=y
+# Isolated current source subset; original crypto provider/POST stay active.
+CONFIG_XNU_APFS_MLDSA=y
+
+# Bind the mounted root device and UUID to its real signed UFS window.
+# Apple authentication remains the first path; owner policy is a distinct anchor.
+CONFIG_XNU_NATIVE_UFS_OWNER_ROOT=y
+
+# Native iOS27 mount/first-exec diagnostic. Original stock namespace UUIDs;
+# this profile does not claim arm64e.x1 conversion or successful launchd.
+# The ordinary iOS26 configuration and persistent source images stay separate.
+CONFIG_XNU_IOS27_CRYPTEXES=y
+CONFIG_XNU_IOS27_PROFILE_HEADER="{tree}/kits/zeta/NativeIos27StockStorageProfile.h"
+CONFIG_XNU_ZETA_USER_CSSC=y
+CONFIG_XNU_ZETA_USER_JSCVT=y

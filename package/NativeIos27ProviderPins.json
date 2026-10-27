@@ -1,0 +1,39 @@
+{
+  "schema": "zeta-ios27-native-provider-pins-v1",
+  "driver_pins": [
+    {
+      "driver": "NativeUfs",
+      "expected_gitlink": "af785c1777161a62931425c2faaa536ce0bebd5b",
+      "actual_source_commit": "af785c1777161a62931425c2faaa536ce0bebd5b",
+      "pin_matches": true,
+      "source_tree_clean": true
+    },
+    {
+      "driver": "NativeRamBlock",
+      "expected_gitlink": "7194961a668e59018323b626be4fd7ce0a91e78f",
+      "actual_source_commit": "7194961a668e59018323b626be4fd7ce0a91e78f",
+      "pin_matches": true,
+      "source_tree_clean": true
+    }
+  ],
+  "relative_source_files_sha256": {
+    "drivers/NativeUfs/GccUfs.h": "1ef7030533184ecb7efebb8ad3a6fa8e155a8b5b9eea19a6a2af758027d483c3",
+    "drivers/NativeUfs/NativeUfs.cpp": "24f549be5006ab5c463c67aa01ee38511b185853f878e12b4bb70830313ae9ed",
+    "drivers/NativeUfs/RootCommands.h": "11f88727514b42c823c166b2d8da1090189d69d797f29bdff6532498f66b86ec",
+    "drivers/NativeUfs/RootDiagnostics.h": "0ad96da909e87d161b17694e32768a9d84500da96f975dcc6913535c413fde29",
+    "drivers/NativeUfs/RootLayout.h": "3e25127486a5102cd477fcfabd62366a3b3f02bb12a0b8db2294330a4b233484",
+    "drivers/NativeUfs/RootPublication.h": "3c289b44f4d7c082b3f214eda2d4225f53860dd007f4a89402bdc910f268aeda",
+    "drivers/NativeUfs/RootQueue.h": "001d06dcc4c3c7073704cffa3105a28d11e3e97985e7fcb49b8cc107216248bf",
+    "drivers/NativeUfs/RootTransportLayout.h": "77699362f09e103ceda0d5f216d0be7749cdc1e88c6143ddd15ceb11dfd42e91",
+    "drivers/NativeUfs/RootWindowRead.h": "e8d98556290cf540204227f863b043eb09996bb87d38e1d6894b83b351c8d112",
+    "drivers/NativeUfs/SmmuTakeover.h": "54868bf0745ee6093627e73ba8cec9ac3c574446955c359463507d0f122f90a8",
+    "drivers/NativeUfs/TransferPoll.h": "742df51cdce6d06df6bf93294176f01305c9d1359c8ffdfb99daff7b76a1ece3",
+    "drivers/NativeRamBlock/DirectDisk.h": "5ff2dd31787553182dc02ff7b8ff3478c8a268c2979763b52b72ca206a9d3f8c",
+    "drivers/NativeRamBlock/NativeRamBlock.cpp": "fb61d6c0ce13570d55e0019bb44c4fd56893d943b014f2903d6cf38affed0ab0",
+    "drivers/NativeRamBlock/PersistOverlay.h": "288b973e992a14c415539bfea268702d3fbda6184a6d71daffe6bca24963ca02",
+    "drivers/NativeRamBlock/SeedDisk.h": "d8a654529b5d56703bcf491c3834b407590995eebcb7a26004448990c200e4a0",
+    "drivers/NativeRamBlock/SparseDisk.h": "5ab6516488b7daaef88e788fffef17195e7d2f74746da2206c6d9ed3a63c8c74",
+    "patches/drivers/NativeUfs-sm8350.patch": "5454a667a064a2d870e3b0775a731ec6cafa336f04bd202adacb1dd1ac2997bc",
+    "patches/xnu-12377/zzzz-native-ios27-cryptexes.patch": "3d0ea139f07049493266c2baf19c4e3b78e1e4c7b0c478dbe5b9770bee5127f0"
+  }
+}

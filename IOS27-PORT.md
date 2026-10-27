@@ -11,6 +11,11 @@ builds. Tests invoke the actual configured tool and compare its CPU, GIC, PSCI,
 button and default nodes with the control tree. The real hardware remains the
 Surface Duo 2; product identity does not implement Apple's GPU feature set or
 fold/hinge services. No APPLE11 capability is added by this profile.
+`hw.machine`/`hw.product` derive from root model. The generic upstream platform
+expert derives `hw.model`/`hw.target` from compatible strings, so coherent V68AP
+readouts through that provider and MobileGestalt remain a separate validation
+and implementation gate. Generating the V68 target properties alone does not
+prove those interfaces return an Apple board model.
 
 Provide the archive explicitly using `--ipsw /path/to/archive.ipsw` or
 `UNIXNU_IPSW`; no assumed download URL is embedded. The V68 DeviceTree SHA-256
@@ -64,3 +69,12 @@ Require exact GPU readback and GPU completion on the physical A660 before OS
 integration. Host tests and Vulkan descriptor capture do not establish graphics
 or performance on the phone. Keep the current iOS 26 image as a comparison
 while these gates are developed.
+
+The retained local iOS 27 shader corpus includes a format-validated QuartzCore
+AIR slice (249 functions), Metal BVH/ECBE libraries (229 kernels), and RenderBox
+AIR (109 functions). Those 587 module hashes match their container metadata;
+they report AIR 2.9 / Metal 4.1. The QuartzCore input is a standard CAFEBABE FAT
+container with separate AIR and GPU archive slices; RenderBox's GPU archive is
+not an alternate AIR source. A replacement compiler must distinguish these
+containers and consume their real metadata. Successful inventory is not shader
+translation, compilation or rendering proof.

@@ -270,7 +270,9 @@ def main(argv=None, *, default_identity='iPhone18,2'):
             parser.error(name + ' is not the stock Surface Duo 2 firmware')
         gpu_firmware.append((key, data))
     tree = node('device-tree', [
-        # hw.product/hw.machine/hw.target come from the root model/target-type (IODTPlatformExpert).
+        # IODTPlatformExpert derives hw.product/hw.machine from root model.
+        # Target metadata remains separate from the real compatible strings;
+        # hw.model/hw.target provider readouts need runtime identity validation.
         ('model', identity_model),
         ('target-type', identity_target),
         *([('target-sub-type', b'V68AP\0')] if args.identity_profile == 'iPhone19,4' else []),

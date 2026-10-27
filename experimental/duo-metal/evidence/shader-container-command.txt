@@ -1,0 +1,9 @@
+Working directory: /home/smudev/iosongen2
+Command: bash work/ios27-port/board/experimental/duo-metal/run-shader-container-tests.sh
+Compiler: c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Options: -std=c++17 -O1 -g -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer
+Hash adapter on this host: OpenSSL EVP (-lcrypto). Apple adapter uses CommonCrypto; core accepts injected SHA-256.
+Host assertions: 7201 passed.
+Actual retained corpus: 6 accepted AIR libraries including 2 empty, 587 exact function/module/HASH records; 1 GPU archive explicitly unsupported.
+Corpus input identity and all module hashes independently checked using Python hashlib and retained manifest/inventory.
+Scope: container format and byte integrity only. No AIR IR validation, shader translation, native ARM64 execution, GPU execution or UI rendering proof.

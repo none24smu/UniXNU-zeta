@@ -1,0 +1,172 @@
+--- a/NativeAdrenoMemory.h
++++ b/NativeAdrenoMemory.h
+@@ -17,6 +17,10 @@
+ /* The same over whole physical pages of DRAM, through the kernel's physical aperture: data cache lines are physically tagged, so this
+  * reaches lines another task's mapping left (an imported IOSurface). Apple's sys_dcache_flush is only a DSB, so user space cannot. */
+ IOReturn NativeAdrenoMaintainPhysicalPages(uint64_t physical,size_t bytes,NativeAdrenoCacheOperation);
++/* Same maintenance for a logical subrange of a scatter list. Barrier pairs and
++ * preemption windows span physical boundaries, still limited to 64 pages. */
++IOReturn NativeAdrenoMaintainPhysicalSpans(const NativeAdrenoPhysicalSpan *,size_t count,
++    size_t offset,size_t bytes,NativeAdrenoCacheOperation);
+ /* Every CPU mapping of the spans' pages becomes write-combined (true) or takes the default cacheable attribute again (false). */
+ IOReturn NativeAdrenoSetPagesCacheMode(const NativeAdrenoPhysicalSpan *,size_t count,bool write_combined);
+ /* int-100 found a write-combined BO's page back at the default (cacheable) attribute with dirty IB lines: XNU's view machinery sets a page's
+--- a/NativeAdrenoMemory.cpp
++++ b/NativeAdrenoMemory.cpp
+@@ -314,13 +314,5 @@
+  * [offset, offset+bytes) by physical address. */
+ IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation op)
+ {
+-    for(size_t i=0;i<span_count_;++i) {
+-        const NativeAdrenoPhysicalSpan &span=spans_[i];
+-        const size_t begin=offset>span.offset?offset:span.offset;
+-        const size_t end=offset+bytes<span.offset+span.bytes?offset+bytes:span.offset+span.bytes;
+-        if(begin>=end)continue;
+-        const IOReturn status=NativeAdrenoMaintainPhysicalPages(span.physical+(begin-span.offset),end-begin,op);
+-        if(status)return status;
+-    }
+-    return kIOReturnSuccess;
+-}
++    return NativeAdrenoMaintainPhysicalSpans(spans_,span_count_,offset,bytes,op);
++}
+--- a/NativeAdrenoCpu.cpp
++++ b/NativeAdrenoCpu.cpp
+@@ -1,5 +1,6 @@
+ /* SPDX-License-Identifier: MIT */
+ #include "NativeAdrenoMemory.h"
++#include "NativeAdrenoCacheBatch.h"
+ #include <kern/cpu_data.h>
+ #include <vm/vm_map.h>
+ #include <mach/vm_param.h>
+@@ -73,38 +74,52 @@
+     if(!status)noteMaintenance(began,bytes);
+     return status;
+ }
+-IOReturn NativeAdrenoMaintainPhysicalPages(uint64_t physical,size_t bytes,NativeAdrenoCacheOperation op)
+-{
+-    if(!physical || !bytes || ((physical|bytes)&4095) || physical>UINT64_MAX-bytes || op>NativeAdrenoInvalidate || op<NativeAdrenoClean)
+-        return kIOReturnBadArgument;
+-    const uint64_t began=mach_absolute_time();
+-    /* One barrier pair per run of up to 64 pages instead of per page (an imported 3048x2032 surface is 5952 pages): preemption stays off
+-     * for a bounded run, and the closing DSB on the issuing core completes every operation of that run. */
+-    for(size_t offset=0;offset<bytes;) {
++namespace {
++struct PhysicalCacheRun {
++    NativeAdrenoCacheOperation op;
++    size_t line=0;
++    IOReturn begin() {
+         disable_preemption();
+         uint64_t ctr;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
+-        const size_t line=(size_t)4<<((ctr>>16)&15);
++        line=(size_t)4<<((ctr>>16)&15);
+         if(line>4096) {enable_preemption();return kIOReturnUnsupported;}
+         __asm__ volatile("dsb sy":::"memory");
+-        for(unsigned run=0;run<64 && offset<bytes;++run,offset+=4096) {
+-            /* A page outside the kernel's DRAM is device memory (the firmware framebuffer the display hand-off imports): the CPU maps it
+-             * uncached (kIOMapInhibitCache), no cache line of it exists to maintain, and phystokv would panic on it (int-080: illegal PA
+-             * 0xb8000000). */
+-            const uint64_t page=physical+offset;
+-            if(page<gPhysBase || page-gPhysBase>=gPhysSize)continue;
+-            const vm_offset_t alias=phystokv(page);
+-            if(!alias) {__asm__ volatile("dsb sy":::"memory");enable_preemption();return kIOReturnUnsupported;}
+-            for(uintptr_t address=alias,end=alias+4096;address<end;address+=line) {
+-                if(op==NativeAdrenoClean)__asm__ volatile("dc cvac, %0"::"r"(address):"memory");
+-                else if(op==NativeAdrenoCleanInvalidate)__asm__ volatile("dc civac, %0"::"r"(address):"memory");
+-                else __asm__ volatile("dc ivac, %0"::"r"(address):"memory");
+-            }
++        return kIOReturnSuccess;
++    }
++    IOReturn page(uint64_t physical) {
++        /* Preserve the uncached firmware-framebuffer exception. Never pass
++         * device memory to phystokv, which accepts only the kernel's DRAM. */
++        if(physical<gPhysBase || physical-gPhysBase>=gPhysSize)return kIOReturnSuccess;
++        const vm_offset_t alias=phystokv(physical);
++        if(!alias)return kIOReturnUnsupported;
++        for(uintptr_t address=alias,end=alias+4096;address<end;address+=line) {
++            if(op==NativeAdrenoClean)__asm__ volatile("dc cvac, %0"::"r"(address):"memory");
++            else if(op==NativeAdrenoCleanInvalidate)__asm__ volatile("dc civac, %0"::"r"(address):"memory");
++            else __asm__ volatile("dc ivac, %0"::"r"(address):"memory");
+         }
++        return kIOReturnSuccess;
++    }
++    void end() {
+         __asm__ volatile("dsb sy":::"memory");
+         enable_preemption();
+     }
+-    noteMaintenance(began,bytes);
+-    return kIOReturnSuccess;
++};
++}
++IOReturn NativeAdrenoMaintainPhysicalSpans(const NativeAdrenoPhysicalSpan *spans,size_t count,
++    size_t offset,size_t bytes,NativeAdrenoCacheOperation op)
++{
++    if(op>NativeAdrenoInvalidate || op<NativeAdrenoClean)return kIOReturnBadArgument;
++    const uint64_t began=mach_absolute_time();
++    PhysicalCacheRun run{op};
++    const IOReturn status=NativeAdrenoVisitPhysicalPages(spans,count,offset,bytes,run);
++    /* One timing record per logical request, not per physical fragment. */
++    if(!status)noteMaintenance(began,bytes);
++    return status;
++}
++IOReturn NativeAdrenoMaintainPhysicalPages(uint64_t physical,size_t bytes,NativeAdrenoCacheOperation op)
++{
++    const NativeAdrenoPhysicalSpan span={0,physical,bytes};
++    return NativeAdrenoMaintainPhysicalSpans(&span,1,0,bytes,op);
+ }
+ /* A user BO's pages become Normal non-cacheable (write-combined) for every CPU mapping the pmap tracks: the kernel's own mapping and each
+  * client view. The views did not get the cache mode their mapping asked for (int-070: Turnip's write-combine view left IB words in a CPU
+--- /dev/null
++++ b/NativeAdrenoCacheBatch.h
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef NATIVE_ADRENO_CACHE_BATCH_H
++#define NATIVE_ADRENO_CACHE_BATCH_H
++#include "NativeAdrenoMemory.h"
++
++/* Preserve the exact physical-page sequence, but keep a barrier/preemption run
++ * open across scatter-list boundaries. Ops::end() must complete all operations
++ * issued on the current CPU before allowing migration. No allocation or sort.
++ * Validate the entire requested interval before any cache operation. */
++template<class Ops>
++IOReturn NativeAdrenoVisitPhysicalPages(const NativeAdrenoPhysicalSpan *spans,
++    size_t count,size_t offset,size_t bytes,Ops &ops)
++{
++    if(!spans || !count || !bytes || ((offset|bytes)&4095) || offset>UINT64_MAX-bytes)
++        return kIOReturnBadArgument;
++    const uint64_t end=offset+bytes;
++    uint64_t covered=offset,previous=0;
++    for(size_t i=0;i<count;++i) {
++        const auto &s=spans[i];
++        if(!s.bytes || !s.physical || ((s.offset|s.physical|s.bytes)&4095) ||
++            s.offset>UINT64_MAX-s.bytes || s.physical>UINT64_MAX-s.bytes ||
++            (i && s.offset<previous))return kIOReturnBadArgument;
++        previous=s.offset+s.bytes;
++        const uint64_t first=offset>s.offset?offset:s.offset;
++        const uint64_t last=end<previous?end:previous;
++        if(first>=last)continue;
++        if(first!=covered)return kIOReturnBadArgument;
++        covered=last;
++    }
++    if(covered!=end)return kIOReturnBadArgument;
++
++    unsigned run=0;
++    for(size_t i=0;i<count;++i) {
++        const auto &s=spans[i];
++        const uint64_t first=offset>s.offset?offset:s.offset;
++        const uint64_t last=end<s.offset+s.bytes?end:s.offset+s.bytes;
++        for(uint64_t at=first;at<last;at+=4096) {
++            if(!run) {
++                const IOReturn status=ops.begin();
++                if(status)return status; // begin must undo its own partial setup
++            }
++            const IOReturn status=ops.page(s.physical+at-s.offset);
++            if(++run==64 || status) {
++                ops.end();run=0;
++                if(status)return status;
++            }
++        }
++    }
++    if(run)ops.end();
++    return kIOReturnSuccess;
++}
++#endif

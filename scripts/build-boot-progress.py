@@ -64,6 +64,9 @@ def check_object(path):
 # boot-ui-focus processes in the page's capture worker.
 units = [('BootProgress', startup), ('BootFaultProbe', startup), ('BootProcessProbe', startup), ('BootUiTraceProbe', startup),
          ('BootProgressAbsent', startup)]
+js_compat = os.environ.get('XNU_ZETA_USER_JSCVT') == '1'
+if js_compat and (os.environ.get('XNU_OWNER_DATA_MOUNT') != '1' or os.environ.get('XNU_ZETA_USER_CSSC') != '1'):
+    raise SystemExit('XNU_ZETA_USER_JSCVT needs the final CSSC hook and owner-Data BSD compile record')
 if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
     units.append(('BootWatchdogPolicy',
                   json.loads((OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))))
@@ -71,12 +74,16 @@ if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
         bsd_record = units[-1][1]
         units += [('ZetaUserInstructionCompat', bsd_record),
                   ('ZetaUserInstructionKernel', bsd_record)]
+        if js_compat:
+            units += [('ZetaJsConvert', bsd_record), ('ZetaJsInstructionKernel', bsd_record)]
 objects = []
 commands = {}
 for name, record in units:
     source = KIT / (name + '.c') if (KIT / (name + '.c')).is_file() else KIT / (name + '.S')
     destination = OUT / (name + '.o')
     command = command_for(source, destination, record)
+    if js_compat and name == 'ZetaUserInstructionKernel':
+        command.append('-DZETA_KERNEL_JS_EMULATION=1')
     if source.suffix == '.S':
         # The C flags of the record do not apply to the assembler, and a forced C header would not assemble.
         while '-include' in command:
@@ -98,7 +105,8 @@ archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), *map(str, objects)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted(KIT.glob('BootProgress*')) + sorted(KIT.glob('BootUiTrace*.h')) + sorted(KIT.glob('ZetaUserInstruction*.h')) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
+                for path in sorted(KIT.glob('BootProgress*')) + sorted(KIT.glob('BootUiTrace*.h')) + sorted(KIT.glob('ZetaUserInstruction*.h')) + ([KIT / 'ZetaJsConvert.h'] if js_compat else []) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
+    'js_compat_compiled': js_compat,
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

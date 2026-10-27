@@ -9,6 +9,10 @@
 #include <pexpert/pexpert.h>
 #include "ZetaUserInstructionCompat.h"
 
+#if ZETA_KERNEL_JS_EMULATION
+extern int zeta_js_instruction_compat(arm_saved_state_t *, uint32_t);
+#endif
+
 // UINT32_MAX means boot policy has not been cached. 0 disabled; 1 probe only;
 // 2 experimental platform binaries plus the probe. Runtime changes are an owner
 // diagnostic interface, not a permission grant for unsigned code.
@@ -39,6 +43,11 @@ static uint32_t mode(void) {
 }
 
 int zeta_user_instruction_compat(arm_saved_state_t *saved, uint32_t instruction) {
+#if ZETA_KERNEL_JS_EMULATION
+    // Independent default-off policy. CSSC may remain disabled while testing JS.
+    if ((instruction & UINT32_C(0xfffffc00)) == UINT32_C(0x1e7e0000))
+        return zeta_js_instruction_compat(saved, instruction);
+#endif
     uint32_t enabled = mode();
     count(Calls);
     if (enabled != 1 && enabled != 2) { count(Disabled); return 0; }

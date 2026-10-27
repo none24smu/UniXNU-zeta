@@ -63,10 +63,23 @@ def main():
         original_xpc=root/"work/mount-os/root/System/Library/xpc"
         assert (original_xpc/"launchd.plist").is_file()
         for path in original_xpc.iterdir():
-            if path.name in ("launchd.plist","launchd.plist.sig"):continue
             assert path.is_file(),path
             shutil.copy2(path,xpc/path.name)
-        assert (xpc/"extensions.plist").is_file() and not (xpc/"launchd.plist").exists()
+        # iOS26's cache parser has a fatal missing-cache path. Preserve the
+        # consolidated cache and every other job/configuration; override only
+        # the same enabled probe slot in this owner RAM view. Original support
+        # files, including signature sidecars, are copied byte-for-byte.
+        cache_path=xpc/"launchd.plist";cache=plistlib.loads(cache_path.read_bytes())
+        key="/System/Library/LaunchDaemons/com.apple.iomfb_fdr_loader.plist"
+        assert key in cache["LaunchDaemons"]
+        original=plistlib.loads(cache_path.read_bytes());cache["LaunchDaemons"][key]=job
+        for name,value in original.items():
+            if name!="LaunchDaemons":assert cache[name]==value
+        assert set(cache["LaunchDaemons"])==set(original["LaunchDaemons"])
+        assert all(cache["LaunchDaemons"][k]==v for k,v in original["LaunchDaemons"].items() if k!=key)
+        cache_path.write_bytes(plistlib.dumps(cache,fmt=plistlib.FMT_BINARY,sort_keys=False))
+        assert plistlib.loads(cache_path.read_bytes())["LaunchDaemons"][key]==job
+        assert (xpc/"extensions.plist").is_file()
     shutil.copy2(oldseed/"preferences.plist",seed/"preferences.plist")
     spec=importlib.util.spec_from_file_location("trust",z/"scripts/make-zeta-trust-bundle.py")
     trust=importlib.util.module_from_spec(spec);spec.loader.exec_module(trust)
@@ -117,7 +130,7 @@ def main():
         sha256={n:hashlib.sha256((out/n).read_bytes()).hexdigest() for n in ("kernel.macho","kernel.macho.adt","unixnu.toml","boot.img")})
     if a.disk_jobs_kernel:
         report["preserved"]=["UEFI","system renderer","shader pack","persistent touch"]
-        report["changes"] += ["opt-in RAM xpc view and kernel hook; original support files preserved, consolidated launchd cache absent from test view"]
+        report["changes"] += ["opt-in RAM xpc view and kernel hook; consolidated cache changes only the FDR-loader job to the probe; other jobs and original support files preserved"]
     (out/"test-inputs.json").write_text(json.dumps(report,indent=2)+"\n")
     print(out/"boot.img")
 if __name__=="__main__":main()

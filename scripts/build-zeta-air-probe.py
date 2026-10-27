@@ -35,6 +35,12 @@ def main():
     for patch in sorted((u/"tools/mesa").glob("*.patch")):
         with patch.open("rb") as f:run("patch","--batch","-p1","-d",src,stdin=f)
     shutil.copytree(u/"tools/mesa/air",src/"src/compiler/air")
+    # Preserve partial pixel-test output even if a driver failure terminates
+    # the process; the public test's assertions/expectations are unchanged.
+    test_source=src/"src/compiler/air/air_metal_test.c"
+    text=test_source.read_text();needle="main(int argc, char **argv)\n{"
+    assert text.count(needle)==1
+    test_source.write_text(text.replace(needle,needle+"\n   setvbuf(stdout, NULL, _IONBF, 0);"))
     drm=src/"src/redwood-drm";shutil.copytree(u/"tools/mesa/redwood-drm",drm)
     exp=ROOT/"experimental/air"
     for name in ("ZetaMsmBridge.h","redwood_drm.cpp"):shutil.copyfile(exp/name,drm/name)
@@ -63,7 +69,8 @@ endian = 'little'
 needs_exe_wrapper = true
 """)
     # Exercise the exact production translator over the fixed ABI before cross-building.
-    run(cxx,"-std=c++17","-O1","-g","-fsanitize=address,undefined","-fno-omit-frame-pointer",
+    host_sdk=subprocess.check_output(["xcrun","--sdk","macosx","--show-sdk-path"],text=True).strip()
+    run(cxx,"-isysroot",host_sdk,"-std=c++17","-O1","-g","-fsanitize=address,undefined","-fno-omit-frame-pointer",
         "-I",drm,"-I",src/"include",exp/"test_bridge.cpp","-o",w/"bridge-test")
     run(w/"bridge-test")
     b=w/"ios-build"

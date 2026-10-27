@@ -2888,10 +2888,10 @@ index 0000000..301a97a
 +print('PASS: 6 plain ARMv8-A Mach-O objects; declaration-only, no XNU SDK or runtime proof')
 diff --git a/tests/compile-resource-client-xnu.py b/tests/compile-resource-client-xnu.py
 new file mode 100644
-index 0000000..7c146b6
+index 0000000..37c801c
 --- /dev/null
 +++ b/tests/compile-resource-client-xnu.py
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,180 @@
 +#!/usr/bin/env python3
 +"""Compile isolated resource units with an existing real XNU C++ build record.
 +
@@ -2987,6 +2987,21 @@ index 0000000..7c146b6
 +        destination.parent.mkdir(parents=True, exist_ok=True)
 +        shutil.copyfile(source, destination)
 +        snapshot['headers'][str(source)] = sha(destination)
++    # These frontend inputs are not headers and therefore do not appear in -H.
++    # Capture the exact current XNU sanitizer list rather than silently dropping
++    # its flags in a later compile-only replay.
++    auxiliary = snapshot.setdefault('auxiliary', {})
++    for argument in snapshot['record']['arguments']:
++        if not argument.startswith('-fsanitize-ignorelist='):
++            continue
++        source = Path(argument.split('=', 1)[1])
++        if not source.is_absolute():
++            source = Path(directory) / source
++        source = Path(os.path.abspath(source))
++        destination = output / 'files' / str(source).lstrip('/')
++        destination.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copyfile(source, destination)
++        auxiliary[str(source)] = sha(destination)
 +    output.mkdir(parents=True, exist_ok=True)
 +    (output / 'manifest.json').write_text(json.dumps(snapshot, indent=2) + '\n')
 +
@@ -3014,7 +3029,12 @@ index 0000000..7c146b6
 +    result_path = output / 'xnu-objects.json'
 +    snapshot = dict(scope='exact compiler-traced header closure; replay not yet qualified',
 +                    record=record, headers={}, compiler_sha256=sha(Path(record['arguments'][0])),
-+                    relocatable_sdk_qualified=False)
++                    compiler_resource_dir=subprocess.check_output(
++                        [record['arguments'][0], '-print-resource-dir'], text=True).strip(),
++                    relocatable_sdk_qualified=False,
++                    kit_header_sha256={str(path.relative_to(a.unixnu.resolve())):sha(path)
++                        for kit in ('ArmSmmu4K','AdrenoPM4','AdrenoFirmware')
++                        for path in sorted((a.unixnu.resolve()/'kits'/kit).glob('*.h'))})
 +    for staging in (0, 1):
 +        for unit in UNITS:
 +            source = root / (unit + '.cpp')

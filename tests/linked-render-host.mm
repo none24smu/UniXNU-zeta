@@ -50,9 +50,12 @@ int main(int argc,char **argv) {
   auto archive=[device newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&error];CHECK(archive);
   CHECK([archive addRenderPipelineFunctionsWithDescriptor:d error:&error]);CHECK(!error);
   // Dropping specialization would take the absent-symbol branch in either stage.
-  d.fragmentLinkedFunctions.privateFunctions=@[[functions newFunctionWithName:@"fragment_gain"]];
+  auto offValues=[MTLFunctionConstantValues new];bool disabled=false;[offValues setConstantValue:&disabled type:MTLDataTypeBool atIndex:0];
+  id<MTLFunction> badFragment=[functions newFunctionWithName:@"fragment_gain" constantValues:offValues error:&error];CHECK(badFragment);
+  id<MTLFunction> badVertex=[functions newFunctionWithName:@"vertex_gain" constantValues:offValues error:&error];CHECK(badVertex);
+  d.fragmentLinkedFunctions.privateFunctions=@[badFragment];
   CHECK(missing(device,d,@"absent"));d.fragmentLinkedFunctions.privateFunctions=@[fragment];
-  d.vertexLinkedFunctions.privateFunctions=@[[functions newFunctionWithName:@"vertex_gain"]];
+  d.vertexLinkedFunctions.privateFunctions=@[badVertex];
   CHECK(missing(device,d,@"absent"));d.vertexLinkedFunctions.privateFunctions=@[vertex];
   // Merely placing an ordinary function in binaryFunctions must not invent the
   // compile-to-binary flag: runtime validation still owns that refusal.

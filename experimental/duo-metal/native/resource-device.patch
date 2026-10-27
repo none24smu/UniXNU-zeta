@@ -1040,13 +1040,17 @@ index 0000000..9c892af
 +#endif
 diff --git a/NativeAdrenoResourceTransaction.cpp b/NativeAdrenoResourceTransaction.cpp
 new file mode 100644
-index 0000000..a270553
+index 0000000..2eab993
 --- /dev/null
 +++ b/NativeAdrenoResourceTransaction.cpp
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,190 @@
 +/* SPDX-License-Identifier: MIT */
 +#include "NativeAdrenoResourceTransaction.h"
++#if defined(KERNEL)
++#include <os/cpp_util.h> /* XNU placement-new declaration, no userspace libc++ */
++#else
 +#include <new>
++#endif
 +#include <string.h>
 +#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 +#error Resource transaction wire schema requires little endian
@@ -1335,13 +1339,17 @@ index 0000000..58058b2
 +#endif
 diff --git a/NativeAdrenoResources.cpp b/NativeAdrenoResources.cpp
 new file mode 100644
-index 0000000..0f26e76
+index 0000000..5e32fa0
 --- /dev/null
 +++ b/NativeAdrenoResources.cpp
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,179 @@
 +/* SPDX-License-Identifier: MIT */
 +#include "NativeAdrenoResources.h"
++#if defined(KERNEL)
++#include <os/cpp_util.h> /* XNU placement-new declaration, no userspace libc++ */
++#else
 +#include <new>
++#endif
 +
 +namespace NativeAdrenoResources {
 +static bool fits(uint64_t offset,uint64_t bytes,uint64_t limit) {

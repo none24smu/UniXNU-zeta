@@ -2,6 +2,10 @@ name: Duo Metal native GPU probe
 on:
   workflow_dispatch:
     inputs:
+      resource_snapshot_run:
+        description: Replay actual retained resource SDK headers from a completed root CI run
+        type: string
+        default: ""
       spirv_only:
         description: Build only the owned AIR-to-SPIR-V native draw probe
         type: boolean
@@ -36,7 +40,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   build:
-    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only }}
+    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only && inputs.resource_snapshot_run == '' }}
     runs-on: macos-26
     timeout-minutes: 20
     env:
@@ -104,5 +108,30 @@ jobs:
         with:
           name: air-spirv-native-probe
           path: ${{ runner.temp }}/air-spirv-probe
+          if-no-files-found: error
+          retention-days: 14
+
+  resource_sdk_replay:
+    if: inputs.resource_snapshot_run != ''
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download retained actual kernel header closure
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: none24smu/UniXNU
+          run-id: ${{ inputs.resource_snapshot_run }}
+          name: unixnu-post-build-checks-zeta_userland_trust_defconfig
+          path: resource-sdk-input
+      - name: Reconstruct isolated source and replay exact SDK objects
+        run: |
+          python3 experimental/duo-metal/native/run-resource-sdk-replay.py --artifact resource-sdk-input --output resource-sdk-replay
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resource-sdk-replay
+          path: resource-sdk-replay/
           if-no-files-found: error
           retention-days: 14

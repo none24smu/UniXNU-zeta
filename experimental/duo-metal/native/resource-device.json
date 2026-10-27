@@ -2,8 +2,8 @@
   "scope": "isolated source resource queue, receiver and actual-XNU14-object gate; no feed/profile/image selection",
   "repository": "https://github.com/UniXNU/NativeAdreno.git",
   "base_commit": "805c7e4bfb7451eb6923f4a14dea8c657b9be7d2",
-  "source_commit": "d6b4802db38efacf91636391d252fdbaa7d50e44",
-  "patch_sha256": "8fa613a7494fad9aa03df7140974234b8a9a5f22d45f4240cc2be5e861559efd",
+  "source_commit": "37dea15d051b8e473737ab73ba5ce5a31a301636",
+  "patch_sha256": "d1f02c0ebac971f32cd6ff69c013a6daefa8c180efc54c2f9faa668c00d2fb7a",
   "default_staging": 0,
   "execution_available": false,
   "actual_sdk_compilation_qualified": false,
@@ -85,5 +85,6 @@
   ],
   "board_integration": "all18devicepatches preserved; manual conflicts resolved; host core queue off/on passes; wrapper SDK gate pending",
   "snapshot_capture_supports_auxiliary": true,
-  "snapshot_replay_qualified": false
+  "snapshot_replay_qualified": false,
+  "sdk_failure_fixed": "kernel placement-new uses real retained os/cpp_util.h; strict header replay pending"
 }

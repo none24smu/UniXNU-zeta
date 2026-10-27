@@ -34,12 +34,43 @@ executing Vulkan backend and checks all 64 red output pixels; the software
 kernel peer does not establish rendered pixels.
 
 This branch starts at 02b79c2 (the control graphics profile) and excludes the
-unfinished render linked-function candidate. Patch application, Python syntax
-and whitespace checks were performed. No compilation, CI run, deployment or
-wallpaper repair is claimed yet: builds remain stopped under the user's
-instruction until the targeted plugin build is authorized. Hardware acceptance
-requires process-specific render-pass evidence and a visible wallpaper in the
-current OS session. No OS reboot is authorized for this test.
+unfinished render linked-function candidate. The targeted plugin build was
+authorized by the user's instruction to perform the live test. GitHub Actions
+run 40491995063 at 12b7794346dff6acce9bd35cf36d9857cf04a3f6 passed the build,
+regression and old-code negative control. The earlier test also exposed an
+Apple encoder cleanup assertion on descriptor rejection; validation now occurs
+before allocating that encoder.
+
+On 2026-10-27 the candidate was tested in the existing running OS, without an
+OS reboot or boot-image build. Its executable was staged under a separate name
+and verified against a complete USB readback, with SHA256
+15756331f15708eeba938d988b065aac741ba7fddf1ab7bb991229efe5332dba.
+The ad hoc signature was resealed for that staging name and the retained existing
+bundle resources. Its hash was admitted into the running development trust
+cache without removing existing entries. Original bundle metadata and the old
+executable remain available for rollback. Only MercuryPosterExtension was
+restarted, with its closed diagnostic connection budget refilled by two grants;
+no concurrency or resource ownership guard was relaxed.
+
+PID14755 loaded NativeAdrenoMetal.msaa, confirmed from its current dyld image
+list. Its process-specific pass journal records four-sample color attachments,
+store action 2 and non-null resolve destinations at both 1377x946 and 2754x1892.
+No texture refusals or command commit failures were reported in the first
+counter read. The observed 3 commits / 2 callback completions coincided with
+RunningBoard suspension; it is not evidence of a hung GPU.
+
+A fresh USB scanout shows blue wallpaper shapes where the control scanout was
+black, and the user independently reported seeing parts of the wallpaper.
+This verifies the missing resolve transport as a cause of missing wallpaper
+content. It does not establish full visual correctness, the lock screen, or a
+performance repair. Black regions and remaining appearance need further
+comparison before calling the complete rendering issue fixed.
+
+Live evidence is retained in work/render-stage7/msaa-live: stage-manifest.json,
+upload-verified.json, activation.json, wallpaper-restart.json, observation-first.json,
+new-pipelines.log and frames/frame-8.png. The USB decoder was adjusted to accept
+complete concatenated snapshot records: IOLog can omit a trailing newline.
+Offsets, lengths, RLE size and unchanged drop counts still validate the frame.
 
 Local evidence is retained in work/render-stage7/wallpaper-linked1:
 - metalkit-msaa-resolve-rea.json, evidence ev_e869e7130a341fb82bbd3f2c055a5a42c71748d36872403a7fe46f3a7470676d

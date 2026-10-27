@@ -67,6 +67,10 @@ units = [('BootProgress', startup), ('BootFaultProbe', startup), ('BootProcessPr
 if os.environ.get('XNU_OWNER_DATA_MOUNT') == '1':
     units.append(('BootWatchdogPolicy',
                   json.loads((OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))))
+    if (KIT / 'ZetaUserInstructionKernel.c').is_file():
+        bsd_record = units[-1][1]
+        units += [('ZetaUserInstructionCompat', bsd_record),
+                  ('ZetaUserInstructionKernel', bsd_record)]
 objects = []
 commands = {}
 for name, record in units:

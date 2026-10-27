@@ -25,3 +25,12 @@ jobs:
           path: ${{ runner.temp }}/duo-metal-probe
           if-no-files-found: error
           retention-days: 14
+      - name: Build baseline ARM64 instruction probe
+        run: python3 experimental/isa-compat/build-probe.py --output "$RUNNER_TEMP/isa-probe"
+      - name: Upload signed instruction probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: isa-probe
+          path: ${{ runner.temp }}/isa-probe
+          if-no-files-found: error
+          retention-days: 14

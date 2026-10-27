@@ -1,0 +1,18 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -1506,6 +1506,15 @@
+ - (BOOL)isLowPower {return NO;}
+ - (BOOL)isRemovable {return NO;}
+ - (BOOL)isHeadless {return NO;}
++// CoreImage asks this private scalar query even though our initLimits and
++// initFeatureQueries deliberately do not populate Apple's hardware tables.
++// SBRendererService otherwise aborts on an unrecognized featureProfile selector
++// immediately after obtaining a real native Metal device. Use the lowest legacy
++// profile (also the public Redwood frontend's default); measured runtime queries
++// below remain authoritative. This does not enable Apple's profile initializers
++// or establish MPS/MetalFX, texture-layout or compositor correctness.
++- (NSUInteger)featureProfile {return 0;}
++
+ // supportsFamily: and the other queries the runtime answers are installed from it (installAnswers); supportsFamily: also answers the target
+ // hardware's families (the bridge's TARGET_FAMILIES, journaled with their waived rows as F lines). No legacy feature set is claimed: the
+ // base implementation reads Apple tables this device does not have.

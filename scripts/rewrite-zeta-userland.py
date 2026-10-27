@@ -149,7 +149,7 @@ def lower(data, info, *, experimental_x1=False):
             word = struct.unpack_from('<I', data, fileoff)[0]
             mnemonic = insns[address][0]
             try:
-                lowered = (x1.lower_pointer_off(word, 'off') if experimental_x1 else None) or pauth.lower(word)
+                lowered = ((x1.lower_pointer_off(word, 'off') or x1.lower_cssc_single(word)) if experimental_x1 else None) or pauth.lower(word)
             except ValueError as error:
                 if address in code and fileoff not in dice:
                     raise ValueError(f'unlowerable PAC instruction in proven code at {address:#x}: {error}')

@@ -47,6 +47,44 @@ def cssc(word):
         0x11c00000:'smax',0x11c40000:'umax',0x11c80000:'smin',0x11cc0000:'umin'}.get(imm)
 
 
+def lower_cssc_single(word):
+    """Exact baseline MOV/MOVZ/MOVN aliases; no scratch, flags or relocation.
+
+    All operands31 are ZR, including Rd. General min/max/CTZ still need a
+    qualified multiword expansion or kernel fallback. No NOP is emitted.
+    """
+    operation = cssc(word)
+    if operation is None:
+        return None
+    sf = word & 0x80000000
+    rd, rn, rm = word & 31, (word >> 5) & 31, (word >> 16) & 31
+    def move(register):
+        return operation, sf | 0x2a0003e0 | (register << 16) | rd
+    def constant(value):
+        if value < 0:
+            return operation, sf | 0x12800000 | ((~value & 0xffff) << 5) | rd
+        return operation, sf | 0x52800000 | (value << 5) | rd
+    immediate = word & 0x7ffc0000
+    if immediate in (0x11c00000, 0x11c40000, 0x11c80000, 0x11cc0000):
+        value = (word >> 10) & 255
+        if operation.startswith('s') and value & 128:
+            value -= 256
+        if rn == 31:
+            return constant((max if operation.endswith('max') else min)(0, value))
+        if value == 0 and operation == 'umax':
+            return move(rn)
+        if value == 0 and operation == 'umin':
+            return constant(0)
+        return None
+    if operation in ('ctz', 'cnt', 'abs'):
+        return constant((64 if sf else 32) if operation == 'ctz' else 0) if rn == 31 else None
+    if rn == rm:
+        return move(rn)
+    if operation in ('umin', 'umax') and 31 in (rn, rm):
+        return constant(0) if operation == 'umin' else move(rm if rn == 31 else rn)
+    return None
+
+
 def retained_feature(word, mnemonic):
     # Exact known permission system register: TINDEX_EL0. Apple S3_6_C15_C1_5
     # uses the same masking of the Rt field. Neither is rewritten to a NOP.

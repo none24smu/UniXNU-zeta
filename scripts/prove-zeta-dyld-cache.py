@@ -60,6 +60,16 @@ def pac_candidates(words, experimental_x1=False):
         hit |= match
     if experimental_x1:
         hit |= ((words & np.uint32(0xffe0e000))==np.uint32(0x9a002000)) | ((words & np.uint32(0xffe0e000))==np.uint32(0xda002000)) | ((words & np.uint32(0xffe08000))==np.uint32(0x9b600000))
+        cssc_hit = np.zeros(words.shape, dtype=bool)
+        for mask, values in [(0x7ffffc00, (0x5ac01800,0x5ac02000,0x5ac01c00)),
+                (0x7fe0fc00, (0x1ac06000,0x1ac06400,0x1ac06800,0x1ac06c00)),
+                (0x7ffc0000, (0x11c00000,0x11c40000,0x11c80000,0x11cc0000))]:
+            masked = words & np.uint32(mask)
+            for value in values:
+                cssc_hit |= masked == np.uint32(value)
+        for index in np.nonzero(cssc_hit)[0]:
+            if x1.lower_cssc_single(int(words[index])) is not None:
+                hit[index] = True
     return np.nonzero(hit)[0]
 
 
@@ -120,7 +130,7 @@ def prove_code(cache, sections, strong, weak, starts, ordered, label):
             word = int(words[index])
             if address in proven:
                 try:
-                    lowered = (x1.lower_pointer_off(word,'off') if STATE.get('experimental_x1') else None) or pauth.lower(word)
+                    lowered = ((x1.lower_pointer_off(word,'off') or x1.lower_cssc_single(word)) if STATE.get('experimental_x1') else None) or pauth.lower(word)
                 except ValueError as error:
                     unlowerable.append(dict(va=hex(address), word=hex(word), reason=str(error)))
                     continue

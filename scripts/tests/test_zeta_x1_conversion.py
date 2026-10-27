@@ -160,6 +160,52 @@ class PlannerTests(unittest.TestCase):
         self.assertIsNone(x1.cssc(0xd9410008))
 
 
+class SingleWordCsscTests(unittest.TestCase):
+    def test_exact_constant_and_identity_encodings(self):
+        # Independently assembled baseline encodings: MOVZ/MOVN and MOV alias.
+        cases={0x11cc0020:('umin',0x52800000), # umin w0,w1,#0 -> mov w0,#0
+               0x91c40020:('umax',0xaa0103e0), # umax x0,x1,#0 -> mov x0,x1
+               0x11cbffe0:('smin',0x12800000), # smin w0,wzr,#-1 -> mov w0,#-1
+               0xdac01be0:('ctz',0xd2800800), # ctz x0,xzr -> mov x0,#64
+               0x1ac16020:('smax',0x2a0103e0)} # smax w0,w1,w1 -> mov w0,w1
+        for word,expected in cases.items():
+            self.assertEqual(x1.lower_cssc_single(word),expected)
+    def test_nontrivial_forms_still_require_fallback(self):
+        for word in [0x5ac01820,0xdac01c20,0x1ac26020,0x91c40420,
+                     0x11cc0420,0xd9410008,0x9a002000,0xffffffff,0xd503201f]:
+            self.assertIsNone(x1.lower_cssc_single(word))
+    def test_cache_candidate_filter_covers_exact_lowerings_only(self):
+        import numpy as np
+        spec=importlib.util.spec_from_file_location('single_word_cache_proof',SCRIPTS/'prove-zeta-dyld-cache.py')
+        proof=importlib.util.module_from_spec(spec);spec.loader.exec_module(proof)
+        words=[]
+        for sf in (0,0x80000000):
+            for base in (0x11c00000,0x11c40000,0x11c80000,0x11cc0000):
+                for rn in (0,1,16,17,29,30,31):
+                    for imm in range(256):
+                        words.append(sf|base|(rn<<5)|(imm<<10)|17)
+        array=np.array(words,dtype=np.uint32)
+        expected=[i for i,w in enumerate(words) if x1.lower_cssc_single(w)]
+        self.assertEqual(list(proof.pac_candidates(array,True)),expected)
+        self.assertEqual(list(proof.pac_candidates(array,False)),[])
+
+    def test_cache_edit_loader_rechecks_exact_cssc_translation(self):
+        import numpy as np
+        spec=importlib.util.spec_from_file_location('single_word_cache_rewrite',SCRIPTS/'rewrite-zeta-dyld-cache.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d);path=directory/'edits.npz'
+            for ordinary,accepted in [(0xaa0103e0,True),(0xaa0203e0,False)]:
+                np.savez(path,edits=np.array([[0x1000,0x200,0x91c40020,ordinary,0]],dtype=np.uint64))
+                entry={'edit_count':1,'result_file':path.name,'result_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'file':0}
+                summary={'experimental_profile':x1.PROFILE,'images':{'fixture':entry},'islands':[]}
+                if accepted:
+                    edits,_=module.load_edits(directory,summary)
+                    self.assertEqual(edits[0].tolist(),[[0x200,0x91c40020,ordinary]])
+                else:
+                    with self.assertRaisesRegex(ValueError,'nonqualified lowering'):module.load_edits(directory,summary)
+
+
 class DetachedStubTests(unittest.TestCase):
     class Memory:
         def __init__(self,word_changes=None,executable=True):

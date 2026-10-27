@@ -218,7 +218,7 @@ def load_edits(proof_dir, summary):
         edits = np.load(result_path)['edits']
         if summary.get('experimental_profile'):
             for row in edits:
-                lowering=x1.lower_pointer_off(int(row[2]),'off') or pauth.lower(int(row[2]))
+                lowering=x1.lower_pointer_off(int(row[2]),'off') or x1.lower_cssc_single(int(row[2])) or pauth.lower(int(row[2]))
                 rewriter.require(lowering is not None and lowering[1]==int(row[3]),'x1 proof contains a nonqualified lowering')
         by_file.setdefault(entry['file'], []).append(edits[:, 1:4])
         grades.update(Counter(int(g) for g in edits[:, 4]))

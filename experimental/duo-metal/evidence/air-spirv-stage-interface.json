@@ -1,0 +1,108 @@
+{
+  "scope": "exact bounded resource-free stage contract; not an existing MTL compiler-provider implementation",
+  "translator_commit": "720ef1ce9ae2a2068999a8675717418b9416283e",
+  "consumer_source_sha256": {
+    "crates/metal2vulkan/src/pipeline/artifact.rs": "75e5cf93face0fd7a52d8467695e08bc2b64301e44ad8999d46b5bac6cdde680",
+    "crates/metal2vulkan/src/pipeline/layout.rs": "81229d3996daa9d560f5e60daeea419a714e813dd2bd40fe29c9e5481196cff0",
+    "crates/metal2vulkan/src/pipeline/descriptor.rs": "a248261239ba4b64d22bcfd0a70a694d4b404c9d4ed46141e00924c0b9abb720",
+    "crates/metal2vulkan/src/library/compiled.rs": "189c4734dcd9cdb5a6e4e3d18196e75b16c0e5e5bb0c1af115ecc289401ec576",
+    "crates/metal2vulkan/src/cache/artifacts.rs": "cc5e0e3d668dbf0eaa544da6df195bfc0e5b8fdd6670bd24a8cd926993af7a54",
+    "crates/metal2vulkan-runtime/src/pipeline/render.rs": "b2864f1b5b81185bce5a70dd6bdab03a07add239d2eb3b85cbcff9ccf55f0d54",
+    "crates/metal2vulkan-runtime/src/pipeline/objects.rs": "21a052268e852df771435ef400f95dbd22bfa86c02e6d4ff07dc5ff528c049ec"
+  },
+  "spirv_version": "1.5",
+  "vulkan_target": "1.2",
+  "entry": "main",
+  "stages": [
+    {
+      "stage": "vertex",
+      "words": 165,
+      "spirv_sha256": "82b49633668905609ec79e84c220a151fa793b598664b6851accfb2291ea5f59",
+      "builtins_read": [
+        "VertexIndex"
+      ],
+      "builtins_written": [
+        "Position"
+      ],
+      "user_inputs": [],
+      "user_outputs": []
+    },
+    {
+      "stage": "fragment",
+      "words": 98,
+      "spirv_sha256": "5f3f25a3dcb8be992786ec1e9ba73257a38ff2180a07682a651e0c1eec5ad0f4",
+      "execution_modes": [
+        "OriginUpperLeft"
+      ],
+      "outputs": [
+        {
+          "location": 0,
+          "index": 0,
+          "type": "vec4 f32"
+        }
+      ]
+    }
+  ],
+  "descriptor_sets": [],
+  "push_constants": [],
+  "specialization": [],
+  "vertex_attributes": [],
+  "vertex_bindings": [],
+  "varyings": [],
+  "subgroup_requirement": null,
+  "pipeline_stage_flags": 0,
+  "constant_blob": null,
+  "spirv_capabilities": [
+    "Shader"
+  ],
+  "optional_vulkan_device_features": [],
+  "color_formats": [
+    "R8G8B8A8_UNORM"
+  ],
+  "samples": 1,
+  "topology": "triangle_list",
+  "cull": "none",
+  "vertex_count": 3,
+  "instances": 1,
+  "first_vertex": 0,
+  "first_instance": 0,
+  "depth_test": false,
+  "owned_fixture_depth": 0,
+  "depth_clip_general_case_proven": false,
+  "blend_cases": [
+    {
+      "name": "opaque",
+      "enabled": false,
+      "expected_rgba8": [
+        64,
+        128,
+        32,
+        64
+      ]
+    },
+    {
+      "name": "premultiplied-source-over",
+      "enabled": true,
+      "source_color": "ONE",
+      "destination_color": "ONE_MINUS_SRC_ALPHA",
+      "source_alpha": "ONE",
+      "destination_alpha": "ONE_MINUS_SRC_ALPHA",
+      "color_op": "ADD",
+      "alpha_op": "ADD",
+      "clear": [
+        0.125,
+        0.25,
+        0.5,
+        0.5
+      ],
+      "expected_rgba8": [
+        88,
+        175,
+        128,
+        159
+      ]
+    }
+  ],
+  "precision_tolerance_codes": 1,
+  "consumer_gap": "StageSource::Compiled requires opaque CompiledFunction with relocatable module/interface/requirements/profile/key facts, not raw final SPIR-V. StageModule/RenderPipeline are non-exhaustive and runtime shader module creation is private. A checked compiler provider/import API is required; cache-key or metadata spoofing is not used."
+}

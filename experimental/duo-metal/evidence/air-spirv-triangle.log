@@ -1,0 +1,1 @@
+PASS: actual AIR->NIR->Zink SPIR-V serialization, 165 words; external validation and execution still required

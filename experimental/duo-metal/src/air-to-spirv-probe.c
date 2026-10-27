@@ -44,10 +44,10 @@ int main(int argc,char **argv)
     screen->spirv_version=SPIRV_VERSION(1,5);
     struct spirv_shader *spirv=nir_to_spirv(nir,&sinfo,screen);
     if(!spirv) {fprintf(stderr,"REFUSE: Zink serializer\n");return 1;}
-    file=fopen(argv[2],"wb");if(!file)return 2;
+    file=fopen(argv[2],"wbx");if(!file) {fprintf(stderr,"REFUSE: output must be a new file\n");return 2;}
     const size_t written=fwrite(spirv->words,sizeof(uint32_t),spirv->num_words,file);
     const int closed=fclose(file);
-    if(written!=spirv->num_words || closed)return 2;
+    if(written!=spirv->num_words || closed) {remove(argv[2]);return 2;}
     fprintf(stderr,"PASS: actual AIR->NIR->Zink SPIR-V serialization, %zu words; external validation and execution still required\n",written);
     spirv_shader_delete(spirv);free(screen);ralloc_free(context);free(bytes);glsl_type_singleton_decref();return 0;
 }

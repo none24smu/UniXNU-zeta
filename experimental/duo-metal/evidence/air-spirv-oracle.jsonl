@@ -1,0 +1,5 @@
+{"probe":"duo_air_spirv","event":"scope","host_software_oracle":true,"physical_gpu_proven":false}
+{"probe":"duo_metal","event":"device","vendor_id":65541,"device_id":0,"device_type":4,"driver_id":13,"api_version":4211006,"device_name":"llvmpipe (LLVM 20.1.2, 256 bits)","driver_name":"llvmpipe","driver_info":"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)","accepted":true,"rejection":""}
+{"probe":"duo_air_spirv","event":"test","name":"air_spirv_triangle","actual_draw":true,"components":4096,"mismatches":0,"tolerance":1,"fnv1a64":"10348970444249219971","pipeline_and_allocate_us":481,"submit_wait_us":8742,"status":"pass"}
+{"probe":"duo_air_spirv","event":"test","name":"air_spirv_source_over","actual_draw":true,"components":4096,"mismatches":0,"tolerance":1,"fnv1a64":"800240158846665603","pipeline_and_allocate_us":405,"submit_wait_us":1454,"status":"pass"}
+{"probe":"duo_air_spirv","event":"summary","status":"pass","air_to_nir_to_real_spirv":true,"metal_frontend_proven":false,"gpu_faults_checked":false,"ui_frame_rate_proven":false}

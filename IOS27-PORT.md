@@ -84,8 +84,15 @@ not an alternate AIR source. A replacement compiler must distinguish these
 containers and consume their real metadata. Successful inventory is not shader
 translation, compilation or rendering proof.
 
-The independent C++ container reader now validates those actual 587 records,
-hashes and wrappers. It does not translate their LLVM/AIR instructions yet.
+The independent C++ container reader validates those587 records, hashes and
+wrappers. The new AIR compiler produces A660 IR3 for238modules (up from177,
+with no regression). A physical native gate has also passed four FD660 shader
+draws with16384 compared components and zero mismatches, plus an explicit
+unsupported-sampler refusal. This uses the separate AIR/Gallium backend, not
+NIR supplied as SPIR-V to Vulkan. See
+`experimental/duo-metal/PHYSICAL-AIR-CHECKPOINT.md` for exact artifacts and
+substantial measured timing limits. System compositor integration and sustained
+60/90Hz remain open.
 
 ## Complete stock payload and initial setup
 
@@ -101,6 +108,9 @@ Data root's numeric ownership. It creates only three minimal setup/migration
 preference domains using the actual source build; the generic payload setup
 postprocessor is deliberately not selected. A verified 4 GiB raw host Data
 image exists. The 256 MiB packed-loader limit requires persistent writable
-Data integration; this image is not qualified for RAM deployment. Native
-timestamps/xattrs and actual app registration, service startup and setup
-bypass remain integration/runtime gates. The running control remains iOS 26.
+Data integration; this image is not qualified for RAM deployment. The complete4GiB Data now passes decoded-content/ownership/mode/link checks
+and native timestamp/flag/protection-class restoration. Its small metadata
+anchor plus full direct-store payload has production-code host readback tests
+and a resume-only guard; it still requires native integration. Original stock
+root namespaces and separate complete unsealed reconstructions are retained.
+Actual app registration, service startup and setup bypass remain runtime gates. The running control remains iOS 26.

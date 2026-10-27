@@ -53,8 +53,11 @@ pointer sites that fit the single-word OFF planner; OFF is not yet qualified.
 
 ## XNU adapter and qualification boundary
 
-The root patch `native-zeta-user-cssc.patch` adds a weak callback only inside
-XNU12377's existing uncategorized exception handler. It retains the initial
+The root patch `native-zeta-user-cssc.patch` adds a callback only inside
+XNU12377's existing uncategorized exception handler, behind the explicit
+`XNU_ZETA_USER_CSSC=1` final-build flag. The bootstrap pass undefines that
+flag until the provider archive exists. The callback then links strongly, so a
+missing provider fails the build. It retains the initial
 COPYIN result, skips the callback on failure, and preserves kernel, debugger,
 DTrace and AArch32 handling. The adapter checks64-bit EL0/aligned PC and performs
 a second checked4-byte copyin. Changed/failed fetches and unsupported instructions
@@ -74,9 +77,9 @@ performed. Matching a basename is a diagnostic convenience, not code identity.
 python3 scripts/check-zeta-instruction-kernel.py --output <fresh-output>
 ```
 
-The actual adapter passes2071 host ASan/UBSan cases against mocked XNU accessors:
+The actual adapter passes2133 host ASan/UBSan cases with the actual signed64-bit `register_t` ABI against mocked XNU accessors:
 mode/process gates, failed/changed fetches, kernel/AArch32 rejection, exact state
-and PC preservation, W zero extension, FP/LR/x16/x17/ZR, pointer refusal and
+and PC preservation, W zero extension, FP/LR/x16/x17/ZR, high-bit register preservation, pointer refusal and
 unsupported opcodes. These are host tests, not native ABI or exception proof.
 The first native kernel build and EL0 experiment are pending. Execute-permission
 and writable-code races are not generally qualified: the current limited target

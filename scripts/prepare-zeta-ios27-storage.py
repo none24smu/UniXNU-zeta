@@ -64,6 +64,8 @@ def overlay_header(pages,identity,generation=1):
     struct.pack_into('<I',b,60,zlib.crc32(b[:60]));return bytes(b)
 
 def overlay_geometry(partition_bytes,root_image_bytes,logical_bytes,reserve_mib=1024):
+    if not isinstance(reserve_mib,int) or not 1024<=reserve_mib<=16384:
+        raise ValueError('explicit Data reserve must be1024..16384MiB, matching the native parser')
     if (partition_bytes|logical_bytes|root_image_bytes)%PAGE:raise ValueError('unaligned storage geometry')
     pages=logical_bytes//PAGE;bitmap=(pages+32767)//32768
     window=(1+bitmap+pages)*PAGE;offset=partition_bytes-reserve_mib*MIB-window
@@ -260,9 +262,10 @@ def layout(args):
     r=json.loads(args.roots.read_text());d=json.loads(args.data.read_text())
     tokens=shlex.split(args.boot_args);options={t.split('=',1)[0]:t.partition('=')[2] for t in tokens}
     if any(k in options for k in d['forbidden_bootargs']):raise ValueError('legacy suppression/reset bootarg would invalidate full Data')
-    if options.get('sheng-data-persist')!='2' or options.get('sheng-log-reserve','1024')!='1024':
-        raise ValueError('direct Data needs persist2 and fixed1024MiB log reserve')
-    g=overlay_geometry(r['userdata_bytes'],r['image_bytes'],d['logical_bytes'])
+    reserve=getattr(args,'log_reserve_mib',1024)
+    if options.get('sheng-data-persist')!='2' or options.get('sheng-log-reserve','1024')!=str(reserve):
+        raise ValueError('direct Data needs persist2 and the exact explicitly selected log reserve')
+    g=overlay_geometry(r['userdata_bytes'],r['image_bytes'],d['logical_bytes'],reserve)
     report=dict(schema='zeta-ios27-host-storage-integration-v1',**g,root_report=str(args.roots),data_report=str(args.data),
         writes=[dict(offset=0,bytes=r['image_bytes'],source=r['image'],sha256=r['image_sha256']),
                 dict(offset=g['store_partition_offset'],bytes=d['store_bytes'],source=d['store'],sha256=d['store_sha256'])],
@@ -286,7 +289,10 @@ def main():
     q.set_defaults(func=preboot)
     l=sub.add_parser('layout')
     for name in ['roots','data','output']:l.add_argument('--'+name,type=Path,required=True)
-    l.add_argument('--boot-args',required=True);l.set_defaults(func=layout)
+    l.add_argument('--boot-args',required=True)
+    l.add_argument('--log-reserve-mib',type=int,default=1024,
+        help='fixed lifetime reserve for this store; must exactly match boot args (default1024)')
+    l.set_defaults(func=layout)
     a=p.parse_args();a.func(a)
 
 if __name__=='__main__':main()

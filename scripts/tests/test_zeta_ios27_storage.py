@@ -23,6 +23,15 @@ class StorageTests(unittest.TestCase):
         self.assertGreater(g['store_partition_offset'],g['root_image_bytes']+(4<<20))
     def test_overlapping_store_is_refused(self):
         with self.assertRaisesRegex(ValueError,'overlaps'):M.overlay_geometry(16<<30,14<<30,4<<30)
+    def test_new_store_can_stay_disjoint_from_old_control_store(self):
+        old=M.overlay_geometry(109993324544,22338863104,4<<30)
+        new=M.overlay_geometry(109993324544,17000001536,4<<30,6144)
+        self.assertLessEqual(new['store_partition_offset']+new['store_bytes'],old['store_partition_offset'])
+        self.assertEqual(new['store_partition_offset']+new['store_bytes']+(6144<<20),new['partition_bytes'])
+    def test_invalid_reserve_cannot_silently_use_native_default(self):
+        for reserve in (-1,0,16385,2**32,1024.5):
+            with self.assertRaisesRegex(ValueError,'reserve'):
+                M.overlay_geometry(109993324544,17000001536,4<<30,reserve)
     def test_quarter_partition_limit_is_conservative(self):
         with self.assertRaisesRegex(ValueError,'quarter'):M.overlay_geometry(16<<30,1<<30,5<<30)
     def test_payload_ranges_align_and_merge(self):

@@ -89,6 +89,11 @@ int main(void) {
     printf("{\"kind\":\"code-signing\",\"csops_present\":%s,\"status\":%d,\"errno\":%d,\"flags\":\"0x%08x\",\"platform_binary\":%s}\n",
            csops_call ? "true" : "false", csstatus, errno, csflags,
            !csstatus && (csflags & UINT32_C(0x04000000)) ? "true" : "false");
+    unsigned char cdhash[20] = {0};
+    int hashstatus = csops_call ? csops_call(getpid(), 5, cdhash, sizeof(cdhash)) : -1;
+    printf("{\"kind\":\"code-directory\",\"status\":%d,\"cdhash\":\"", hashstatus);
+    for (unsigned i = 0; i < sizeof(cdhash); ++i) printf("%02x", cdhash[i]);
+    puts("\"}");
     const char *features[] = {
         "hw.optional.arm.FEAT_CSSC", "hw.optional.arm.FEAT_CPA", "hw.optional.arm.FEAT_CPA2",
         "hw.optional.arm.FEAT_PAuth", "hw.optional.arm.FEAT_PAuth_LR", "hw.optional.arm.FEAT_MTE",

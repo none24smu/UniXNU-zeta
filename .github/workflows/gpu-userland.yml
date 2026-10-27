@@ -85,6 +85,7 @@ jobs:
             unixnu/build/zeta-display-cache/*.log
             unixnu/build/zeta-surface-planes/*.log
             unixnu/build/zeta-blit-subresources/*.log
+            unixnu/build/zeta-msaa-resolve/*.log
             unixnu/build/zeta-submit-pressure/*.log
             unixnu/build/mesa-tu*/meson-logs/*.txt
           if-no-files-found: ignore

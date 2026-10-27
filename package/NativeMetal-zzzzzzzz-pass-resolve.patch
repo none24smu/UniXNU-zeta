@@ -1,0 +1,110 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -15,6 +15,7 @@
+ #include <atomic>
+ #include <mutex>
+ #include <pthread.h>
++#include <unistd.h>
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
+@@ -1048,12 +1049,31 @@
+   NBTexture *texture=(NBTexture *)a.texture;if(texture.surface)[_surfaces addObject:texture];
+   [_resourceOwners addObject:texture];
+   out.texture=texture.handle;out.level=a.level;out.slice=a.slice;out.depth_plane=a.depthPlane;out.load=a.loadAction;out.store=a.storeAction;
++  // A resolve target owns the final pixels of a multisample pass. Keep its
++  // IOSurface mapping alive and maintained just like the primary attachment.
++  if(a.resolveTexture) {
++   if(![(id)a.resolveTexture isKindOfClass:[NBTexture class]])return false;
++   NBTexture *resolve=(NBTexture *)a.resolveTexture;
++   if(resolve.surface)[_surfaces addObject:resolve];
++   [_resourceOwners addObject:resolve];
++   out.resolve_texture=resolve.handle;out.resolve_level=a.resolveLevel;
++   out.resolve_slice=a.resolveSlice;out.resolve_depth_plane=a.resolveDepthPlane;
++  }
+   return true;
+  };
+  for(unsigned i=0;i<8;i++) {
+   MTLRenderPassColorAttachmentDescriptor *c=d.colorAttachments[i];
+   if(!attachment(c,pass.colors[i])){[self refuse:@"foreign color attachment"];return nil;}
+   pass.colors[i].clear[0]=c.clearColor.red;pass.colors[i].clear[1]=c.clearColor.green;pass.colors[i].clear[2]=c.clearColor.blue;pass.colors[i].clear[3]=c.clearColor.alpha;
++  if(c.texture && gPasses.load()<=32) {
++   char text[384];
++   snprintf(text,sizeof text,"P pid=%d color=%u size=%lux%lu samples=%lu load=%lu store=%lu resolve=%p resolveSize=%lux%lu resolveLevel=%lu resolveSlice=%lu resolveDepth=%lu",
++    getpid(),i,(unsigned long)c.texture.width,(unsigned long)c.texture.height,(unsigned long)c.texture.sampleCount,
++    (unsigned long)c.loadAction,(unsigned long)c.storeAction,(__bridge void *)c.resolveTexture,
++    (unsigned long)c.resolveTexture.width,(unsigned long)c.resolveTexture.height,(unsigned long)c.resolveLevel,
++    (unsigned long)c.resolveSlice,(unsigned long)c.resolveDepthPlane);
++   journal(text);
++  }
+  }
+  if(!attachment(d.depthAttachment,pass.depth) || !attachment(d.stencilAttachment,pass.stencil)){[self refuse:@"foreign depth/stencil attachment"];return nil;}
+  pass.depth.clear[0]=d.depthAttachment.clearDepth;pass.stencil.clear[0]=d.stencilAttachment.clearStencil;
+--- a/bridge/NativeMetalObjects.h
++++ b/bridge/NativeMetalObjects.h
+@@ -227,6 +227,8 @@
+ struct NmbPassAttachment {
+     NmbTexture *texture;
+     uint64_t level, slice, depth_plane, load, store;
++    NmbTexture *resolve_texture;
++    uint64_t resolve_level, resolve_slice, resolve_depth_plane;
+     double clear[4]; /* color, or clear[0] depth / stencil */
+ };
+ struct NmbRenderPassDescriptor {
+--- a/bridge/NativeMetalObjects.rs
++++ b/bridge/NativeMetalObjects.rs
+@@ -1743,6 +1743,10 @@
+     pub depth_plane: u64,
+     pub load: u64,
+     pub store: u64,
++    pub resolve_texture: *const NmbTexture,
++    pub resolve_level: u64,
++    pub resolve_slice: u64,
++    pub resolve_depth_plane: u64,
+     pub clear: [f64; 4],
+ }
+ 
+@@ -1762,6 +1766,10 @@
+     if a.texture.is_null() { Ok(None) } else { Ok(Some(get(a.texture)?.0.clone())) }
+ }
+ 
++fn resolve_texture_of(a: &NmbPassAttachment) -> Result<Option<Texture>, String> {
++    if a.resolve_texture.is_null() { Ok(None) } else { Ok(Some(get(a.resolve_texture)?.0.clone())) }
++}
++
+ #[unsafe(no_mangle)]
+ pub extern "C" fn nmb_render_encoder_new(command_buffer: *mut NmbCommandBuffer, descriptor: *const NmbRenderPassDescriptor)
+                                          -> *mut NmbEncoder {
+@@ -1770,6 +1778,10 @@
+         let mut pass = RenderPassDescriptor::new();
+         for (slot, a) in pass.color_attachments.iter_mut().zip(d.colors.iter()) {
+             slot.texture = texture_of(a)?;
++            slot.resolve_texture = resolve_texture_of(a)?;
++            slot.resolve_level = a.resolve_level;
++            slot.resolve_slice = a.resolve_slice;
++            slot.resolve_depth_plane = a.resolve_depth_plane;
+             slot.level = a.level;
+             slot.slice = a.slice;
+             slot.depth_plane = a.depth_plane;
+@@ -1779,6 +1791,10 @@
+         }
+         let depth = &mut pass.depth_attachment;
+         depth.texture = texture_of(&d.depth)?;
++        depth.resolve_texture = resolve_texture_of(&d.depth)?;
++        depth.resolve_level = d.depth.resolve_level;
++        depth.resolve_slice = d.depth.resolve_slice;
++        depth.resolve_depth_plane = d.depth.resolve_depth_plane;
+         depth.level = d.depth.level;
+         depth.slice = d.depth.slice;
+         depth.depth_plane = d.depth.depth_plane;
+@@ -1787,6 +1803,10 @@
+         depth.clear_depth = d.depth.clear[0];
+         let stencil = &mut pass.stencil_attachment;
+         stencil.texture = texture_of(&d.stencil)?;
++        stencil.resolve_texture = resolve_texture_of(&d.stencil)?;
++        stencil.resolve_level = d.stencil.resolve_level;
++        stencil.resolve_slice = d.stencil.resolve_slice;
++        stencil.resolve_depth_plane = d.stencil.resolve_depth_plane;
+         stencil.level = d.stencil.level;
+         stencil.slice = d.stencil.slice;
+         stencil.depth_plane = d.stencil.depth_plane;

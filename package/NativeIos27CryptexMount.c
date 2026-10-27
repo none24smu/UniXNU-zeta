@@ -21,13 +21,12 @@ volatile dev_t native_ios27_systemos_device=NODEV,native_ios27_appos_device=NODE
 volatile dev_t native_ios27_preboot_device=NODEV;
 extern volatile uint32_t native_data_persist_state,native_data_persist_gpt,native_data_persist_gpt_after;
 extern volatile uint64_t native_data_persist_errors,native_data_persist_pages,native_data_persist_present;
-extern uint64_t native_owner_data_seed_size;
-
-int native_ios27_data_store_require_resume(void)
+int native_ios27_data_store_require_resume(uint64_t logical_bytes)
 {
-    int ready=native_data_persist_state==2 && !native_data_persist_errors &&
+    int ready=logical_bytes && !(logical_bytes&4095) &&
+        native_data_persist_state==2 && !native_data_persist_errors &&
         !native_data_persist_gpt && !native_data_persist_gpt_after && native_data_persist_pages &&
-        native_data_persist_pages==native_owner_data_seed_size/4096 &&
+        native_data_persist_pages==logical_bytes/4096 &&
         native_data_persist_present==native_data_persist_pages;
     printf("Ios27Data: state=%u pages=%llu present=%llu errors=%llu ready=%d\n",native_data_persist_state,
         (unsigned long long)native_data_persist_pages,(unsigned long long)native_data_persist_present,

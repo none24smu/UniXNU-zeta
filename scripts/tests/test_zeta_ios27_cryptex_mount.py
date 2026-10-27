@@ -68,11 +68,14 @@ int main(void){
   if(scenario==0)assert(mounts==3&&native_ios27_cryptex_stage==6&&native_ios27_cryptex_status==0);
  }
  native_data_persist_state=2;native_data_persist_pages=native_data_persist_present=100;native_owner_data_seed_size=409600;
- assert(native_ios27_data_store_require_resume()==0);
- native_data_persist_state=3;assert(native_ios27_data_store_require_resume()==EIO);native_data_persist_state=2;
- native_data_persist_present=99;assert(native_ios27_data_store_require_resume()==EIO);native_data_persist_present=100;
- native_data_persist_errors=1;assert(native_ios27_data_store_require_resume()==EIO);native_data_persist_errors=0;
- native_data_persist_gpt_after=5;assert(native_ios27_data_store_require_resume()==EIO);
+ assert(native_ios27_data_store_require_resume(native_owner_data_seed_size)==0);
+ assert(native_ios27_data_store_require_resume(0)==EIO);
+ assert(native_ios27_data_store_require_resume(native_owner_data_seed_size+1)==EIO);
+ assert(native_ios27_data_store_require_resume(native_owner_data_seed_size+4096)==EIO);
+ native_data_persist_state=3;assert(native_ios27_data_store_require_resume(native_owner_data_seed_size)==EIO);native_data_persist_state=2;
+ native_data_persist_present=99;assert(native_ios27_data_store_require_resume(native_owner_data_seed_size)==EIO);native_data_persist_present=100;
+ native_data_persist_errors=1;assert(native_ios27_data_store_require_resume(native_owner_data_seed_size)==EIO);native_data_persist_errors=0;
+ native_data_persist_gpt_after=5;assert(native_ios27_data_store_require_resume(native_owner_data_seed_size)==EIO);
  puts("PASS actual cryptex helper: three RO mounts; 10 root/provider/copyout/mount/device/readonly/filesystem/identity refusals");
 }
 '''

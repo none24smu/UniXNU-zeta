@@ -34,6 +34,6 @@
     "drivers/NativeRamBlock/SeedDisk.h": "d8a654529b5d56703bcf491c3834b407590995eebcb7a26004448990c200e4a0",
     "drivers/NativeRamBlock/SparseDisk.h": "5ab6516488b7daaef88e788fffef17195e7d2f74746da2206c6d9ed3a63c8c74",
     "patches/drivers/NativeUfs-sm8350.patch": "5454a667a064a2d870e3b0775a731ec6cafa336f04bd202adacb1dd1ac2997bc",
-    "patches/xnu-12377/zzzz-native-ios27-cryptexes.patch": "3d0ea139f07049493266c2baf19c4e3b78e1e4c7b0c478dbe5b9770bee5127f0"
+    "patches/xnu-12377/zzzz-native-ios27-cryptexes.patch": "eb3dc9ee0d9f38f29110e2f68ba66877e90ce0d790ceca76e1631a4890fa8229"
   }
 }

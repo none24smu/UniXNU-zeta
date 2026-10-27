@@ -25,6 +25,7 @@ import re
 import struct
 
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
+import zeta_userland_pauth as pauth
 
 LC_UNIXTHREAD, LC_FUNCTION_STARTS, LC_MAIN, LC_SYMTAB = 0x5, 0x26, 0x80000028, 0x2
 LC_DYLD_CHAINED_FIXUPS = 0x80000034
@@ -33,7 +34,7 @@ DYLD_CHAINED_PTR_ARM64E, DYLD_CHAINED_PTR_ARM64E_USERLAND, DYLD_CHAINED_PTR_ARM6
 # Standalone kexts: the arm64e bit layout with a vm offset from the image header.
 DYLD_CHAINED_PTR_ARM64E_KERNEL = 7
 CONDITIONAL = ('cbz', 'cbnz', 'tbz', 'tbnz')
-STOPS = ('ret', 'retab', 'retaa', 'eret', 'brk', 'udf', 'hlt')
+STOPS = ('ret', 'retab', 'retaa', 'retaasppc', 'retabsppc', 'eret', 'brk', 'udf', 'hlt')
 INDIRECT = ('br', 'braa', 'braaz', 'brab', 'brabz')
 CALLS = ('bl', 'blr', 'blraa', 'blraaz', 'blrab', 'blrabz')
 TARGET = re.compile(r'#(-?0x[0-9a-f]+|-?[0-9]+)$')
@@ -246,6 +247,13 @@ def decode(data, sections, oracle=None):
         start = section['offset']
         for address, size, mnemonic, operands in decoder.disasm_lite(data[start:start + section['size']], section['addr']):
             table[address] = (mnemonic, operands)
+        # Capstone 5 cannot decode the immediate PAuth_LR return encodings.
+        # Decode those explicitly before the straight-line LLVM oracle, which
+        # deliberately refuses returns. The walk must stop at these returns.
+        for offset in range(0, section['size'], 4):
+            lr = pauth.decode_lr(struct.unpack_from('<I', data, start+offset)[0])
+            if lr:
+                table[section['addr']+offset] = lr[:2]
     if oracle:
         unknown = {}
         for section in sections:

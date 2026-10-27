@@ -25,10 +25,32 @@ BRANCHES = ((0xd61f081f, 0xfffffc1f, 'braaz', 0xd61f0000), (0xd61f0c1f, 0xfffffc
             (0xd73f0800, 0xfffffc00, 'blraa', 0xd63f0000), (0xd73f0c00, 0xfffffc00, 'blrab', 0xd63f0000))
 
 
+def decode_lr(word):
+    """Known PAuth_LR encodings: (mnemonic, operands, ordinary-pointer word).
+
+    Arm FEAT_PAuth_LR and LLVM AArch64 SignAuthFixedRegs/PCRel/ReturnPCRel.
+    PC/SP are authentication modifiers only; once signing is consistently
+    removed, LR stays an ordinary pointer. Immediate RET forms still terminate
+    control flow. Register-modifier/newer forms remain unsupported.
+    """
+    if word & 0xfffffbff == 0xdac1a3fe:
+        return ('pacibsppc' if word & 0x400 else 'paciasppc'), '', NOP
+    if word & 0xffc0001f in (0xf380001f, 0x5500001f):
+        offset = -((word >> 5) & 0xffff) * 4
+        key = 'b' if word & 0x200000 else 'a'
+        if word & 0xffc0001f == 0x5500001f:
+            return 'reta'+key+'sppc', '#'+str(offset), RET
+        return 'auti'+key+'sppc', '#'+str(offset), NOP
+    return None
+
+
 def lower(word):
     """(mnemonic, ordinary word) for a non-hint PAC instruction, None for anything else.
 
     Raises ValueError for PAC encodings that have no exact one-word lowering."""
+    lr = decode_lr(word)
+    if lr:
+        return lr[0], lr[2]
     if word & 0xffff0000 == 0xdac10000:
         opcode, rn = (word >> 10) & 0x3f, (word >> 5) & 31
         if opcode >= len(DP1SRC):

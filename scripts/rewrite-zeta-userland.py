@@ -47,6 +47,7 @@ import zeta_userland_pauth as pauth
 CPU_TYPE_ARM64 = 0x0100000c
 CPU_SUBTYPE_ARM64_ALL = 0
 CPU_SUBTYPE_ARM64E = 2
+CPU_SUBTYPE_ARM64E_X1 = 12
 CPU_SUBTYPE_MASK = 0xff000000
 FILETYPES = {2: 'execute', 6: 'dylib', 7: 'dylinker', 8: 'bundle'}
 LC_SEGMENT_64, LC_CODE_SIGNATURE, LC_DATA_IN_CODE = 0x19, 0x1d, 0x29
@@ -66,11 +67,14 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def parse(data):
+def parse(data, *, allow_x1_analysis=False):
     require(len(data) >= 32, 'truncated Mach-O header')
     magic, cputype, subtype, filetype, ncmds, sizeofcmds = struct.unpack_from('<6I', data)
     require(magic == 0xfeedfacf and cputype == CPU_TYPE_ARM64, 'not a thin 64-bit ARM64 Mach-O')
-    require(subtype & ~CPU_SUBTYPE_MASK == CPU_SUBTYPE_ARM64E, 'not an arm64e image')
+    base_subtype = subtype & ~CPU_SUBTYPE_MASK
+    require(base_subtype in (CPU_SUBTYPE_ARM64E, CPU_SUBTYPE_ARM64E_X1), 'not an arm64e image')
+    require(base_subtype != CPU_SUBTYPE_ARM64E_X1 or allow_x1_analysis,
+            'arm64e.x1 is analysis-only; executable conversion is not qualified')
     require(filetype in FILETYPES, f'unsupported file type {filetype}')
     require(32 + sizeofcmds <= len(data), 'load commands leave the file')
     at, segments, dice, signature = 32, [], [], None
@@ -99,7 +103,8 @@ def parse(data):
             signature = struct.unpack_from('<II', data, at + 8)
         at += size
     require(signature is not None and sum(signature) <= len(data), 'missing or truncated code signature')
-    return dict(subtype=subtype, filetype=filetype, segments=segments, dice=sorted(dice), signature=signature)
+    return dict(subtype=subtype, architecture='arm64e.x1' if base_subtype == CPU_SUBTYPE_ARM64E_X1 else 'arm64e',
+                filetype=filetype, segments=segments, dice=sorted(dice), signature=signature)
 
 
 def instruction_sections(info):

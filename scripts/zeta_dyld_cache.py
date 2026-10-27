@@ -31,12 +31,19 @@ SUBCACHE_ENTRY = 56          # dyld_subcache_entry: uuid, cacheVMOffset, fileSuf
 
 
 class CacheFile:
-    def __init__(self, path):
+    def __init__(self, path, *, allow_x1_analysis=False):
         self.path = Path(path)
         self.handle = self.path.open('rb')
         self.data = mmap.mmap(self.handle.fileno(), 0, access=mmap.ACCESS_READ)
-        if not self.data[:16].startswith(b'dyld_v1') or not self.data[:16].rstrip(b'\0').endswith(b'arm64e'):
-            raise ValueError(f'{self.path.name}: not an arm64e dyld cache file')
+        magic = self.data[:16].rstrip(b'\0')
+        architecture = magic[7:].strip() if magic.startswith(b'dyld_v1') else b''
+        if architecture not in (b'arm64e', b'arm64ex1'):
+            self.data.close(); self.handle.close()
+            raise ValueError(f'{self.path.name}: unsupported dyld cache architecture')
+        self.architecture = 'arm64e.x1' if architecture == b'arm64ex1' else 'arm64e'
+        if self.architecture == 'arm64e.x1' and not allow_x1_analysis:
+            self.data.close(); self.handle.close()
+            raise ValueError(f'{self.path.name}: arm64e.x1 is analysis-only; executable conversion is not qualified')
         offset, count = struct.unpack_from('<II', self.data, HEADER_MAPPINGS)
         self.mappings = [struct.unpack_from('<QQQII', self.data, offset + 32 * i) for i in range(count)]
         self.signature = struct.unpack_from('<QQ', self.data, HEADER_SIGNATURE)
@@ -45,15 +52,20 @@ class CacheFile:
 
 
 class Cache:
-    def __init__(self, main):
+    def __init__(self, main, *, allow_x1_analysis=False):
         main = Path(main)
-        self.files = [CacheFile(main)]
+        self.files = [CacheFile(main, allow_x1_analysis=allow_x1_analysis)]
+        self.architecture = self.files[0].architecture
         header = self.files[0].data
         offset, count = struct.unpack_from('<II', header, HEADER_SUBCACHES)
         for index in range(count):
             entry = offset + SUBCACHE_ENTRY * index
             suffix = header[entry + 24:entry + 56].split(b'\0', 1)[0].decode()
-            self.files.append(CacheFile(str(main) + suffix))
+            item = CacheFile(str(main) + suffix, allow_x1_analysis=allow_x1_analysis)
+            if item.architecture != self.architecture:
+                item.data.close(); item.handle.close()
+                raise ValueError('Mixed architectures in dyld cache family')
+            self.files.append(item)
         self.regions = sorted((address, size, index, fileoff, maxprot)
                               for index, cache_file in enumerate(self.files)
                               for address, size, fileoff, maxprot, _ in cache_file.mappings)

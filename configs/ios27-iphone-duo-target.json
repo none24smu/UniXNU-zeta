@@ -1,0 +1,16 @@
+{
+  "schema": "zeta-ios27-target-v1",
+  "product_type": "iPhone19,4",
+  "product_name": "iPhone Duo",
+  "device_class": "v68ap",
+  "target_type": "V68",
+  "version": "27.1",
+  "build": "24A94425",
+  "identity_profile": "iPhone19,4",
+  "reference_userspace_architecture": "arm64e.x1",
+  "kernel_strategy": "existing-xnu-12377-with-compatibility-backports",
+  "soc": "SM8350",
+  "gpu": "Adreno 660",
+  "graphics_strategy": "replacement-metal-frontend-with-freedreno-turnip-backend",
+  "boot_qualified": false
+}

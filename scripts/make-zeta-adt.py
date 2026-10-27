@@ -16,10 +16,11 @@ The structure is the one the generic drivers and the source XNU boot converged o
 The probe that read the phone is uefi-zeta zetaPkg/Application/ZetaMemInfo; zetaPkg/PORTING.md has the
 readings.
 
-The identity is the target IPSW's: iPhone18,2 (V54), iOS 26.5.2 23F84. Every identity value below is copied
-from that IPSW's DeviceTree.v54ap.im4p (pinned in board.toml [ipsw.sha256]); only properties that describe
-something zeta has are kept (no camera, Face ID, baseband or action button). Root compatible and the
-/product model stay zeta's own (stock MP overlay), as sheng keeps its board strings.
+Identity profiles come from the iPhone18,2/V54 23F84 and iPhone19,4/V68 24A94425
+IPSW device trees. The normal entry point retains V54 for existing builds; the
+experimental iOS 27 board uses make-zeta-ios27-adt.py and defaults to V68.
+Root compatible and /product model describe the real Qualcomm board. Selecting
+an identity does not implement that Apple device's CPU or GPU capabilities.
 """
 import argparse
 import hashlib
@@ -72,6 +73,31 @@ PRODUCT = [
     ('partition-style', b'iOS\0'),
     ('app-macho-architecture', b'arm64e\0'),
 ]
+
+
+def identity_values(profile):
+    """Product identity only; Qualcomm hardware nodes are built separately.
+
+    The V68 ABI string describes the supplied reference userspace. Generating
+    this tree does not qualify that userspace for execution on SM8350.
+    """
+    if profile == 'iPhone18,2':
+        return MODEL, TARGET_TYPE, list(PRODUCT)
+    if profile != 'iPhone19,4':
+        raise ValueError('Unsupported identity profile: ' + profile)
+    return b'iPhone19,4\0', b'V68\0', [
+        ('product-name', b'iPhone Duo\0'),
+        ('product-description', b'iPhone Duo\0'),
+        ('artwork-device-idiom', b'phone\0'),
+        ('artwork-device-subtype', struct.pack('<I', 2034)),
+        ('artwork-scale-factor', struct.pack('<I', 3)),
+        ('artwork-display-gamut', b'P3\0'),
+        ('artwork-dynamic-displaymode', b'0\0'),
+        ('compatible-device-fallback', b'iPhone18,3\0'),
+        ('sub-product-type', b'iPhone19,4\0'),
+        ('partition-style', b'iOS\0'),
+        ('app-macho-architecture', b'arm64e.x1\0'),
+    ]
 # Apple's names are volup|voldown|hold|ringeren; zeta has no ring/action switch.
 BUTTON_NAMES = b'volup\0voldown\0hold\0'
 # The stock V54AP tree's /buttons home-button-type: 2 is no Home button (Face ID, swipe-up home gesture). MobileGestalt
@@ -160,9 +186,11 @@ def check_board_tree():
             raise SystemExit(f'{DTB.name}: {path} {prop} is not {[hex(v) for v in value]}')
 
 
-def main():
+def main(argv=None, *, default_identity='iPhone18,2'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT / 'build/zeta/boot/kernel.macho.adt')
+    parser.add_argument('--identity-profile', choices=['iPhone18,2', 'iPhone19,4'], default=default_identity,
+                        help='Product identity; V68 is the iOS 27 reference profile, not CPU compatibility proof')
     parser.add_argument('--dram-size', type=lambda value: int(value, 0), required=True,
                         help=f'board.toml [payload] dram_size; must be {DRAM_SIZE:#x}')
     parser.add_argument('--owned-memory-size', type=lambda value: int(value, 0), default=None,
@@ -199,9 +227,9 @@ def main():
                              'at most 32): signed text the kernel changes after page validation, as text-fixup0..7 without '
                              'the boot-argument space')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.ipad_identity:
-        parser.error('zeta targets iPhone18,2; remove ipad_identity from board.toml [payload.adt]')
+        parser.error('zeta targets an iPhone identity; remove ipad_identity from board.toml [payload.adt]')
     if args.ephemeral_data_blocks is not None and not 0 < args.ephemeral_data_blocks < 1 << 32:
         parser.error('--ephemeral-data-blocks must be a positive 32-bit block count')
     if not (args.ephemeral_data_template.startswith('/') and args.ephemeral_data_template.endswith('/')
@@ -227,6 +255,7 @@ def main():
     if len(args.text_fixup) > 32 or any(len(f) >= 160 or f.count(',') != 3 for f in args.text_fixup):
         parser.error('--text-fixup: at most 32 entries of 4 comma-separated fields, each under 160 characters')
     check_board_tree()
+    identity_model, identity_target, identity_product = identity_values(args.identity_profile)
 
     cpus = [node('cpu%d' % index, [('state', b'running\0' if index == 0 else b'waiting\0'),
                                    ('reg', struct.pack('<I', reg)),
@@ -242,8 +271,9 @@ def main():
         gpu_firmware.append((key, data))
     tree = node('device-tree', [
         # hw.product/hw.machine/hw.target come from the root model/target-type (IODTPlatformExpert).
-        ('model', MODEL),
-        ('target-type', TARGET_TYPE),
+        ('model', identity_model),
+        ('target-type', identity_target),
+        *([('target-sub-type', b'V68AP\0')] if args.identity_profile == 'iPhone19,4' else []),
         ('compatible', BOARD_COMPATIBLE),
         ('#address-cells', struct.pack('<I', 2)),
         ('#size-cells', struct.pack('<I', 2)),
@@ -307,7 +337,7 @@ def main():
         node('buttons', [('compatible', b'buttons\0'), ('device_type', b'buttons\0'), ('button-names', BUTTON_NAMES),
                          ('home-button-type', struct.pack('<I', HOME_BUTTON_TYPE))]),
         # The original AppleImage4 panics without a product node.
-        node('product', [*PRODUCT, ('model', BOARD_MODEL)]),
+        node('product', [*identity_product, ('model', BOARD_MODEL)]),
         node('arm-io', [('device_type', b'arm-io\0'),
                         ('#address-cells', struct.pack('<I', 2)),
                         ('#size-cells', struct.pack('<I', 2)),

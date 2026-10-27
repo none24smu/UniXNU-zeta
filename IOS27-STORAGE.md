@@ -59,7 +59,7 @@ is identical to the original DMG. Original source images remain authoritative.
 The root patch `zzzz-native-ios27-cryptexes.patch` applies after the ordinary
 owner-Data and boot-progress patches. It is inert unless
 `XNU_IOS27_CRYPTEXES=1` is explicitly defined for `kern_exec.o`. The profile
-mounts Preboot, SystemOS and AppOS before Data/launchd; validates the actual
+mounts SystemOS and AppOS before Data/launchd, plus Preboot when selected; validates the actual
 read-only signed UFS providers, filesystem and mounted devices; and preserves
 the original OS root. It guards out the old watchdog launch-suppression policy
 only in the selected full27 profile, preserving stock job declarations.
@@ -70,7 +70,10 @@ Compile `package/NativeIos27CryptexMount.c` with the actual BSD
 `package/NativeIos27CryptexVolumes.cpp` with the actual storage
 `ufs-owner-root.command.json`, retaining every target, verified-UFS and KDK
 IOKit ABI/alignment/reserved-slot flag. Link both objects in the same kernel
-as NativeUfs/NativeRamBlock. The profile header is generated from actual APFS
+as NativeUfs/NativeRamBlock. The qualified unsealed Main variant owns exactly
+three empty `/private/preboot/Cryptexes` mountpoint directories and needs no
+separate Preboot volume; stock `/System/Cryptexes` symlinks remain unchanged.
+The profile header is generated from actual APFS
 volume UUIDs; it must match the selected root report.
 
 The opt-in checker emits actual retargeted commands when compile records are
@@ -100,7 +103,13 @@ counterpart; actual27 SystemOS/AppOS match the26 sealed SystemOS masks. This
 removes a new feature-bit mismatch as evidence, but does not establish native
 APFS27 B-tree/crypto/role semantics on the26 KDK APFS driver. SystemOS/AppOS
 are sealed (`incompat=0x28`); changing shared-cache bytes requires a complete
-unsealed reconstruction and a new owner policy. Owner signatures do not
+unsealed reconstruction and a new owner policy. Complete separately reconstructed
+Main/SystemOS/AppOS copies now pass full decoded content, native inode metadata
+and actual native hardlink-equivalence readback. Their new generic role0/feature0x2
+filesystems still require native mounts; original sealed references remain intact.
+See `package/NativeIos27FullStock.md` for compact copies and the authenticated
+alternate-header recovery path, which keeps legacy header0 selection unchanged.
+Owner signatures do not
 replace or repair an APFS seal. Preserve original sealed references.
 
 Require the existing `vfs_mountroot` return/authentication markers, then each

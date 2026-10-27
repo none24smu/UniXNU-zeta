@@ -1,0 +1,55 @@
+{
+  "scope": "host-tested isolated complete-resource job boundary; no native transport/profile selection or GPU proof",
+  "base_driver_commit": "805c7e4bfb7451eb6923f4a14dea8c657b9be7d2",
+  "candidate_commit": "4341660489eb7a68bf23f117585da3d7e506a973",
+  "candidate_branch": "experimental/duo-resource-manifest",
+  "candidate_path": "/home/smudev/iosongen2/work/ios27-port/native-adreno-resources",
+  "root_checkout": {
+    "path": "/home/smudev/iosongen2/work/ios27-port/unixnu",
+    "commit": "107af906532d252ef6ba7aff0c43f11e571d3fa1",
+    "native_adreno_gitlink": "160000 commit 805c7e4bfb7451eb6923f4a14dea8c657b9be7d2\tdrivers/NativeAdreno"
+  },
+  "control_root": {
+    "path": "/home/smudev/iosongen2/UniXNU",
+    "commit": "68c513467bb6c44106c053c410582c1d14f96dd7",
+    "native_adreno_gitlink": "160000 commit 805c7e4bfb7451eb6923f4a14dea8c657b9be7d2\tdrivers/NativeAdreno"
+  },
+  "feed_and_lock_sha256": {
+    "work/ios27-port/board/feeds.toml": "d9a5dbdc30c373018f56934eb48a20650405037daa10a8d153e608a629b9b74d",
+    "work/ios27-port/board/unixnu.lock": "2844cfc29582a4b37d88bbfccb9e2b484e09d231eb0c1f46154df3bb9ae3587d",
+    "UniXNU/feeds.toml": "d0a55d82dc011a3c1cf95d3bcd5333c67283b8c9d44010e4d154ab59562b3091",
+    "work/ios27-port/unixnu/feeds.toml": "d0a55d82dc011a3c1cf95d3bcd5333c67283b8c9d44010e4d154ab59562b3091"
+  },
+  "native_source_sha256": {
+    "NativeAdrenoResources.h": "cb9953efc217b35dcd0cb9464d463318cb644294745e37a89311183b727c0bef",
+    "NativeAdrenoResources.cpp": "c0b4cd9ac4070b68f8a5c7837b50889834556ced0a8e8d4a522641e77a037da3",
+    "tests/ResourceFixture.h": "a9116048961dfa3fe29c05c0caf26ea9d7bd0506c399a7dd40e91647adcc0e1c",
+    "tests/test_resources.cpp": "490940b2bd32135ef10de32177397594f9a87cf87bfbe7eb7abba17d8abbb5d9",
+    "tests/run-resources.sh": "8dffa4856a2a64ba80c98d1536e739d7148c5fbbd1ed265b9ed84efa9f27358f"
+  },
+  "adapter_source_sha256": {
+    "include/msm_resources.hpp": "f02a88efce9e605f6b9d0ac3f5892e8852023cbb62c82acb5dd4d5c6b1c742ec",
+    "src/msm_resources.cpp": "d8d168c11cb72d5e5a42521346e62da8968a2bf08e90dc1ec3152ba207919353",
+    "tests/msm_resources.cpp": "69b1f214cd188cb040632fb57db80eceff99212ef98318e1db911170b578d6c0",
+    "run-resource-tests.sh": "f7f7cbe2d47685c6069bcecc533e488f7aecb55bda3f333088bc3486b7307d21"
+  },
+  "msm_uapi": {
+    "path": "work/render-stage7/oneplus-adoption-userland/build/mesa-host/mesa-25.0.7/include/drm-uapi/msm_drm.h",
+    "sha256": "72c8f32bd744fbd77f0b840a93846bfa32fa91703ea8ff2b7a61540911a5a897"
+  },
+  "clang": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+  "command": "bash experimental/duo-metal/run-resource-tests.sh",
+  "tests_log_sha256": "3279e14d3470e465238f767d54d7bea08d1caf6ca50ad91b41c1f01f79fe39d3",
+  "native_cases": 33,
+  "msm_cases": 25,
+  "sanitizers": [
+    "address",
+    "undefined"
+  ],
+  "exceptions": false,
+  "rtti": false,
+  "published_probe_modified": false,
+  "wire_extension_published": false,
+  "selected_profile_changed": false,
+  "physical_resource_path_proven": false
+}

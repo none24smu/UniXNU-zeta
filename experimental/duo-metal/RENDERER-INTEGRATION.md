@@ -20,6 +20,10 @@ per-submission resource contract.
 The first integration unit must carry an immutable resource manifest from **all
 `msm_gem_submit_bos` entries into NativeAdreno job/cache ownership**:
 
+An isolated [full-BO adapter and native job boundary](RESOURCE-MANIFEST.md) now
+implements the typed producer, validation and ownership portion with host fault
+tests. Native transport, actual VM/cache hooks and profile selection remain open.
+
 1. Negotiate an ABI capability/version. Keep command IBs separate from resident
    resources. Each resource needs client-scoped handle/generation, range,
    GPU read/write/execute access and backing-object identity. Include used

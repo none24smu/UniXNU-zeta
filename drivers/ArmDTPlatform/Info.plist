@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>org.blu-sharky.ArmDTPlatform</string>
+  <key>CFBundleName</key><string>ArmDTPlatform</string>
+  <key>CFBundleExecutable</key><string>ArmDTPlatform</string>
+  <key>CFBundlePackageType</key><string>KEXT</string>
+  <key>CFBundleVersion</key><string>0.1.0</string>
+  <key>OSBundleRequired</key><string>Root</string>
+  <key>IOKitPersonalities</key><dict>
+    <key>DT platform root</key><dict>
+      <key>IOClass</key><string>ArmDTPlatform</string>
+      <key>IOProviderClass</key><string>IOPlatformExpertDevice</string>
+      <key>IONameMatch</key><string>device-tree</string>
+      <key>IOProbeScore</key><integer>5000</integer>
+    </dict>
+  </dict>
+</dict></plist>

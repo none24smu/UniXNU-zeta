@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/UniXNU/ArmDTPlatform.git",
+  "commit": "0d544705c2e89725caabc0542bb96bc8febd8c70",
+  "overlay": "generic explicit target-sub-type/target-type identity; no hardware constants",
+  "native_abi_compile_qualified": false,
+  "boot_qualified": false
+}

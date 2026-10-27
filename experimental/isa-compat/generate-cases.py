@@ -62,7 +62,7 @@ def generate(out):
                 'msr fpcr,x1', 'msr fpsr,x2']
         for n in range(32):
             asm += [f'mov x9,#{0x100+n}', f'mov x10,#{0x900+n}', f'fmov d{n},x9', f'ins v{n}.d[1],x10']
-        asm += ['fmov d31,x0', 'mov x0,#0x1111', 'mov x13,#0x1313', 'mov x16,#0x1616',
+        asm += ['ins v31.d[0],x0', 'mov x0,#0x1111', 'mov x13,#0x1313', 'mov x16,#0x1616',
                 'mov x17,#0x1717', 'mov x29,#0x2929', 'mov x30,#0x3030',
                 'mov x9,#0xa0000000', 'msr nzcv,x9', f'.inst 0x{0x1e7e0000 | (31<<5) | rd:08x}',
                 'str x0,[sp,#0x240]', 'str x13,[sp,#0x248]', 'str x16,[sp,#0x250]', 'str x17,[sp,#0x258]',

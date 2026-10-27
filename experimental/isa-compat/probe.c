@@ -120,6 +120,8 @@ static void js_state_case(const char *name, js_state_fn fn, unsigned destination
             mismatches += snapshot[8 + 2*n] != (n == 31 ? bits : 0x100u+n);
             mismatches += snapshot[9 + 2*n] != 0x900u+n;
         }
+        if (mismatches) printf("{\"kind\":\"js-state-detail\",\"name\":\"%s\",\"destination\":%u,\"q31_low\":\"0x%016" PRIx64 "\",\"q31_high\":\"0x%016" PRIx64 "\",\"nzcv\":\"0x%016" PRIx64 "\",\"fpsr\":\"0x%016" PRIx64 "\",\"fpcr\":\"0x%016" PRIx64 "\"}\n",
+                               name, destination, snapshot[70], snapshot[71], snapshot[6], snapshot[7], snapshot[72]);
     }
     printf("{\"kind\":\"js-state\",\"name\":\"%s\",\"destination\":%u,\"fpcr\":%u,\"signal\":%d,\"mismatches\":%u,\"passed\":%s,\"q_registers_compared\":%u}\n",
            name, destination, fpcr, caught, mismatches, !caught && !mismatches ? "true" : "false", caught ? 0 : 32);

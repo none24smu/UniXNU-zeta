@@ -45,6 +45,11 @@ def generate(out):
         name = 'zeta_cap_' + name
         declarations.append(f'extern uint64_t {name}(uint64_t,uint64_t,uint64_t*);')
         asm += [f'.globl _{name}', f'_{name}:', *instructions, 'ret']
+    name = 'zeta_cap_ctz_reference'
+    declarations.append(f'extern uint64_t {name}(uint64_t,uint64_t,uint64_t*);')
+    asm += [f'.globl _{name}', f'_{name}:', 'stp x29,x30,[sp,#-16]!',
+            'mov x9,#0xa0000000', 'msr nzcv,x9', 'rbit x0,x0', 'clz x0,x0',
+            'mrs x9,nzcv', 'str x9,[x2]', 'ldp x29,x30,[sp],#16', 'ret']
     header = declarations + ['static const Test tests[] = {']
     for r in rows:
         header.append('    {"%(name)s","%(operation)s",%(bits)d,%(destination)d,%(immediate)d,0x%(instruction)08x,%(name)s},' % r)

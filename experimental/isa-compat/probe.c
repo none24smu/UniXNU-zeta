@@ -70,6 +70,30 @@ static void capability(const char *name, instruction_fn fn, uint64_t input, uint
     printf("{\"kind\":\"capability\",\"name\":\"%s\",\"signal\":%d,\"result\":\"0x%016" PRIx64 "\",\"semantic_pass\":%s}\n",
            name, caught, output, semantic ? "true" : "false");
 }
+static uint64_t monotonic_ns(void) {
+    struct timespec t;
+    if (clock_gettime(CLOCK_MONOTONIC_RAW, &t)) return 0;
+    return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+}
+static void benchmark(const char *name, instruction_fn fn) {
+    volatile unsigned completed = 0, failures = 0;
+    uint64_t flags = 0;
+    caught = 0;
+    uint64_t start = monotonic_ns();
+    if (!sigsetjmp(jump, 1)) {
+        armed = 1;
+        for (unsigned i = 0; i < 10000; ++i) {
+            uint64_t output = fn(16, 0, &flags);
+            if (output != 4 || flags != UINT64_C(0xa0000000)) ++failures;
+            ++completed;
+        }
+        armed = 0;
+    }
+    uint64_t end = monotonic_ns();
+    printf("{\"kind\":\"benchmark\",\"name\":\"%s\",\"signal\":%d,\"completed\":%u,\"failures\":%u,\"elapsed_ns\":%" PRIu64 ",\"clock_valid\":%s}\n",
+           name, caught, completed, failures, end >= start ? end - start : 0,
+           start && end >= start ? "true" : "false");
+}
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     struct sigaction action;
@@ -151,6 +175,8 @@ int main(void) {
     capability("pauth-pacia-autia", zeta_cap_pauth, 17, 25, 1, 17);
     capability("pauth-lr-paired-leaf", zeta_cap_pauth_lr, 17, 0, 1, 17);
     capability("unallocated", zeta_cap_unallocated, 0, 0, 0, 0);
+    benchmark("ctz-baseline-rbit-clz", zeta_cap_ctz_reference);
+    benchmark("ctz-cssc", zeta_ctz64_r0);
     caught = 0;
     volatile unsigned tpro_version = 0;
     if (!sigsetjmp(jump, 1)) {

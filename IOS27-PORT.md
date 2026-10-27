@@ -26,6 +26,9 @@ Known PAuth_LR SP/PC immediate encodings have ordinary-pointer lowering and
 control-flow decoding, independently checked against LLVM assembly. This lets
 the analyzer stop at actual return instructions without treating following
 data as code. It does not establish all x1 instructions are supported.
+The two exact TCHANGE encodings in dyld also have code-boundary decoding: they
+fall through on successful completion, but retain real permission-state and X0
+side effects. They are never replaced with NOP and the ISA gate rejects them.
 
 Run the read-only instruction gate against retained original files:
 

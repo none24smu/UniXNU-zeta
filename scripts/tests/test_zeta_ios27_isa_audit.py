@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+import struct
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -20,6 +21,20 @@ class IsaScreenTests(unittest.TestCase):
 
     def test_empty_input(self):
         self.assertEqual(audit.rejected_by_baseline([]), set())
+
+    def test_permission_transitions_decode_as_code_but_are_not_lowered(self):
+        data=struct.pack('<4I',0xd5900040,0xd5940000,0xd65f03c0,0xdac10000)
+        insns=audit.code.decode(data,[{'offset':0,'size':len(data),'addr':0x1000}])
+        self.assertEqual(insns[0x1000],('tchangef','x0, #2'))
+        self.assertEqual(insns[0x1004],('tchangeb','x0, #0'))
+        proven,tables,anomalies=audit.code.walk(
+            insns,data,lambda va,n:va-0x1000,[0x1000],set(),set(),True,{0x1000})
+        self.assertEqual(proven,{0x1000,0x1004,0x1008})
+        self.assertEqual((tables,anomalies),([],[]))
+        for word in [0xd5900040,0xd5940000]:
+            self.assertIsNone(audit.pauth.lower(word))
+        self.assertEqual(audit.rejected_by_baseline([0xd5900040,0xd5940000]),
+                         {0xd5900040,0xd5940000})
 
 
 if __name__ == '__main__':

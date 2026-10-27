@@ -43,6 +43,13 @@ TARGET = re.compile(r'#(-?0x[0-9a-f]+|-?[0-9]+)$')
 DISPATCH = (('adrp', r'x17, #(0x[0-9a-f]+)'), ('add', r'x17, x17, #(0x[0-9a-f]+|[0-9])'),
             ('ldrsw', r'x16, \[x17, x16, lsl #2\]'), ('adr', r'x17, #(0x[0-9a-f]+)'),
             ('add', r'x16, x17, x16'), ('br', r'x16'))
+# Exact FEAT_S1POE2 words in the supplied iOS 27 dyld. They update permission
+# state/TIndex and write X0; successful completion falls through. This is only
+# code-boundary decoding, never a lowering or a claim of SM8350 support.
+# Arm-authored assembler tests/encodings:
+# https://sourceware.org/pipermail/binutils/2025-December/146593.html
+POE2_EXACT = {0xd5900040: ('tchangef', 'x0, #2'),
+              0xd5940000: ('tchangeb', 'x0, #0')}
 
 
 def uleb128(data, at, end):
@@ -251,9 +258,12 @@ def decode(data, sections, oracle=None):
         # Decode those explicitly before the straight-line LLVM oracle, which
         # deliberately refuses returns. The walk must stop at these returns.
         for offset in range(0, section['size'], 4):
-            lr = pauth.decode_lr(struct.unpack_from('<I', data, start+offset)[0])
+            word = struct.unpack_from('<I', data, start+offset)[0]
+            lr = pauth.decode_lr(word)
             if lr:
                 table[section['addr']+offset] = lr[:2]
+            elif word in POE2_EXACT:
+                table[section['addr']+offset] = POE2_EXACT[word]
     if oracle:
         unknown = {}
         for section in sections:

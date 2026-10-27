@@ -16,6 +16,47 @@ import subprocess
 import tomllib
 import uuid
 
+def sign_owner_cache(data, template):
+    """Rebuild the existing ad-hoc detached signature for the owner RAM cache.
+
+    Retain requirements/special slots and both SHA-1/SHA-256 directories. The
+    new SHA-256 CDHash must be explicitly admitted by this image's static trust
+    bundle; page validation remains enabled.
+    """
+    magic,length,count=struct.unpack_from(">3I",template)
+    assert magic==0xfade0cc0 and length==len(template)
+    blobs=[];cdhash=None
+    for i in range(count):
+        kind,offset=struct.unpack_from(">II",template,12+8*i)
+        blob_magic,size=struct.unpack_from(">II",template,offset)
+        blob=bytearray(template[offset:offset+size]);assert len(blob)==size
+        if blob_magic==0xfade0c02:
+            _,_,version,flags,hash_offset,ident,special,slots,limit,hash_size,hash_type,platform,page=struct.unpack_from(">9I4B",blob)
+            assert flags&2 and page==12 and platform==0 and version==0x20500
+            assert (hash_type,hash_size) in ((1,20),(2,32))
+            assert hash_offset+slots*hash_size==len(blob)
+            name=b"zeta-air-owner-launchd-cache\0"
+            end=hash_offset-special*hash_size
+            assert ident+len(name)<=end
+            blob[ident:end]=name+b"\0"*(end-ident-len(name))
+            slots=(len(data)+4095)//4096
+            blob=blob[:hash_offset]
+            digest=hashlib.sha1 if hash_type==1 else hashlib.sha256
+            blob.extend(b"".join(digest(data[n:n+4096]).digest() for n in range(0,len(data),4096)))
+            struct.pack_into(">I",blob,4,len(blob))
+            struct.pack_into(">II",blob,28,slots,len(data))
+            # The template uses the 32-bit codeLimit and no scatter/pre-encrypt
+            # table. Refuse a different layout rather than retaining stale data.
+            assert struct.unpack_from(">IIQ",blob,44)==(0,0,0)
+            if hash_type==2:cdhash=hashlib.sha256(blob).digest()[:20]
+        elif kind==0x10000:
+            assert blob==struct.pack(">II",0xfade0b01,8), "Only ad-hoc signatures are supported"
+        blobs.append((kind,bytes(blob)))
+    assert cdhash is not None
+    cursor=12+8*len(blobs);indices=[]
+    for kind,blob in blobs:indices.append(struct.pack(">II",kind,cursor));cursor+=len(blob)
+    return struct.pack(">III",magic,cursor,len(blobs))+b"".join(indices)+b"".join(blob for _,blob in blobs),cdhash
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for flag in ("workspace","artifact","control","seed-control","output","seed-output"):
@@ -25,6 +66,7 @@ def main():
     a=p.parse_args();root=a.workspace.resolve();z=Path(__file__).resolve().parents[1]
     artifact=a.artifact.resolve();control=a.control.resolve();oldseed=a.seed_control.resolve()
     out=a.output.resolve();seed=a.seed_output.resolve()
+    cache_hash=None
     if a.disk_jobs_kernel:
         kernel=a.disk_jobs_kernel/"kernel.macho"
         assert b"zeta-air: disk job view mount status" in kernel.read_bytes(), "Missing compiled AIR boot hook; use zeta_userland_trust_defconfig"
@@ -67,8 +109,8 @@ def main():
             shutil.copy2(path,xpc/path.name)
         # iOS26's cache parser has a fatal missing-cache path. Preserve the
         # consolidated cache and every other job/configuration; override only
-        # the same enabled probe slot in this owner RAM view. Original support
-        # files, including signature sidecars, are copied byte-for-byte.
+        # the same enabled probe slot in this owner RAM view. Re-sign the
+        # changed cache and explicitly trust its new owner CodeDirectory.
         cache_path=xpc/"launchd.plist";cache=plistlib.loads(cache_path.read_bytes())
         key="/System/Library/LaunchDaemons/com.apple.iomfb_fdr_loader.plist"
         assert key in cache["LaunchDaemons"]
@@ -79,6 +121,8 @@ def main():
         assert all(cache["LaunchDaemons"][k]==v for k,v in original["LaunchDaemons"].items() if k!=key)
         cache_path.write_bytes(plistlib.dumps(cache,fmt=plistlib.FMT_BINARY,sort_keys=False))
         assert plistlib.loads(cache_path.read_bytes())["LaunchDaemons"][key]==job
+        signature,cache_hash=sign_owner_cache(cache_path.read_bytes(),(xpc/"launchd.plist.sig").read_bytes())
+        (xpc/"launchd.plist.sig").write_bytes(signature)
         assert (xpc/"extensions.plist").is_file()
     shutil.copy2(oldseed/"preferences.plist",seed/"preferences.plist")
     spec=importlib.util.spec_from_file_location("trust",z/"scripts/make-zeta-trust-bundle.py")
@@ -91,6 +135,9 @@ def main():
     for info in meta["files"].values():
         h=bytes.fromhex(info["cdhash"]);assert h not in entries
         entries[h]=bytes([2,0,0,0])
+    if cache_hash is not None:
+        assert cache_hash not in entries
+        entries[cache_hash]=bytes([2,0,0,0])
     ordered=sorted(entries);identifier=uuid.uuid5(uuid.NAMESPACE_URL,"zeta-air:"+hashlib.sha256(b"".join(ordered)).hexdigest())
     new=struct.pack("<III16sI",1,8,2,identifier.bytes,len(entries))+b"".join(h+entries[h] for h in ordered)
     assert trust.valid_like_the_loader(new) and all(entries[h]==attrs for h,attrs in original.items())
@@ -130,7 +177,8 @@ def main():
         sha256={n:hashlib.sha256((out/n).read_bytes()).hexdigest() for n in ("kernel.macho","kernel.macho.adt","unixnu.toml","boot.img")})
     if a.disk_jobs_kernel:
         report["preserved"]=["UEFI","system renderer","shader pack","persistent touch"]
-        report["changes"] += ["opt-in RAM xpc view and kernel hook; consolidated cache changes only the FDR-loader job to the probe; other jobs and original support files preserved"]
+        report["changes"] += ["opt-in RAM xpc view and kernel hook; consolidated cache changes only the FDR-loader job to the probe; matching owner detached signature and fourth static trust entry"]
+        report["cache_cdhash"]=cache_hash.hex()
     (out/"test-inputs.json").write_text(json.dumps(report,indent=2)+"\n")
     print(out/"boot.img")
 if __name__=="__main__":main()

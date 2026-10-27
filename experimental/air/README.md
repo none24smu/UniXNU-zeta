@@ -38,9 +38,19 @@ uses LLVM 18 to assemble the public fixtures, and signs each iOS Mach-O with
 4 KiB code-directory pages. `trust.json` records their CDHashes and file hashes.
 
 `scripts/prepare-zeta-air-probe.py` stages those files in a fresh experimental
-Data seed, preserving the control kernel, ADT, configuration, system renderer
-and shader pack. The temporary launchd job uses an existing job filename so
-bindfs union directory enumeration cannot hide it. It runs one probe only.
+Data seed, preserving the system renderer and shader pack. iOS 26 launches
+jobs from a consolidated cache, so the test requires the opt-in kernel hook
+(`--disk-jobs-kernel`, built with `zeta_userland_trust_defconfig`) and the
+`zeta-air-probe=1` boot argument. It mounts a RAM-backed `/System/Library/xpc`
+view. All cache entries remain intact except the FDR-loader job, which launches
+one gated probe. The changed cache receives a matching owner ad-hoc detached
+signature and an explicit SHA-256 CDHash entry in the experimental trust bundle.
+The three probe Mach-Os have separate trust entries. Page validation remains
+enabled; retaining the original cache signature rejects the changed data.
+
+The control image is retained separately. Without the boot argument the kernel
+does not mount this experimental cache view. Neither image preparation nor the
+device test writes a persistent device partition.
 
 ## Device execution
 

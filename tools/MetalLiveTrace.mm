@@ -11,6 +11,7 @@
 #include <string>
 static FILE *stream;
 static std::atomic<unsigned> records;
+static IMP originalPipeline;
 static void logline(const char *fmt,...) {
  if(!stream || records.fetch_add(1)>=512)return;
  flockfile(stream);fprintf(stream,"pid=%d ",getpid());va_list a;va_start(a,fmt);vfprintf(stream,fmt,a);va_end(a);fputc('\n',stream);fflush(stream);funlockfile(stream);
@@ -19,6 +20,12 @@ static void bytes(id obj,const char *stage,const void *p,NSUInteger n,NSUInteger
  if(!p)return;char hex[513];NSUInteger count=MIN(n,256ul);const unsigned char *b=(const unsigned char *)p;
  for(NSUInteger k=0;k<count;k++)snprintf(hex+k*2,3,"%02x",b[k]);hex[count*2]=0;
  logline("B encoder=%p stage=%s index=%lu length=%lu bytes=%s",(__bridge void *)obj,stage,(unsigned long)i,(unsigned long)n,hex);
+}
+typedef id RetainedPipeline(id,SEL,id,NSError **) __attribute__((ns_returns_retained));
+static id tracePipeline(id self,SEL s,MTLRenderPipelineDescriptor *d,NSError **error) __attribute__((ns_returns_retained));
+static id tracePipeline(id self,SEL s,MTLRenderPipelineDescriptor *d,NSError **error) {
+ id result=((RetainedPipeline *)originalPipeline)(self,s,d,error);
+ logline("R pipeline=%p label=%s vertex=%s fragment=%s",(__bridge void *)result,d.label.UTF8String?:"-",d.vertexFunction.name.UTF8String?:"-",d.fragmentFunction.name.UTF8String?:"-");return result;
 }
 static void install() {
  Class re=objc_getClass("NBRenderEncoder"), cb=objc_getClass("NBCommandBuffer"), dm=objc_getClass("NBDeviceMethods");
@@ -40,8 +47,8 @@ static void install() {
   method_setImplementation(m,imp_implementationWithBlock(^(id self,MTLScissorRect r){logline("S encoder=%p xy=%lu,%lu wh=%lu,%lu",(__bridge void *)self,(unsigned long)r.x,(unsigned long)r.y,(unsigned long)r.width,(unsigned long)r.height);((void(*)(id,SEL,MTLScissorRect))orig)(self,s,r);}));
  }
  {
-  SEL s=sel_registerName("newRenderPipelineStateWithDescriptor:error:");Method m=class_getInstanceMethod(dm,s);IMP orig=method_getImplementation(m);
-  method_setImplementation(m,imp_implementationWithBlock(^id(id self,MTLRenderPipelineDescriptor *d,NSError **error){id result=((id(*)(id,SEL,id,NSError **))orig)(self,s,d,error);logline("R pipeline=%p label=%s vertex=%s fragment=%s",(__bridge void *)result,d.label.UTF8String?:"-",d.vertexFunction.name.UTF8String?:"-",d.fragmentFunction.name.UTF8String?:"-");return result;}));
+  SEL s=sel_registerName("newRenderPipelineStateWithDescriptor:error:");Method m=class_getInstanceMethod(dm,s);originalPipeline=method_getImplementation(m);
+  method_setImplementation(m,(IMP)tracePipeline);
  }
  {
   SEL s=sel_registerName("setRenderPipelineState:");Method m=class_getInstanceMethod(re,s);IMP orig=method_getImplementation(m);
@@ -53,7 +60,7 @@ static void install() {
  }
  for(NSString *name in @[@"setVertexBuffer:offset:atIndex:",@"setFragmentBuffer:offset:atIndex:"]) {
   SEL s=NSSelectorFromString(name);Method m=class_getInstanceMethod(re,s);IMP orig=method_getImplementation(m);BOOL vertex=[name hasPrefix:@"setVertex"];
-  method_setImplementation(m,imp_implementationWithBlock(^(id self,id<MTLBuffer> b,NSUInteger off,NSUInteger i){logline("B encoder=%p stage=%s buffer=%p index=%lu offset=%lu length=%lu storage=%lu",(__bridge void *)self,vertex?"vertex":"fragment",(__bridge void *)b,(unsigned long)i,(unsigned long)off,(unsigned long)b.length,(unsigned long)b.storageMode);if(b && b.storageMode!=MTLStorageModePrivate && off<b.length)bytes(self,vertex?"vertex":"fragment",(const char *)b.contents+off,MIN(b.length-off,256ul),i);((void(*)(id,SEL,id,NSUInteger,NSUInteger))orig)(self,s,b,off,i);}));
+  method_setImplementation(m,imp_implementationWithBlock(^(id self,id<MTLBuffer> b,NSUInteger off,NSUInteger i){logline("B encoder=%p stage=%s buffer=%p index=%lu offset=%lu length=%lu storage=%lu",(__bridge void *)self,vertex?"vertex":"fragment",(__bridge void *)b,(unsigned long)i,(unsigned long)off,(unsigned long)b.length,(unsigned long)b.storageMode);if(b && b.storageMode!=MTLStorageModePrivate && off<b.length){const void *contents=b.contents;if(contents)bytes(self,vertex?"vertex":"fragment",(const char *)contents+off,MIN(b.length-off,256ul),i);}((void(*)(id,SEL,id,NSUInteger,NSUInteger))orig)(self,s,b,off,i);}));
  }
  {
   SEL s=sel_registerName("drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:");Method m=class_getInstanceMethod(re,s);IMP orig=method_getImplementation(m);

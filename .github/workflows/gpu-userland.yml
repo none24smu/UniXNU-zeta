@@ -2,6 +2,10 @@ name: GPU userland
 on:
   workflow_dispatch:
     inputs:
+      trace_only:
+        description: Compile only the small live diagnostic loader
+        type: boolean
+        default: false
       runner:
         description: macOS build and host-test runner
         type: choice
@@ -22,6 +26,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    if: ${{ !inputs.trace_only }}
     runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 240
     env:
@@ -90,3 +95,20 @@ jobs:
             unixnu/build/mesa-tu*/meson-logs/*.txt
           if-no-files-found: ignore
           retention-days: 7
+
+  trace:
+    if: ${{ inputs.trace_only }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile only the diagnostic loader
+        run: |
+          mkdir -p trace
+          xcrun --sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=17.0 -dynamiclib -std=c++17 -fobjc-arc -O1 -Wall -Wextra -Werror -framework Foundation -framework Metal tools/MetalLiveTrace.mm -o trace/MetalLiveTrace
+          codesign -s - --force --identifier org.blu-sharky.MetalLiveTrace trace/MetalLiveTrace
+          codesign --verify --strict trace/MetalLiveTrace
+          shasum -a 256 trace/MetalLiveTrace > trace/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metal-live-trace
+          path: trace

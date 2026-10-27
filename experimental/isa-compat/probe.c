@@ -99,6 +99,8 @@ int main(void) {
         "hw.optional.arm.FEAT_PAuth", "hw.optional.arm.FEAT_PAuth_LR", "hw.optional.arm.FEAT_MTE",
         "hw.optional.arm.FEAT_SHA512", "hw.optional.arm.FEAT_LRCPC", "hw.optional.arm.FEAT_LRCPC2",
         "hw.optional.arm.FEAT_JSCVT",
+        "hw.optional.arm.FEAT_GCS", "hw.optional.arm.FEAT_SVE", "hw.optional.arm.FEAT_SVE2",
+        "hw.optional.arm.FEAT_SME", "hw.optional.arm.FEAT_SME2",
         "hw.optional.arm.FEAT_TME", "hw.optional.arm.FEAT_TPRO", NULL
     };
     for (unsigned i = 0; features[i]; ++i) feature(features[i]);

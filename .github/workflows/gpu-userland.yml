@@ -103,11 +103,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compile only the diagnostic loader
         run: |
-          mkdir -p trace
-          xcrun --sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=17.0 -dynamiclib -std=c++17 -fobjc-arc -O1 -Wall -Wextra -Werror -framework Foundation -framework Metal tools/MetalLiveTrace.mm -o trace/MetalLiveTrace
-          codesign -s - --force --identifier org.blu-sharky.MetalLiveTrace trace/MetalLiveTrace
-          codesign --verify --strict trace/MetalLiveTrace
-          shasum -a 256 trace/MetalLiveTrace > trace/SHA256.txt
+          mkdir -p trace/NativeAdrenoMetal.bundle
+          python3 -c 'import plistlib,pathlib; p=pathlib.Path("trace/NativeAdrenoMetal.bundle"); (p/"Info.plist").write_bytes(plistlib.dumps(dict(CFBundleExecutable="MetalLiveTrace",CFBundleIdentifier="org.blu-sharky.NativeAdrenoMetal",CFBundlePackageType="BNDL"))); (p/"TraceResource.txt").write_text("Diagnostic staging resource\n")'
+          xcrun --sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=17.0 -dynamiclib -std=c++17 -fobjc-arc -O1 -Wall -Wextra -Werror -framework Foundation -framework Metal tools/MetalLiveTrace.mm -o trace/NativeAdrenoMetal.bundle/MetalLiveTrace
+          codesign -s - --force trace/NativeAdrenoMetal.bundle
+          codesign --verify --strict trace/NativeAdrenoMetal.bundle
+          shasum -a 256 trace/NativeAdrenoMetal.bundle/MetalLiveTrace > trace/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
           name: metal-live-trace

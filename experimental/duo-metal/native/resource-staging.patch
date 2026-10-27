@@ -249,10 +249,10 @@ index 0000000..6e86cf2
 +#endif
 diff --git a/NativeAdrenoResourceQueue.cpp b/NativeAdrenoResourceQueue.cpp
 new file mode 100644
-index 0000000..eadb79d
+index 0000000..ec9f782
 --- /dev/null
 +++ b/NativeAdrenoResourceQueue.cpp
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,132 @@
 +/* SPDX-License-Identifier: MIT */
 +#include "NativeAdrenoResourceQueue.h"
 +#include "AdrenoPM4.h"
@@ -349,7 +349,9 @@ index 0000000..eadb79d
 +    if(vm_.invalidateTlb())return reject(nr::Error::Backend);
 +    uint32_t fence=0;const auto status=ring_.submitFramed(words,word_count,&fence);
 +    if(!status && fence)return {nr::Error::Ok,nr::Acceptance::Accepted,fence};
-+    if(ring_.poisoned() || fence)return {nr::Error::Backend,nr::Acceptance::Uncertain,fence};
++    // A nominally successful commit without a trackable fence is uncertain,
++    // even if a future Ring implementation forgets to mark itself poisoned.
++    if(!status || ring_.poisoned() || fence)return {nr::Error::Backend,nr::Acceptance::Uncertain,fence};
 +    return reject(convert(status));
 +}
 +nr::Hooks NativeAdrenoResourceQueue::hooks() {

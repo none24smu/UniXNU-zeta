@@ -82,7 +82,9 @@ def init(cache_path, ranges, targets, work, experimental_x1=False):
             if path.endswith('/libsystem_c.dylib'):
                 noreturn.update(dc.Image(STATE['cache'],address,path).export_addresses({'___assert_rtn','___stack_chk_fail','_abort'}))
             elif path.endswith('/libc++abi.dylib'):
-                noreturn.update(dc.Image(STATE['cache'],address,path).export_addresses({'__ZSt9terminatev'}))
+                # Itanium C++ ABI throw/rethrow never return normally. Landing
+                # pads remain independent roots; no arbitrary call is terminal.
+                noreturn.update(dc.Image(STATE['cache'],address,path).export_addresses({'__ZSt9terminatev','___cxa_throw','___cxa_rethrow'}))
             elif path.endswith('/libsystem_kernel.dylib'):
                 exits=dc.Image(STATE['cache'],address,path).export_addresses({'__exit','___exit'})
                 # Darwin syscall1 terminates the process; bind the name to its

@@ -7,12 +7,24 @@ manifest is unchanged. Every recovery is recorded with immutable public source U
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+from functools import lru_cache
+import re
+import subprocess
 import json
 from pathlib import Path, PurePosixPath
 import urllib.request
 
 XNU = 'ac9718fb1af618d5ce8678d0dc6e8a58f252216f'
 AVAILABILITY = '149b1777f3e8c2133042d8e188f72e3adf6a7110'
+
+@lru_cache(maxsize=3)
+def kit_identity(kit, root_commit):
+    metadata = json.loads(subprocess.check_output(
+        ['gh', 'api', f'repos/none24smu/UniXNU/contents/kits/{kit}?ref={root_commit}'], text=True))
+    if metadata.get('submodule_git_url') != f'https://github.com/UniXNU/{kit}.git' or not re.fullmatch('[0-9a-f]{40}', metadata['sha']):
+        raise ValueError('unexpected native kit submodule identity')
+    return metadata['sha']
+
 
 def source_url(name, root_commit):
     path = PurePosixPath(name)
@@ -31,13 +43,14 @@ def source_url(name, root_commit):
         suffix = 'kits/' + name.split('/kits/', 1)[1]
         if PurePosixPath(suffix).parts[1] not in ('ArmSmmu4K', 'AdrenoPM4', 'AdrenoFirmware'):
             raise ValueError('unknown native kit')
-        return f'https://raw.githubusercontent.com/none24smu/UniXNU/{root_commit}/{suffix}'
+        kit, relative = suffix.split('/', 2)[1:]
+        commit = kit_identity(kit, root_commit)
+        return f'https://raw.githubusercontent.com/UniXNU/{kit}/{commit}/{relative}'
     raise ValueError('unknown missing SDK input; no reconstruction: ' + name)
 
 
 def recover(snapshot, output, root_commit):
     manifest = json.loads((snapshot / 'manifest.json').read_text())
-    import re
     if not re.fullmatch('[0-9a-f]{40}', root_commit):
         raise ValueError('require immutable root source commit')
     roots = {name.split('/kits/', 1)[0] for name in manifest['headers'] if '/kits/' in name}

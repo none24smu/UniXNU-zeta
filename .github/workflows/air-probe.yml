@@ -126,8 +126,12 @@ jobs:
           name: unixnu-post-build-checks-zeta_userland_trust_defconfig
           path: resource-sdk-input
       - name: Reconstruct isolated source and replay exact SDK objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_RUN: ${{ inputs.resource_snapshot_run }}
         run: |
-          python3 experimental/duo-metal/native/run-resource-sdk-replay.py --artifact resource-sdk-input --output resource-sdk-replay
+          root_commit=$(gh api "repos/none24smu/UniXNU/actions/runs/$SNAPSHOT_RUN" --jq .head_sha)
+          python3 experimental/duo-metal/native/run-resource-sdk-replay.py --artifact resource-sdk-input --output resource-sdk-replay --root-commit "$root_commit"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

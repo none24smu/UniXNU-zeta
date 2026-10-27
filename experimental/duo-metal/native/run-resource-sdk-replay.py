@@ -14,6 +14,7 @@ import sys
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--artifact', type=Path, required=True)
 p.add_argument('--output', type=Path, required=True)
+p.add_argument('--root-commit', required=True)
 a = p.parse_args()
 here = Path(__file__).resolve().parent
 metadata = json.loads((here / 'resource-device.json').read_text())
@@ -32,7 +33,8 @@ kit_root = snapshot / 'files' / next(iter(roots)).lstrip('/')
 out = a.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 subprocess.run([sys.executable, str(here / 'recover-resource-sdk-headers.py'),
-                '--snapshot', str(snapshot), '--record', str(out / 'header-recovery.json')], check=True)
+                '--snapshot', str(snapshot), '--record', str(out / 'header-recovery.json'),
+                '--root-commit', a.root_commit], check=True)
 source = out / 'source'
 subprocess.run(['git', 'clone', '--no-checkout', metadata['repository'], str(source)], check=True)
 subprocess.run(['git', '-C', str(source), 'checkout', '--detach', metadata['base_commit']], check=True)

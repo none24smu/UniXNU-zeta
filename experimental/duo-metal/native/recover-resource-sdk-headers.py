@@ -14,7 +14,10 @@ import urllib.request
 XNU = 'ac9718fb1af618d5ce8678d0dc6e8a58f252216f'
 AVAILABILITY = '149b1777f3e8c2133042d8e188f72e3adf6a7110'
 
-def source_url(name):
+def source_url(name, root_commit):
+    path = PurePosixPath(name)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('invalid original header path')
     marker = '/.cache/xnu-12377.121.6-work/'
     if marker in name:
         suffix = name.split(marker, 1)[1]
@@ -24,16 +27,30 @@ def source_url(name):
         return f'https://raw.githubusercontent.com/apple-oss-distributions/xnu/{XNU}/{suffix}'
     if name.endswith('/.cache/xnu-12377.121.6-fakeroot/usr/local/include/AvailabilityProhibitedInternal.h'):
         return f'https://raw.githubusercontent.com/apple-oss-distributions/AvailabilityVersions/{AVAILABILITY}/templates/AvailabilityProhibitedInternal.h'
+    if '/kits/' in name:
+        suffix = 'kits/' + name.split('/kits/', 1)[1]
+        if PurePosixPath(suffix).parts[1] not in ('ArmSmmu4K', 'AdrenoPM4', 'AdrenoFirmware'):
+            raise ValueError('unknown native kit')
+        return f'https://raw.githubusercontent.com/none24smu/UniXNU/{root_commit}/{suffix}'
     raise ValueError('unknown missing SDK input; no reconstruction: ' + name)
 
 
-def recover(snapshot, output):
+def recover(snapshot, output, root_commit):
     manifest = json.loads((snapshot / 'manifest.json').read_text())
+    import re
+    if not re.fullmatch('[0-9a-f]{40}', root_commit):
+        raise ValueError('require immutable root source commit')
+    roots = {name.split('/kits/', 1)[0] for name in manifest['headers'] if '/kits/' in name}
+    if len(roots) != 1:
+        raise ValueError('ambiguous retained kit root')
+    root = next(iter(roots))
+    inputs = {**manifest['headers'], **manifest.get('auxiliary', {})}
+    inputs.update({root + '/' + name: digest for name, digest in manifest['kit_header_sha256'].items()})
     missing = []
-    for name, digest in {**manifest['headers'], **manifest.get('auxiliary', {})}.items():
+    for name, digest in inputs.items():
         file = snapshot / 'files' / name.lstrip('/')
         if not file.is_file():
-            missing.append((name, digest, file, source_url(name)))
+            missing.append((name, digest, file, source_url(name, root_commit)))
     if len(missing) > 64:
         raise ValueError('unexpected missing header count')
     def fetch(item):
@@ -54,5 +71,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--snapshot', type=Path, required=True)
     p.add_argument('--record', type=Path, required=True)
+    p.add_argument('--root-commit', required=True)
     a = p.parse_args()
-    recover(a.snapshot.resolve(), a.record.resolve())
+    recover(a.snapshot.resolve(), a.record.resolve(), a.root_commit)

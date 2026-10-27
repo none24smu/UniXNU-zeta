@@ -1,0 +1,21 @@
+{
+  "scope": "owned synthetic AIR shader gate; not Apple compositor output",
+  "assembler": "Ubuntu LLVM version 18.1.3\n  Optimized build.",
+  "files": {
+    "duo_sampler_fragment.ll": "1f1e0894ef00b7a1ccd5f48d5bc47c4aab3b12b28a1a7dbeb78bdd7c72df3cfb",
+    "duo_solid_fragment.ll": "15287f71c12e0ee9d83e001abf7db101d99d161a1a7ab69ccf40252c1ba11d3a",
+    "duo_solid_fragment.bc": "ec06566083119c9aecba9f09abdf77420984aabdfbbb6a9c1ad965e25682ae8b",
+    "duo_triangle_vertex.ll": "d62f9361200be5a1c2e989166f23b2c9a158466f955ad140c63d28c1f6268760",
+    "duo_sampler_fragment.bc": "55d39f26387f1365564d0feb29b16687ba4e8ffcbfed1a4dc7b074d29ff23ae2",
+    "duo-air-probe.metallib": "f792f2769ed2bdef0ccc5c4a9a67c777f1d442108f5234018397c4cebb58da90",
+    "duo_sampler_bias_fragment.ll": "9a56839bfe87ca266468138799df9d54a4d0da36d2d6075161c3a1476d2d3440",
+    "duo_sampler_bias_fragment.bc": "cf729d13f8600ce24192dbad52b216202363fd84f7dde6dc0b7f438a84432aff",
+    "duo_triangle_vertex.bc": "b77b415a1ea7cf8d538e8e2cecdf2727b0da2f84d10f0192520b0bbc5bbbc5a1"
+  },
+  "functions": [
+    "duo_triangle_vertex",
+    "duo_solid_fragment",
+    "duo_sampler_fragment",
+    "duo_sampler_bias_fragment"
+  ]
+}

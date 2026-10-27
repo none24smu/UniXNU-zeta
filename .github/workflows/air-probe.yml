@@ -34,3 +34,26 @@ jobs:
           path: ${{ runner.temp }}/isa-probe
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install AIR shader build tools
+        run: |
+          brew install meson ninja pkgconf
+          python3 -m pip install Mako PyYAML packaging
+      - name: Build the isolated AIR shader backend and probe
+        run: python3 experimental/duo-metal/build-air-shader-probe.py --work "$RUNNER_TEMP/air-shader-work" --output "$RUNNER_TEMP/air-shader-probe"
+      - name: Upload signed AIR shader backend and probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: air-shader-probe
+          path: ${{ runner.temp }}/air-shader-probe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload AIR build failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: air-shader-failure-logs
+          path: ${{ runner.temp }}/air-shader-work/ios-build/meson-logs
+          if-no-files-found: ignore

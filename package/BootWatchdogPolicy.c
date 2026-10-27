@@ -11,8 +11,9 @@
 #include <pexpert/pexpert.h>
 
 // The original consolidated job cache takes precedence over LaunchDaemons.
-// An explicit RAM probe profile supplies the original xpc support files without
-// launchd.plist, so launchd can discover the owner job in its existing disk path.
+// An explicit RAM probe profile supplies an owner-signed consolidated job
+// cache and the original xpc support files. This also supports a cache-free
+// diagnostic view when individual jobs are used.
 // This is opt-in; the normal graphics control retains its original cache/view.
 extern volatile int native_bindfs_boot_mount __attribute__((weak_import));
 static int zeta_air_disk_jobs(proc_t p, uint64_t scratch) {
@@ -29,7 +30,7 @@ static int zeta_air_disk_jobs(proc_t p, uint64_t scratch) {
  native_bindfs_boot_mount=1;
  error=mount(p,&request,&result);
  native_bindfs_boot_mount=0;
- printf("zeta-air: disk job view mount status %d (consolidated launchd cache hidden in RAM)\n",error);
+ printf("zeta-air: disk job view mount status %d (owner diagnostic xpc view)\n",error);
  return error;
 }
 

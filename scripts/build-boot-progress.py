@@ -98,7 +98,7 @@ archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), *map(str, objects)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'sources': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in sorted(KIT.glob('BootProgress*')) + sorted(KIT.glob('BootUiTrace*.h')) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
+                for path in sorted(KIT.glob('BootProgress*')) + sorted(KIT.glob('BootUiTrace*.h')) + sorted(KIT.glob('ZetaUserInstruction*.h')) + [path for name, _ in units[1:] for path in (KIT / (name + '.c'), KIT / (name + '.S')) if path.is_file()] + [KIT / 'Font.h']},
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')

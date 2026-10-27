@@ -87,3 +87,18 @@ jobs:
           name: air-shader-failure-logs
           path: ${{ runner.temp }}/air-shader-work/ios-build/meson-logs
           if-no-files-found: ignore
+
+  build_spirv:
+    if: inputs.spirv_only == true
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build signed bounded AIR-to-SPIR-V Vulkan draw probe
+        run: python3 experimental/duo-metal/build-air-spirv-vulkan-probe.py --work "$RUNNER_TEMP/air-spirv-work" --output "$RUNNER_TEMP/air-spirv-probe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: air-spirv-native-probe
+          path: ${{ runner.temp }}/air-spirv-probe
+          if-no-files-found: error
+          retention-days: 14

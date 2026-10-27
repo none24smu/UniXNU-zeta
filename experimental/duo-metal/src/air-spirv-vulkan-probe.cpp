@@ -114,14 +114,24 @@ bool draw(const std::shared_ptr<Runtime>& r,bool blend) {
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=3 || std::string(argv[1])!="--driver" || argv[2][0]!='/')throw std::runtime_error("usage: duo-air-spirv-probe --driver /absolute/driver");
+        const char* driver=nullptr;
+        if(argc==3 && std::string(argv[1])=="--driver" && argv[2][0]=='/')driver=argv[2];
+        else if(argc==5 && std::string(argv[1])=="--backend" &&
+                std::string(argv[2])=="/private/var/ngpu/addons/duo-air-probe/libduoair.dylib" &&
+                std::string(argv[3])=="--library" &&
+                std::string(argv[4])=="/private/var/ngpu/addons/duo-air-probe/duo-air-probe.metallib") {
+            // Compatibility with the already signed fixed-g launcher. The old
+            // Gallium arguments are authenticated spellings only; neither is
+            // loaded. Owned real SPIR-V is embedded in this executable.
+            driver="/private/var/ngpu/addons/NativeAdrenoMetal.bundle/libvulkan_freedreno.dylib";
+        } else throw std::runtime_error("explicit Vulkan driver or exact fixed-g launch arguments required");
         struct sigaction action{};action.sa_handler=alarmHandler;sigemptyset(&action.sa_mask);if(sigaction(SIGALRM,&action,nullptr))throw std::runtime_error("alarm setup");alarm(20);
 #ifdef DUO_SPIRV_HOST_REFERENCE
         bridgeEvent("\"event\":\"scope\",\"host_software_oracle\":true,\"physical_gpu_proven\":false");
 #else
         bridgeEvent("\"event\":\"scope\",\"software_fallback\":false,\"required_hardware\":\"A660 Turnip\"");
 #endif
-        auto runtime=initialize(argv[2]);const bool passed=draw(runtime,false)&&draw(runtime,true);alarm(0);
+        auto runtime=initialize(driver);const bool passed=draw(runtime,false)&&draw(runtime,true);alarm(0);
         bridgeEvent("\"event\":\"summary\",\"status\":"+quote(passed?"pass":"fail")+",\"air_to_nir_to_real_spirv\":true,\"metal_frontend_proven\":false,\"gpu_faults_checked\":false,\"ui_frame_rate_proven\":false");return passed?0:1;
     }catch(const std::exception& error){alarm(0);bridgeEvent("\"event\":\"error\",\"message\":"+quote(error.what()));return 1;}
 }

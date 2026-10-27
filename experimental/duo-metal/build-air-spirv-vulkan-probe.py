@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import struct
 
 ROOT=Path(__file__).resolve().parent
 
@@ -21,6 +22,15 @@ def main():
     args=parser.parse_args();args.work.mkdir(parents=True,exist_ok=True);args.output.mkdir(parents=True,exist_ok=True)
     spec=importlib.util.spec_from_file_location('bounded_vulkan_probe',ROOT/'build-probe.py');helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)
     include=helper.headers(args.work,args.vulkan_headers)
+    fixture=json.loads((ROOT/'fixtures/duo_air_spirv_owned.json').read_text())
+    header=(ROOT/'fixtures/duo_air_spirv_owned.h').read_text()
+    for name in ('triangle','solid'):
+        found=re.search(r'duo_air_spirv_'+name+r'\[\] = \{(.*?)\};',header,re.S)
+        if not found:raise ValueError('missing owned SPIR-V array')
+        words=[int(word,16) for word in re.findall(r'0x([0-9a-fA-F]+)u',found[1])]
+        data=struct.pack('<'+'I'*len(words),*words)
+        if len(words)!=fixture['stages'][name]['words'] or hashlib.sha256(data).hexdigest()!=fixture['stages'][name]['spirv_sha256']:
+            raise ValueError('embedded SPIR-V differs from validated fixture identity')
     sdk=read('xcrun','--sdk','iphoneos','--show-sdk-path');compiler=read('xcrun','--sdk','iphoneos','--find','clang++')
     source=[ROOT/'src/pass_plan.cpp',ROOT/'src/vulkan_pass.cpp',ROOT/'src/air-spirv-vulkan-probe.cpp']
     executable=args.output.resolve()/'duo-air-spirv-probe'
@@ -38,7 +48,7 @@ def main():
     files={executable.name:{'sha256':sha(executable),'cdhash':match[1],'bytes':len(raw)}}
     (args.output/'trust.json').write_text(json.dumps({'files':files,'purpose':'owned AIR->NIR->Zink SPIR-V Vulkan triangle/readback; strictA660 hardwarepolicy; nofrontend replacement'},indent=2)+'\n')
     inputs=[*source,ROOT/'probe.cpp',ROOT/'fixtures/duo_air_spirv_owned.h',ROOT/'fixtures/duo_air_spirv_owned.json',Path(__file__),*(ROOT/'include/duo_metal').glob('*.hpp')]
-    report={'target':'arm64-apple-ios17.0','sdk_version':read('xcrun','--sdk','iphoneos','--show-sdk-version'),'compiler':read(compiler,'--version'),'source_sha256':{str(path.relative_to(ROOT)):sha(path) for path in inputs},'files':files,'command':command,'entitlements':entitlements,'linked_libraries':read('otool','-L',executable),'host_software_oracle_compiled':False,'physical_gpu_execution_proven':False,'metal_frontend_proven':False,'ui_frame_rate_proven':False}
+    report={'target':'arm64-apple-ios17.0','sdk_version':read('xcrun','--sdk','iphoneos','--show-sdk-version'),'compiler':read(compiler,'--version'),'source_sha256':{str(path.relative_to(ROOT)):sha(path) for path in inputs},'files':files,'command':command,'entitlements':entitlements,'linked_libraries':read('otool','-L',executable),'host_software_oracle_compiled':False,'fixed_g_launcher_compatible':True,'uses_old_gallium_backend':False,'vulkan_driver_path':'/private/var/ngpu/addons/NativeAdrenoMetal.bundle/libvulkan_freedreno.dylib','physical_gpu_execution_proven':False,'metal_frontend_proven':False,'ui_frame_rate_proven':False}
     (args.output/'build.json').write_text(json.dumps(report,indent=2)+'\n')
     print('PASS: signed baseline ARM64 owned-SPIRV native draw probe; physical execution pending')
 if __name__=='__main__':main()

@@ -5,6 +5,9 @@ record insertion, tree rebuilding, xattr substitution and encryption are refused
 Compression normalization requires independently matched decoded file hashes.
 """
 from pathlib import Path
+import hashlib
+import os
+import collections
 import stat
 import struct
 import subprocess
@@ -22,11 +25,30 @@ class Catalog:
         self.volume = volume
         self.inodes, self.children, self.attrs, self.extents = {}, {}, {}, {}
         self.nodes = set()
+        self.sealed_noheader_nodes = set()
         self._omap = {}
+        if hasattr(volume.container,'node'):
+            pending=[volume.omap_root];seen=set();newest={}
+            while pending:
+                number=pending.pop()
+                if number in seen:raise ValueError('cyclic native object map')
+                seen.add(number);level,entries=volume.container.node(number)
+                for key,value in entries:
+                    if level:
+                        pending.append(struct.unpack_from('<Q',value)[0]);continue
+                    oid,xid=struct.unpack_from('<QQ',key)
+                    if xid>volume.xid or xid<newest.get(oid,-1):continue
+                    flags,_,physical=struct.unpack_from('<IIQ',value)
+                    newest[oid]=xid
+                    if flags&1:self._omap.pop(oid,None)
+                    else:self._omap[oid]=physical
+            self._omap_loaded=True
+        else:self._omap_loaded=False
         self._visit(volume.root_tree)
 
     def _physical(self, oid):
         if oid not in self._omap:
+            if self._omap_loaded:raise ValueError(f'filesystem node {oid:#x} is not mapped')
             self._omap[oid] = self.volume.container.omap_lookup(
                 self.volume.omap_root, oid, self.volume.xid)
         return self._omap[oid]
@@ -37,8 +59,19 @@ class Catalog:
             raise ValueError('duplicate or cyclic filesystem B-tree node')
         self.nodes.add(physical)
         c = self.volume.container
-        block = c.checked(physical)
+        block = c.block(physical)
         flags, level, count = struct.unpack_from('<HHI', block, 32)
+        if flags & 0x10:
+            # Original sealed trees deliberately have a zero object header;
+            # their integrity is a separate hash tree, not Fletcher64. Only
+            # parse this explicit shipped-source form. Outputs are unsealed
+            # and must retain ordinary checked object headers.
+            if (not self.volume.incompatible & apfs.APFS_INCOMPAT_SEALED_VOLUME or
+                    block[:32] != bytes(32) or not flags & 0x8):
+                raise ValueError('unexpected no-header filesystem node')
+            self.sealed_noheader_nodes.add(physical)
+        elif not c.valid(block):
+            raise ValueError(f'bad filesystem object checksum at block {physical}')
         if flags & apfs.BTNODE_FIXED_KV_SIZE:
             raise ValueError('unexpected fixed-size filesystem tree')
         table_offset, table_length = struct.unpack_from('<HH', block, 40)
@@ -50,9 +83,11 @@ class Catalog:
                 raise ValueError('B-tree record bounds')
             key, value = block[keys+ko:keys+ko+kl], block[end-vo:end-vo+vl]
             if level:
-                if len(value) != 8:
+                hashed=bool(flags & 0x8)
+                if len(value) != (40 if hashed else 8):
                     raise ValueError('invalid child pointer')
-                self._visit(struct.unpack('<Q', value)[0])
+                child=struct.unpack_from('<Q', value)[0]
+                self._visit(child+self.volume.root_tree if hashed else child)
                 continue
             if len(key) < 8:
                 raise ValueError('short filesystem key')
@@ -116,7 +151,28 @@ def inode_fields(value):
                 mode=struct.unpack_from('<H', value, 80)[0])
 
 
-def compression_header(catalog, record):
+def native_hardlink_groups(catalog, paths):
+    groups=collections.defaultdict(list)
+    for path,oid in paths.items():
+        if stat.S_ISREG(inode_fields(catalog.inodes[oid][0])['mode']):groups[oid].append(path)
+    return sorted(sorted(paths) for paths in groups.values() if len(paths)>1)
+
+
+def apply_native_hardlinks(inventory,root_name,groups):
+    """FUSE can report nlink1 for real APFS hardlinks; native inode identity wins."""
+    root=inventory['roots'][root_name]
+    for entry in root['entries'].values():entry.pop('hardlink_first',None)
+    for paths in groups:
+        first=min(paths)
+        for path in paths:
+            entry=root['entries'][path]
+            if entry['kind']!='file':raise ValueError('native hardlink to non-file')
+            entry['native_hardlink_count']=len(paths)
+            if path!=first:entry['hardlink_first']=first
+    root['hardlink_authority']='native APFS directory-record inode identity; FUSE nlink can be incomplete'
+
+
+def compression_header(catalog, record, fallback_path=None, expected_xattr=None):
     flags, raw = record
     if not flags & apfs.XATTR_DATA_STREAM:
         return record
@@ -125,7 +181,16 @@ def compression_header(catalog, record):
     stream, size = struct.unpack_from('<QQ', raw)
     extents=sorted(catalog.extents.get(stream, []))
     if size < 16 or not extents or extents[0][0] != 0 or extents[0][1] < 16:
-        raise ValueError('compression header data stream lacks first16 bytes')
+        # Sealed APFS uses a separate file-extent tree. Do not guess its
+        # physical mappings: use the already-hashed RO source decoder for
+        # this header only, requiring its exact original observation digest.
+        if fallback_path is None or expected_xattr is None:
+            raise ValueError('compression header needs a verified read-only source decoder')
+        raw=os.getxattr(fallback_path,'com.apple.decmpfs',follow_symlinks=False)
+        if len(raw)!=expected_xattr['bytes'] or hashlib.sha256(raw).hexdigest()!=expected_xattr['sha256']:
+            raise ValueError('read-only compression header observation changed')
+        if len(raw)<16:raise ValueError('short decoded compression header')
+        return flags & ~apfs.XATTR_DATA_STREAM,raw[:16]
     header=catalog.volume.container.read_raw(extents[0][2]*catalog.volume.container.block_size,16)
     return flags & ~apfs.XATTR_DATA_STREAM, header
 
@@ -152,14 +217,17 @@ def normalization(path, source_fields, source_attrs, expected, actual):
     if (expected.get('kind') != 'file' or expected.get('size') != decoded or
             not expected.get('sha256') or expected.get('sha256') != actual.get('sha256')):
         raise ValueError(f'{path}: decoded-content proof missing')
-    if 'com.apple.ResourceFork' in before and kind not in [4, 8, 12]:
+    # Resource-backed formats handled by the retained APFS decoder:
+    # zlib4, LZVN8, uncompressed10, LZFSE12 and LZBITMAP14.
+    if 'com.apple.ResourceFork' in before and kind not in [4, 8, 10, 12, 14]:
         raise ValueError(f'{path}: resource fork is not a recognized compression payload')
     return dict(path=path, compression_kind=kind, decoded_bytes=decoded,
                 decoded_sha256=expected['sha256'], omitted_attributes=sorted(omitted),
                 action='store verified decoded bytes; clear UF_COMPRESSED; omit only compression fork/headers')
 
 
-def restore(source, target, output, source_inventory, target_inventory):
+def restore(source, target, output, source_inventory, target_inventory, *,
+            root_name='data',source_prefix='/private/var',source_mount=None):
     """Clone target; restore source native timestamps/flags/protection class.
 
     Other original xattrs must already match. The only allowed omission is
@@ -168,24 +236,33 @@ def restore(source, target, output, source_inventory, target_inventory):
     source, target, output = map(Path, (source, target, output))
     if output.exists() or output.resolve() in [source.resolve(), target.resolve()]:
         raise ValueError('refuse existing output or source overwrite')
-    src_entries=source_inventory['roots']['data']['entries']
-    dst_entries=target_inventory['roots']['data']['entries']
+    src_entries=source_inventory['roots'][root_name]['entries']
+    dst_entries=target_inventory['roots'][root_name]['entries']
     with source.open('rb') as sf, target.open('rb') as tf:
         sc, tc = apfs.Container(sf), apfs.Container(tf)
         sv, = sc.volumes(); tv, = tc.volumes()
         if tv.incompatible & apfs.APFS_INCOMPAT_SEALED_VOLUME or not tv.fs_flags & 1:
             raise ValueError('target must be unsealed/unencrypted')
         s, t = Catalog(sv), Catalog(tv)
-        sp, tp = s.paths('/private/var'), t.paths()
+        sp, tp = s.paths(source_prefix), t.paths()
         if set(src_entries) != set(sp):
             raise ValueError('native source names differ from complete Data inventory')
+        source_groups=native_hardlink_groups(s,sp);target_groups=native_hardlink_groups(t,tp)
+        if source_groups!=target_groups:raise ValueError('native file hardlink equivalence not preserved')
         changes, compressed, failures = [], [], []
+        symlink_modes_restored=0
         for path, soid in sp.items():
             if path not in tp:
                 raise ValueError(f'missing native target {path}')
             toid=tp[path]; sfld=inode_fields(s.inodes[soid][0]);tfld=inode_fields(t.inodes[toid][0])
             for field in ['uid','gid','mode']:
-                if sfld[field]!=tfld[field]:raise ValueError(f'{path}: {field} not preserved')
+                if sfld[field]!=tfld[field]:
+                    if field=='mode' and stat.S_ISLNK(sfld[field]) and stat.S_ISLNK(tfld[field]):
+                        # Linux cannot chmod symlinks, but native APFS stores
+                        # their original permission bits. Restore that fixed
+                        # inode field explicitly, then verify via FUSE too.
+                        symlink_modes_restored+=1
+                    else:raise ValueError(f'{path}: {field} not preserved')
             sa=dict(s.attrs.get(soid,{}));ta=t.attrs.get(toid,{})
             for name,value in sa.items():
                 if name not in ['com.apple.decmpfs','com.apple.ResourceFork'] and ta.get(name)!=value:
@@ -193,7 +270,9 @@ def restore(source, target, output, source_inventory, target_inventory):
             if any(name not in sa for name in ta):raise ValueError(f'{path}: unexpected native xattr')
             compression_streamed=bool(sa.get('com.apple.decmpfs',(0,b''))[0] & apfs.XATTR_DATA_STREAM)
             if 'com.apple.decmpfs' in sa:
-                sa['com.apple.decmpfs']=compression_header(s,sa['com.apple.decmpfs'])
+                fallback=(Path(source_mount)/source_prefix.lstrip('/')/path.lstrip('/')) if source_mount else None
+                sa['com.apple.decmpfs']=compression_header(s,sa['com.apple.decmpfs'],fallback,
+                    src_entries[path].get('xattrs',{}).get('com.apple.decmpfs'))
             # normalization receives attribute keys plus the independent file digest.
             actual=dict(ta);actual['sha256']=dst_entries[path].get('sha256')
             norm=normalization(path,sfld,sa,src_entries[path],actual)
@@ -205,6 +284,7 @@ def restore(source, target, output, source_inventory, target_inventory):
                 raise ValueError(f'{path}: security EA inode flag lost')
             changes.append(dict(path=path,source_inode=soid,target_inode=toid,
                 times_ns=sfld['times_ns'],bsd_flags=expected_bsd,protection_class=sfld['protection_class'],
+                mode=sfld['mode'],
                 source_internal_flags=sfld['internal_flags'],target_internal_flags=tfld['internal_flags']))
         # No incomplete output is published before every preservation decision passes.
         subprocess.run(['cp','--reflink=auto','--sparse=always','--',str(target),str(output)],check=True)
@@ -216,6 +296,7 @@ def restore(source, target, output, source_inventory, target_inventory):
             struct.pack_into('<4Q',block,offset+16,*change['times_ns'])
             struct.pack_into('<I',block,offset+60,change['protection_class'])
             struct.pack_into('<I',block,offset+68,change['bsd_flags'])
+            struct.pack_into('<H',block,offset+80,change['mode'])
         with output.open('r+b') as out:
             for physical,block in sorted(blocks.items()):
                 struct.pack_into('<Q',block,0,apfs.fletcher64(block))
@@ -226,29 +307,34 @@ def restore(source, target, output, source_inventory, target_inventory):
         c=apfs.Container(f);v,=c.volumes();new=Catalog(v);np=new.paths()
         for change in changes:
             actual=inode_fields(new.inodes[np[change['path']]][0])
-            for field in ['times_ns','bsd_flags','protection_class']:
+            for field in ['times_ns','bsd_flags','protection_class','mode']:
                 if actual[field]!=change[field]:raise ValueError('native metadata readback mismatch')
     return dict(schema='zeta-ios27-data-native-normalization-v1',source=str(source),input=str(target),
+        root_name=root_name,source_prefix=source_prefix,
         output=str(output),restored_inodes=len(changes),modified_leaf_blocks=len(blocks),
+        native_hardlink_equivalence_verified=True,
+        native_hardlink_groups_preserved=len(source_groups),native_hardlink_aliases_preserved=sum(len(x)-1 for x in source_groups),
+        native_symlink_modes_restored=symlink_modes_restored,
+        sealed_source_noheader_nodes_parsed=len(s.sealed_noheader_nodes),source_apfs_seal_authentication_claimed=False,
         restored_fields=['create_time','mod_time','change_time','access_time','bsd_flags_except_decoded_compression','default_protection_class'],
         compression_normalizations=compressed,critical_xattrs_lost=failures,
         security_ea_loss=False,native_fixed_metadata_readback_passed=True,
         source_and_input_unchanged=True,full_decoded_data_readback_pending=True,phone_modified=False)
 
 
-def qualify(source, candidate, restoration):
+def qualify(source, candidate, restoration, *,root_name='data'):
     """Qualify specified file metadata after independent full decoded readback.
 
     Whole-volume APFS metadata identity is neither expected nor claimed for a
     newly allocated filesystem. Every remaining source xattr discrepancy must
     be one exact, byte-proven compression normalization from the native audit.
     """
-    gate=compare(source,candidate,allow_setup_changes=True)
+    gate=compare(source,candidate,allow_setup_changes=root_name=='data')
     problems=list(gate['failures']);normal={x['path']:x for x in restoration['compression_normalizations']}
     if (not restoration.get('native_fixed_metadata_readback_passed') or
             restoration.get('critical_xattrs_lost') or restoration.get('security_ea_loss')):
         problems.append(dict(reason='native-metadata-restoration-not-qualified'))
-    src=source['roots']['data']['entries'];dst=candidate['roots']['data']['entries']
+    src=source['roots'][root_name]['entries'];dst=candidate['roots'][root_name]['entries']
     if restoration.get('restored_inodes')!=len(src):problems.append(dict(reason='native-inode-coverage-incomplete'))
     remaining=[]
     for warning in gate['metadata_warnings']:
@@ -264,7 +350,8 @@ def qualify(source, candidate, restoration):
     return dict(schema='zeta-ios27-normalized-file-metadata-gate-v1',
         stock_payload_complete=gate['stock_payload_complete'],
         normalized_file_metadata_qualified=not problems,
-        qualified_fields=['all decoded stock file hashes','uid','gid','mode','symlink targets',
+        qualified_fields=['all decoded stock file hashes','uid','gid','mode','symlink targets']+
+            (['native file hardlink equivalence'] if restoration.get('native_hardlink_equivalence_verified') else [])+[
             'APFS create/mod/change/access nanosecond timestamps','BSD flags except verified decoded compression',
             'default protection class','all non-compression native xattrs and security EA retention'],
         compression_normalizations=len(normal),unqualified_metadata_discrepancies=remaining,

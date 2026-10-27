@@ -35,6 +35,9 @@ class NativeMetadataTests(unittest.TestCase):
     def test_wrong_resource_fork_kind_fails(self):
         self.attrs['com.apple.decmpfs']=(2,struct.pack('<4sIQ',b'fpmc',3,123))
         with self.assertRaisesRegex(ValueError,'recognized compression'):M.normalization('/file',self.fields,self.attrs,self.expected,self.actual)
+    def test_actual27_lzbitmap_resource_format_is_explicitly_supported(self):
+        self.attrs['com.apple.decmpfs']=(2,struct.pack('<4sIQ',b'fpmc',14,123))
+        self.assertEqual(M.normalization('/file',self.fields,self.attrs,self.expected,self.actual)['compression_kind'],14)
     def test_native_inode_offsets(self):
         b=bytearray(92);struct.pack_into('<4Q',b,16,1,2,3,4);struct.pack_into('<Q',b,48,64)
         struct.pack_into('<5I',b,60,7,8,9,501,20);struct.pack_into('<H',b,80,0o100644)
@@ -47,9 +50,16 @@ class NativeMetadataTests(unittest.TestCase):
         for i,(key,value) in enumerate(zip(keys,vals)):
             vo+=len(value);struct.pack_into('<4H',b,56+8*i,ko,len(key),vo,len(value))
             b[80+ko:80+ko+len(key)]=key;b[4096-vo:4096-vo+len(value)]=value;ko+=len(key)
-        c=SimpleNamespace(block_size=4096,omap_lookup=lambda *a:42,checked=lambda n:bytes(b))
+        c=SimpleNamespace(block_size=4096,omap_lookup=lambda *a:42,block=lambda n:bytes(b),valid=lambda b:True)
         cat=M.Catalog(SimpleNamespace(container=c,root_tree=2,omap_root=0,xid=1))
         self.assertEqual(cat.inodes[4][1],42);self.assertEqual(cat.extents[3][0][2],999)
+    def test_sealed_noheader_node_requires_explicit_sealed_source(self):
+        b=bytearray(4096);struct.pack_into('<HHI',b,32,0x1b,0,0)
+        c=SimpleNamespace(block_size=4096,omap_lookup=lambda *a:42,block=lambda n:bytes(b),valid=lambda b:False)
+        v=SimpleNamespace(container=c,root_tree=2,omap_root=0,xid=1,incompatible=0x20)
+        self.assertEqual(len(M.Catalog(v).sealed_noheader_nodes),1)
+        v.incompatible=0
+        with self.assertRaisesRegex(ValueError,'unexpected no-header'):M.Catalog(v)
     def qualified_fixture(self):
         entry=dict(kind='file',mode=0o644,uid=0,gid=0,mtime_ns=10,size=123,sha256='ab'*32,
                    xattrs={'com.apple.decmpfs':{'bytes':16,'sha256':'cd'*32}})

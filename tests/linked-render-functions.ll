@@ -2,6 +2,7 @@
 ; The default branch needs an absent symbol. Successful creation therefore also
 ; proves that specialization of a linked function survives the frontend/C ABI.
 target triple = "air64_v28-apple-macosx26.0.0"
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v32:32:32-v64:64:64-v128:128:128-n8:16:32"
 @enabled.MTL_FC_INIT_0_b = internal addrspace(2) constant i8 0, align 1
 
 define float @vertex_gain() {

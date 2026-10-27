@@ -7,10 +7,13 @@
 #include <cstdio>
 #include <cstring>
 #include "NativeBridgeMetalFrontend.h"
+#include "bridge/NativeMetalObjects.h"
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);return 1;}}while(0)
 static id<MTLLibrary> library(NSString *path) {
  NSData *data=[NSData dataWithContentsOfFile:path];
- return data?native_bridge_metal_library_with_air(data.bytes,data.length):nil;
+ id<MTLLibrary> value=data?native_bridge_metal_library_with_air(data.bytes,data.length):nil;
+ if(!value)fprintf(stderr,"fixture %s: %s\n",path.UTF8String,nmb_last_error());
+ return value;
 }
 static bool missing(id<MTLDevice> device,MTLRenderPipelineDescriptor *d,NSString *symbol) {
  NSError *error=nil;id<MTLRenderPipelineState> state=[device newRenderPipelineStateWithDescriptor:d error:&error];

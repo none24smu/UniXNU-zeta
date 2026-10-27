@@ -4,6 +4,7 @@
 #define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <dlfcn.h>
 #include <inttypes.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -80,6 +81,14 @@ int main(void) {
         if (sigaction(signals[i], &action, NULL)) return 126;
     }
     printf("{\"kind\":\"start\",\"pid\":%d,\"time\":%lld,\"target\":\"baseline-arm64\",\"tchange_executed\":false}\n", getpid(), (long long)time(NULL));
+    typedef int (*csops_fn)(pid_t, unsigned int, void *, size_t);
+    csops_fn csops_call = (csops_fn)dlsym(RTLD_DEFAULT, "csops");
+    uint32_t csflags = 0;
+    errno = 0;
+    int csstatus = csops_call ? csops_call(getpid(), 0, &csflags, sizeof(csflags)) : -1;
+    printf("{\"kind\":\"code-signing\",\"csops_present\":%s,\"status\":%d,\"errno\":%d,\"flags\":\"0x%08x\",\"platform_binary\":%s}\n",
+           csops_call ? "true" : "false", csstatus, errno, csflags,
+           !csstatus && (csflags & UINT32_C(0x04000000)) ? "true" : "false");
     const char *features[] = {
         "hw.optional.arm.FEAT_CSSC", "hw.optional.arm.FEAT_CPA", "hw.optional.arm.FEAT_CPA2",
         "hw.optional.arm.FEAT_PAuth", "hw.optional.arm.FEAT_PAuth_LR", "hw.optional.arm.FEAT_MTE",

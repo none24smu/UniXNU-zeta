@@ -19,6 +19,7 @@ mock = r'''
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+typedef int64_t register_t;
 typedef struct { uint64_t x[31], sp, pc; uint32_t cpsr, is64; } arm_saved_state_t;
 typedef struct { const char *name; int platform; } *proc_t;
 extern proc_t mock_process;
@@ -27,17 +28,17 @@ extern uint32_t mock_instruction;
 static inline proc_t current_proc(void) { return mock_process; }
 static inline const char *proc_best_name(proc_t p) { return p->name; }
 static inline int csproc_get_platform_binary(proc_t p) { return p->platform; }
-static inline int is_saved_state64(arm_saved_state_t *s) { return s->is64; }
+static inline int is_saved_state64(arm_saved_state_t *s) { return s->is64 != 0; }
 #define PSR64_IS_USER64(p) (((p) & 31) == 0)
-static inline uint64_t get_saved_state_pc(arm_saved_state_t *s) { return s->pc; }
-static inline uint64_t get_saved_state_sp(arm_saved_state_t *s) { return s->sp; }
+static inline register_t get_saved_state_pc(arm_saved_state_t *s) { return (register_t)s->pc; }
+static inline register_t get_saved_state_sp(arm_saved_state_t *s) { return (register_t)s->sp; }
 static inline uint32_t get_saved_state_cpsr(arm_saved_state_t *s) { return s->cpsr; }
-static inline uint64_t get_saved_state_reg(arm_saved_state_t *s, unsigned n) { return s->x[n]; }
-static inline uint64_t get_saved_state_fp(arm_saved_state_t *s) { return s->x[29]; }
-static inline uint64_t get_saved_state_lr(arm_saved_state_t *s) { return s->x[30]; }
-static inline void set_user_saved_state_reg(arm_saved_state_t *s, unsigned n, uint64_t v) { s->x[n]=v; }
-static inline void set_saved_state_fp(arm_saved_state_t *s, uint64_t v) { s->x[29]=v; }
-static inline void set_user_saved_state_lr(arm_saved_state_t *s, uint64_t v) { s->x[30]=v; }
+static inline register_t get_saved_state_reg(arm_saved_state_t *s, unsigned n) { return (register_t)s->x[n]; }
+static inline register_t get_saved_state_fp(arm_saved_state_t *s) { return (register_t)s->x[29]; }
+static inline register_t get_saved_state_lr(arm_saved_state_t *s) { return (register_t)s->x[30]; }
+static inline void set_user_saved_state_reg(arm_saved_state_t *s, unsigned n, register_t v) { s->x[n]=(uint64_t)v; }
+static inline void set_saved_state_fp(arm_saved_state_t *s, register_t v) { s->x[29]=(uint64_t)v; }
+static inline void set_user_saved_state_lr(arm_saved_state_t *s, register_t v) { s->x[30]=(uint64_t)v; }
 static inline void add_user_saved_state_pc(arm_saved_state_t *s, uint64_t v) { s->pc+=v; }
 static inline int copyin(uint64_t pc, void *v, size_t n) {
  (void)pc; if (mock_copy_error) return mock_copy_error;
@@ -120,6 +121,12 @@ int main(void) {
   assert(zeta_user_instruction_compat(&s,word));
   assert(!memcmp(&s,&expected,sizeof(s))); ++checks;
  }
+ for (unsigned rd=0;rd<31;rd++) for(unsigned op=0;op<2;op++) {
+  s=fresh(); s.x[0]=UINT64_C(0x8000000000000000);s.x[1]=UINT64_MAX;
+  arm_saved_state_t expected=s;expected.x[rd]=op?UINT64_MAX:UINT64_C(0x8000000000000000);expected.pc+=4;
+  word=(op?0x9ac16400:0xdac02000)|rd;mock_instruction=word;
+  assert(zeta_user_instruction_compat(&s,word));assert(!memcmp(&s,&expected,sizeof(s)));++checks;
+ }
  uint32_t unsupported[]={0,0xd4200000,0x9a012000,0xda012000,0x9b610000,0xf8400000};
  for(unsigned i=0;i<sizeof(unsupported)/sizeof(*unsupported);i++){
   mock_instruction=unsupported[i]; reject(fresh(),unsupported[i]);
@@ -133,7 +140,7 @@ int main(void) {
 }
 '''
 (out / 'adapter-test.c').write_text(harness)
-command = ['clang', '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
+command = ['clang', '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wsign-conversion',
            '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
            '-I', str(headers), '-I', str(ROOT / 'package'),
            str(ROOT / 'package/ZetaUserInstructionCompat.c'),

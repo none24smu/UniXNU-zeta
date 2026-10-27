@@ -18,6 +18,12 @@ enum { Calls, Emulated, Disabled, PolicyDenied, BadState, FetchChanged, Unsuppor
 static void count(unsigned slot) {
     __atomic_fetch_add(&zeta_cssc_compat_stats[slot], 1, __ATOMIC_RELAXED);
 }
+_Static_assert(sizeof(register_t) == sizeof(uint64_t), "ARM64 register width");
+static register_t register_bits(uint64_t bits) {
+    register_t value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
 static uint32_t mode(void) {
     uint32_t value = __atomic_load_n(&zeta_cssc_compat_mode, __ATOMIC_ACQUIRE);
     if (value == UINT32_MAX) {
@@ -38,7 +44,7 @@ int zeta_user_instruction_compat(arm_saved_state_t *saved, uint32_t instruction)
     if (enabled != 1 && enabled != 2) { count(Disabled); return 0; }
     if (!saved || !is_saved_state64(saved) ||
         !PSR64_IS_USER64(get_saved_state_cpsr(saved))) { count(BadState); return 0; }
-    uint64_t pc = get_saved_state_pc(saved);
+    uint64_t pc = (uint64_t)get_saved_state_pc(saved);
     if ((pc & 3) || pc > UINT64_MAX - 4) { count(BadState); return 0; }
     proc_t process = current_proc();
     const char *name = process ? proc_best_name(process) : NULL;
@@ -55,10 +61,11 @@ int zeta_user_instruction_compat(arm_saved_state_t *saved, uint32_t instruction)
         count(FetchChanged); return 0;
     }
     ZetaUserInstructionState state = {0};
-    for (unsigned i = 0; i < 29; ++i) state.x[i] = get_saved_state_reg(saved, i);
-    state.x[29] = get_saved_state_fp(saved);
-    state.x[30] = get_saved_state_lr(saved);
-    state.sp = get_saved_state_sp(saved);
+    for (unsigned i = 0; i < 29; ++i) state.x[i] = (uint64_t)get_saved_state_reg(saved, i);
+    state.x[29] = (uint64_t)get_saved_state_fp(saved);
+    state.x[30] = (uint64_t)get_saved_state_lr(saved);
+    uint64_t original_sp = (uint64_t)get_saved_state_sp(saved);
+    state.sp = original_sp;
     state.pc = pc;
     state.pstate = get_saved_state_cpsr(saved);
     uint32_t pstate = state.pstate;
@@ -67,13 +74,13 @@ int zeta_user_instruction_compat(arm_saved_state_t *saved, uint32_t instruction)
     ZetaUserInstructionResult result = ZetaUserInstructionCompatEmulate(
         instruction, &state, ZETA_CPTA_UNKNOWN);
     if (result != ZETA_INSTRUCTION_EMULATED) { count(Unsupported); return 0; }
-    if (state.pc != pc || state.sp != get_saved_state_sp(saved) || state.pstate != pstate) {
+    if (state.pc != pc || state.sp != original_sp || state.pstate != pstate) {
         count(BadResult); return 0;
     }
     unsigned destination = instruction & 31;
-    if (destination < 29) set_user_saved_state_reg(saved, destination, state.x[destination]);
-    else if (destination == 29) set_saved_state_fp(saved, state.x[29]);
-    else if (destination == 30) set_user_saved_state_lr(saved, state.x[30]);
+    if (destination < 29) set_user_saved_state_reg(saved, destination, register_bits(state.x[destination]));
+    else if (destination == 29) set_saved_state_fp(saved, register_bits(state.x[29]));
+    else if (destination == 30) set_user_saved_state_lr(saved, register_bits(state.x[30]));
     // ZR destinations still complete, preserving all user register values.
     add_user_saved_state_pc(saved, 4);
     count(Emulated);

@@ -95,6 +95,7 @@ int main(void) {
     for (unsigned i = 0; i < sizeof(cdhash); ++i) printf("%02x", cdhash[i]);
     puts("\"}");
     const char *features[] = {
+        "hw.cpufamily", "hw.cpusubfamily",
         "hw.optional.arm.FEAT_CSSC", "hw.optional.arm.FEAT_CPA", "hw.optional.arm.FEAT_CPA2",
         "hw.optional.arm.FEAT_PAuth", "hw.optional.arm.FEAT_PAuth_LR", "hw.optional.arm.FEAT_MTE",
         "hw.optional.arm.FEAT_SHA512", "hw.optional.arm.FEAT_LRCPC", "hw.optional.arm.FEAT_LRCPC2",
@@ -104,6 +105,14 @@ int main(void) {
         "hw.optional.arm.FEAT_TME", "hw.optional.arm.FEAT_TPRO", NULL
     };
     for (unsigned i = 0; features[i]; ++i) feature(features[i]);
+    caught = 0;
+    volatile uint64_t capabilities = 0;
+    if (!sigsetjmp(jump, 1)) {
+        armed = 1;
+        capabilities = *(volatile const uint64_t *)(uintptr_t)UINT64_C(0x0000000fffffc010);
+        armed = 0;
+    }
+    printf("{\"kind\":\"commpage-capabilities64\",\"signal\":%d,\"value\":\"0x%016" PRIx64 "\"}\n", caught, capabilities);
     uint64_t edges[] = {0, 1, 16, UINT32_MAX, UINT64_MAX, UINT64_C(0x8000000000000000),
                         UINT64_C(0x80000000), UINT64_C(0xffffffff00000001), UINT64_C(0x55555555aaaaaaaa)};
     unsigned passed = 0, trapped = 0, failures = 0, completed = 0;

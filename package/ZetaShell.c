@@ -566,6 +566,31 @@ static int regs(void) {
     return 0;
 }
 
+// Read the guest-visible ID registers, not an assumed physical Snapdragon ISA.
+// All are base AArch64 identification registers. Do not read feature-specific
+// controls (such as GCSCR_EL1) when the guest may not implement that feature.
+// `on <n> isa` binds this read to an already online processor without power changes.
+static int isa(void) {
+    uint64_t midr, mpidr, pfr0, pfr1, isar0, isar1, isar2, mmfr0, mmfr1, mmfr2;
+    __asm__ volatile("mrs %0, midr_el1" : "=r"(midr));
+    __asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+    __asm__ volatile("mrs %0, id_aa64pfr0_el1" : "=r"(pfr0));
+    __asm__ volatile("mrs %0, id_aa64pfr1_el1" : "=r"(pfr1));
+    __asm__ volatile("mrs %0, id_aa64isar0_el1" : "=r"(isar0));
+    __asm__ volatile("mrs %0, id_aa64isar1_el1" : "=r"(isar1));
+    __asm__ volatile("mrs %0, id_aa64isar2_el1" : "=r"(isar2));
+    __asm__ volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
+    __asm__ volatile("mrs %0, id_aa64mmfr1_el1" : "=r"(mmfr1));
+    __asm__ volatile("mrs %0, id_aa64mmfr2_el1" : "=r"(mmfr2));
+    zeta_shell_line("isa midr 0x%016llx mpidr 0x%016llx", (unsigned long long)midr, (unsigned long long)mpidr);
+    zeta_shell_line("isa pfr0 0x%016llx pfr1 0x%016llx", (unsigned long long)pfr0, (unsigned long long)pfr1);
+    zeta_shell_line("isa isar0 0x%016llx isar1 0x%016llx isar2 0x%016llx", (unsigned long long)isar0,
+                    (unsigned long long)isar1, (unsigned long long)isar2);
+    zeta_shell_line("isa mmfr0 0x%016llx mmfr1 0x%016llx mmfr2 0x%016llx", (unsigned long long)mmfr0,
+                    (unsigned long long)mmfr1, (unsigned long long)mmfr2);
+    return 0;
+}
+
 static void reboot_to_bootloader(void) {
     // PSCI SYSTEM_RESET; the firmware set the bootloader reason before handoff (as the console's ZETA:REBOOT-BOOTLOADER).
     register uint64_t x0 __asm__("x0") = 0x84000009;
@@ -594,6 +619,7 @@ static void help(void) {
         "cpu off|on <1..7>          power a core down or back up",
         "smp [1..7]                 start one queued core | counts",
         "on <n> <command>           run a command on core n | regs: this core's timer registers",
+        "isa                        guest CPU identification registers (read-only; on <n> isa)",
         "power                     queue a short virtual power-key press (lock/wake)",
         "uptime | echo <text> | reboot (to the bootloader)",
     };
@@ -676,6 +702,7 @@ static int run(char *text) {
     if (!strcmp(c, "on") && argc >= 3) return on_cpu(argc, argv);
     if (!strcmp(c, "smp")) return smp_command(argc, argv);
     if (!strcmp(c, "regs")) return regs();
+    if (!strcmp(c, "isa")) return isa();
     if (!strcmp(c, "reboot")) {zeta_shell_line("returning to the bootloader"); IOSleep(200); reboot_to_bootloader(); return EIO;}
     zeta_shell_line("unknown command or missing arguments: %s (try help)", c);
     return EINVAL;

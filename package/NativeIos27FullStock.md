@@ -36,8 +36,14 @@ metadata identity are not fabricated. Actual native APFS mount remains required.
 
 The separate qualified 32 GiB Main/16 GiB SystemOS/256 MiB AppOS copies are retained.
 An additional 18 GiB Main/8 GiB SystemOS/256 MiB AppOS reconstruction reduces the
-policy-table wired allocation while retaining complete contents. It requires the
-same independent gates; a successful copy alone is insufficient.
+policy-table wired allocation while retaining complete contents. All three compact
+roots now pass the same independent decoded-content, native metadata and actual
+hardlink gates: Main 519,507 original entries plus exactly three empty mountpoint
+directories, SystemOS 3,088 entries and AppOS 1,309 entries. The retained host
+checkpoint is `full-stock/compact/COMPACT-STORAGE-CHECKPOINT.json`. Estimated
+policy residency with conservative 16 KiB allocator granules is 220,299,264 bytes
+(210.09375 MiB); final wrapped sizes and compiled allocator granules still need
+checking. These remain unconverted templates, with no native mount or boot claim.
 
 ## Recoverable alternate root header
 

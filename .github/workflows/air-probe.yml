@@ -1,0 +1,38 @@
+name: Isolated AIR GPU probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: |
+          brew install llvm bison flex ninja
+          python3 -m venv "$RUNNER_TEMP/air-venv"
+          "$RUNNER_TEMP/air-venv/bin/pip" install meson mako pyyaml packaging
+          echo "$RUNNER_TEMP/air-venv/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+      - name: Build probe and validate translation
+        run: python3 scripts/build-zeta-air-probe.py --work "$RUNNER_TEMP/air-work" --output "$RUNNER_TEMP/air-probe" > "$RUNNER_TEMP/air-build.log" 2>&1
+      - name: Upload probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: air-probe
+          path: ${{ runner.temp }}/air-probe
+          if-no-files-found: error
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: air-probe-logs
+          path: |
+            ${{ runner.temp }}/air-build.log
+            ${{ runner.temp }}/air-work/ios-build/meson-logs/meson-log.txt

@@ -2,7 +2,8 @@
 
 Evaluated on 2026-10-26 for the Surface Duo 2, Adreno 660, iOS 26.5.2
 build 23F84. This assessment includes building and running the public backend
-locally. No replacement graphics code has been installed on the Duo.
+locally and an isolated RAM-boot hardware probe. The system renderer remains
+the control implementation.
 
 ## Decision
 
@@ -21,7 +22,49 @@ display driver together would obscure which part improves or breaks rendering.
 
 The existing `qcom-userland-pressure2` image remains the control. Its GPU
 submission recovery is hardware-observed; its black backgrounds and slow UI
-remain unresolved. No device benchmark of the alternative has been performed.
+remain unresolved. The alternative now passes the isolated hardware pixel test
+below; no comparative performance benchmark has been performed.
+
+## Duo hardware result
+
+On 2026-10-26 (2026-10-27 01:35 UTC), `qcom-userland-air4` ran the pinned
+AIR/Gallium backend through the new NativeAdreno adapter on the physical Duo:
+
+- Native chip `0x06060001`, Gallium device `FD660`, GMEM 1,572,864 bytes,
+  client VA `0xa0000000 + 0x30000000`. Software fallback was disabled.
+- **20/20 argument-buffer rendering/binding/lifetime checks passed.** Rendered
+  pixel comparisons covered direct versus encoded arguments, independently
+  swapped textures and samplers, aligned/unaligned buffer offsets, and resource
+  lifetime/error cases. These are twenty checks, not twenty UI frames.
+- The GPU test process exited with status zero; the kernel recorded one
+  successful open, one close and no refused open for `air_metal_test`.
+- Backboardd PID 60 and SpringBoard PID 28 were paused before the gate opened;
+  no new compositor process appeared during the test. The control boot image
+  was retained separately for recovery. No device partition was flashed.
+
+Evidence relative to the parent workspace:
+`work/render-stage7/air-probe/air4-probe.log`, `air4-hardware.json`, and
+`UniXNU-zeta/build/bringup/native-usb/qcom-userland-air4/capture/`.
+Probe CI run `40426685494` built the artifact from board revision `4a32c8a`.
+The test kernel uses UniXNU source `35c384e84266343991fd14706e8c651f7d2e09ed`
+and board boot-hook revision `7fedb8d07e03a6d7a813f69b9c5a3b660f1cb112`;
+kernel CI run `40430640137` used `zeta_userland_trust_defconfig`.
+The RAM boot image SHA256 is
+`77378f7b9c7ac71b5773ca85e370ea4956c9b2f094dcb2a5c28a1d8d5e681e34`.
+
+The owner RAM launchd cache changes only the enabled FDR-loader job. Its new
+ad-hoc detached signature has SHA-256 CDHash
+`cdaddaa709bd33615c66416832f6ffc205fc6257`, explicitly admitted by the test
+trust bundle. Launchd's cache loader exited successfully with page validation
+enabled. Earlier tests did not execute the GPU probe: the Bluetooth label was
+disabled, the disk plist was superseded by the cache, and retaining the original
+detached signature rejected the changed cache. Those are setup failures, not
+alternative GPU rendering failures.
+
+This proves basic AIR/Gallium rendering and the adapter's tested native path.
+It does not prove Metal.framework 26 registration, IOSurface import,
+compositor/wallpaper shader coverage, display presentation, or better frame
+times. Those remain the next integration boundaries.
 
 ## Sources and reproducibility
 
@@ -149,9 +192,9 @@ failures above coexist with these passing authored tests.
 | Texture layout SPI | `newTextureLayoutWithDescriptor:isHeapOrBufferBacked:` returns nil | The same missing contract is present in our frontend. The switch supplies no demonstrated fix for it |
 | Display | OnePlus-specific DPU/SMMU/panel programming and supported multi-layer composition | Duo has a different dual-panel layout and 2754x1892 surface. Retain its working handoff for the first renderer test; independently port scanout ownership/completion afterward |
 
-An implementation can adapt MSM in userspace rather than installing the
-OnePlus kernel driver. That is an architectural option, not a compiled or
-hardware-validated transport in this assessment. Its state must be shared by
+The prototype adapts MSM in userspace rather than installing the
+OnePlus kernel driver; the hardware test validates its owned-buffer path.
+For compositor integration its state must be shared by
 the renderer's allocations/imports, with real GPU addresses and fences; merely
 renaming the service or forwarding selector numbers is insufficient.
 

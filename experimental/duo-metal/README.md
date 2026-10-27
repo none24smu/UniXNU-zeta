@@ -13,6 +13,10 @@ resource ownership to a fence-driven completion queue. There is no Metal device
 registration, draw pipeline/shader compilation, IOKit submission, or physical GPU
 execution evidence here. See [the Vulkan interface](VULKAN.md).
 
+An [isolated native probe](PROBE.md) now binds this encoder to an explicit real
+Turnip driver for clear/resolve/readback/fence validation. Its iOS build is a
+separate executable; it changes no live renderer. Physical success remains pending.
+
 ## Contract
 
 The caller supplies immutable image metadata, strong allocation ownership, and

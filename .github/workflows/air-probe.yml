@@ -1,0 +1,27 @@
+name: Duo Metal native GPU probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Vulkan API headers
+        run: brew install vulkan-headers
+      - name: Validate the encoder and build the signed iOS probe
+        run: |
+          export VULKAN_HEADERS_DIR="$(brew --prefix vulkan-headers)/include"
+          bash experimental/duo-metal/run-host-tests.sh
+          python3 experimental/duo-metal/build-probe.py --work "$RUNNER_TEMP/duo-metal-work" --output "$RUNNER_TEMP/duo-metal-probe"
+      - name: Upload signed probe and build provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-metal-probe
+          path: ${{ runner.temp }}/duo-metal-probe
+          if-no-files-found: error
+          retention-days: 14

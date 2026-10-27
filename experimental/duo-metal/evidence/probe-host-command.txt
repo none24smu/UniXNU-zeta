@@ -1,0 +1,9 @@
+Working directory: /home/smudev/iosongen2
+Command: bash work/ios27-port/board/experimental/duo-metal/run-probe-host-tests.sh
+Compiler: c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Support tests: C++17, warnings as errors, AddressSanitizer, UndefinedBehaviorSanitizer; 12 assertions.
+Executable: real probe.cpp + pass_plan.cpp + vulkan_pass.cpp compiled C++17/O2 with warnings as errors.
+Dynamic API test: genuine host lavapipe library loaded and physical properties queried; software device refused before test submission.
+Scope: host policy/refusal/compiler evidence only. No successful GPU render test, iOS binary execution, phone operation or UI/frame-rate proof.
+iOS builder: build-probe.py --work <scratch> --output <artifact-dir> [--host-tests], requires macOS/Xcode.
+iOS signing/platform-trust/deployment and physical execution remain separate parent steps.

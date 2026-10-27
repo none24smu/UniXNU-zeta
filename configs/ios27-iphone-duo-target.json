@@ -12,5 +12,20 @@
   "soc": "SM8350",
   "gpu": "Adreno 660",
   "graphics_strategy": "replacement-metal-frontend-with-freedreno-turnip-backend",
+  "required_boot_behavior": {
+    "full_stock_apps": true,
+    "full_stock_services": true,
+    "skip_initial_user_setup": true,
+    "graphics_ready_before_default_boot": true,
+    "hardware_gpu_required": true,
+    "refresh_modes_hz": [60, 90],
+    "runtime_checks": [
+      "correct_home_and_lock_screen_rendering",
+      "responsive_unlock_scroll_and_app_navigation",
+      "sustained_frame_delivery_at_each_refresh_mode",
+      "stock_app_launch_and_service_startup",
+      "stability_during_interactive_use"
+    ]
+  },
   "boot_qualified": false
 }

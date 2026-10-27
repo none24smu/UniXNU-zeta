@@ -2,6 +2,10 @@ name: Duo Metal native GPU probe
 on:
   workflow_dispatch:
     inputs:
+      spirv_only:
+        description: Build only the owned AIR-to-SPIR-V native draw probe
+        type: boolean
+        default: false
       semantics_only:
         description: Run only the native ARM64 instruction semantics check
         type: boolean
@@ -32,7 +36,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   build:
-    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only }}
+    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only }}
     runs-on: macos-26
     timeout-minutes: 20
     env:

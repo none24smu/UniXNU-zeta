@@ -2,6 +2,10 @@ name: Duo Metal native GPU probe
 on:
   workflow_dispatch:
     inputs:
+      live_display_only:
+        description: Build only the live display userspace diagnostic control
+        type: boolean
+        default: false
       userspace_shell_only:
         description: Build only the root userspace POSIX shell and USB file bridge
         type: boolean
@@ -29,6 +33,18 @@ on:
 permissions:
   contents: read
 jobs:
+  live-display:
+    if: inputs.live_display_only
+    runs-on: macos-26
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 experimental/userspace-shell/build-display-control.py --output live-display
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-display
+          path: live-display/
   userspace-shell:
     if: inputs.userspace_shell_only
     runs-on: macos-26
@@ -63,7 +79,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   build:
-    if: ${{ !inputs.userspace_shell_only && !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only && !inputs.frontend_only && inputs.resource_snapshot_run == '' }}
+    if: ${{ !inputs.live_display_only && !inputs.userspace_shell_only && !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only && !inputs.frontend_only && inputs.resource_snapshot_run == '' }}
     runs-on: macos-26
     timeout-minutes: 20
     env:

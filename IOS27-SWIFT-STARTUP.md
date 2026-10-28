@@ -380,3 +380,35 @@ No broad lite/job-disable list is selected. The resulting single-key override
 must be verified on-device and removed when a real backend is integrated; merely
 removing the boot argument does not delete the persistent override. This is an
 explicit diagnostic exception to the full-service target, not its completion.
+
+
+### Watchdog policy and Chrono startup follow-up (boots 47–50)
+
+Boot 47 proved that adding `sheng-disable-watchdogd=1` alone did not invoke
+policy in the iOS27 profile. Boot 48 explicitly called the existing typed SDK
+policy after the two namespace unions. On-device readback contained exactly
+`{"com.apple.watchdogd": true}`; no other jobs were disabled. The OS remained
+running for over ten minutes, beyond the former watchdog panic window. This
+is an explicit temporary exception for the missing Apple watchdog backend,
+not a working watchdog or full-service completion. Removing the boot argument
+does not remove the persisted override: restore/remove that single-key file
+when a real backend is available. The prior file was absent and the empty
+`disabled.migrated` marker was backed up before this change.
+
+The ChronoServices fatal-connection stack led to the original stock `chronod`
+entry, which lacked CPU translations. `scripts/select-zeta-ios27-chronod.py`
+requires the exact original SHA/CDHash, original Apple trust-cache membership,
+valid signed pages and complete instruction proof. It adds 18 instruction
+edits plus one guarded header word (19 records; total 61,496). No retained ISA
+or input-file changes. Both production-C host checks passed at 4 KiB and
+16 KiB under ASan/UBSan; public output exactly reproduced the selected table.
+Missing opt-in, wrong input, malformed trust cache and duplicate selection
+were rejected before creating output.
+
+Boot 49 passed the former illegal entry and kept the same SpringBoard PID
+alive for several minutes. `chronod` then exited with SIGKILL, not SIGILL.
+BackBoard remained around 3.2 MiB; no real display frame was observed. The
+kernel, trust cache and launch policy were unchanged from boot 48. Boot 50
+adds read-only console stack sampling for Chrono, SpringBoard, BackBoard and
+MobileGestaltHelper; its native result remains pending. This is startup
+progress only, not rendering or UI qualification.

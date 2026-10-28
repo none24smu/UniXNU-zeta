@@ -29,7 +29,7 @@ static int capture_ca_display(const char *output,int present){
     * sends 0x6e0; swap ID, surface IDs, bounds and update masks retain
     * their old prefix offsets. Retry only this owned single BGRA layer
     * with that verified legacy prefix; never alter a system transaction. */
-   if((uint32_t)result==0xe00002bcU){
+   if((uint32_t)result==0xe00002bcU||(uint32_t)result==0xe00002c2U){
     void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);
     int(*submit)(uint32_t,uint32_t,const void*,size_t,void*,size_t*)=io?(int(*)(uint32_t,uint32_t,const void*,size_t,void*,size_t*))dlsym(io,"IOConnectCallStructMethod"):NULL;
     if(submit){result=begin(display,&swap_id);printf("legacy SwapBegin=%#x swap_id=%u\n",result,swap_id);if(!result){result=layer(display,0,surface,bounds,bounds,0);printf("legacy SwapSetLayer=%#x\n",result);if(!result){uint32_t connection=0;memcpy(&connection,(unsigned char*)display+0x14,4);result=submit(connection,5,(unsigned char*)display+0x18,0x588,NULL,NULL);printf("legacy submit prefix=0x588 connection=%#x status=%#x\n",connection,result);}}}

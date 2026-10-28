@@ -55,6 +55,43 @@ side-effect comparison. Its combined table uses seventeen legacy descriptors.
 Evidence: `../native27-swift-islands2/` and
 `../native27-swift-islands-fixture3/`; the native retry result is separate.
 
+Boot5 passed the prior failure and reached another STLUR in Swift's resize
+helper, at `0x181cadc68`. The complete family is therefore batched for the next
+diagnostic instead of expanding the small table one function per reboot.
+
+## Proof-bound Swift batch
+
+`../x1-conversion/rcpc-proven-inventory1/inventory-with-context.json` retains all
+193 Swift RCPC2 sites across64 functions, each with unwind-proven code membership,
+exact operands and original/converted function fingerprints. The bounded frozen
+Swift-only walk had zero anomalies. That proof establishes code membership;
+dynamic object provenance and alignment remain separately qualified.
+
+`prepare-zeta-ios27-swift-batch.py` pins that inventory and installed cache input,
+checks every converted whole function, and emits190 islands after excluding the
+three native-tested first-snapshot sites. The2280-byte island block fits the
+same checked executable header padding. Other frameworks are excluded.
+
+The batch fixture executes every emitted source/island pair on QEMU max and
+translated-only Cortex-A76:24,320 pairs per model, including zero-register
+stores, zero/all-one/random input, full memory effects, GPRs except dispatch X16,
+SP/FP/LR and NZCV. Effective addresses are naturally aligned normal-memory
+fixtures. This does not qualify concurrent behavior or exception/unwind PCs.
+
+Combining the333 Swift descriptors with28,208 original-child descriptors yields
+28,541 entries, plus the separate three legacy snapshot entries. Extracted
+production-C ASan/UBSan checks pass at both4KiB and16KiB page sizes, covering870
+and252 original-input pages respectively. Evidence: `../native27-swift-batch1/`,
+`../native27-swift-batch-fixture1/`, `../native27-swift-batch-host4k/`, and
+`../native27-swift-batch-host16k/`.
+
+`zeta_ios27_indexed_firstexec_defconfig` explicitly enables the indexed kernel
+profile; it does not supply a table implicitly. The next ADT must supply the
+combined table and preserve the three legacy entries without overlap. Original
+child architecture admission uses the verified padded tuple
+`bingrade=0x100000c:0x0000000c:0x80000000`. SDK compilation and native execution of
+this selected batch remain distinct gates, tracked in `../native27-build3/`.
+
 These are typed diagnostics for naturally aligned normal-memory Swift objects
 with the ordinary-pointer ABI. They do not implement general LDAPUR emulation.
 Load fault PCs are relocated, and asynchronous unwinding while inside an island

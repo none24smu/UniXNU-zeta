@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -17,10 +18,14 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
- if(argc==2&&!strcmp(argv[1],"invalidate-tccd-page")){
+ if(argc==2&&(!strcmp(argv[1],"invalidate-tccd-page")||!strcmp(argv[1],"invalidate-tccd-file"))){
   const char *path="/System/Library/PrivateFrameworks/TCC.framework/Support/tccd";
   int fd=open(path,O_RDONLY);if(fd<0){perror("open tccd");return 1;}
   size_t page_bytes=(size_t)getpagesize();off_t file_offset=(off_t)(0x314acULL&~((uint64_t)page_bytes-1));size_t entry_offset=0x314acULL-(uint64_t)file_offset;
+  if(!strcmp(argv[1],"invalidate-tccd-file")){
+   struct stat st;if(fstat(fd,&st)||st.st_size!=1127104){puts("unexpected tccd file size; no invalidation");close(fd);return 1;}
+   file_offset=0;entry_offset=0x314ac;page_bytes=((size_t)st.st_size+(size_t)getpagesize()-1)&~((size_t)getpagesize()-1);
+  }
   printf("tccd VM page=%zu file_offset=%#llx entry_offset=%#zx\n",page_bytes,(unsigned long long)file_offset,entry_offset);
   void *page=mmap(NULL,page_bytes,PROT_READ|PROT_EXEC,MAP_SHARED,fd,file_offset);close(fd);
   if(page==MAP_FAILED){perror("map tccd page");return 1;}

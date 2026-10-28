@@ -454,3 +454,89 @@ The source integration for the two owner-runtime unions and the explicit
 watchdog-only gate is root commit `9264ff6`; the real SDK compile/check run is
 `40683467887`. Host selection/failure-injection checks pass, but SDK completion
 and native testing of that source-built replacement are separate gates.
+
+
+### Spawn ABI and container services (boots 54–57)
+
+Boot 54's kernel backtrace identified `_SENDING_NOTIFICATION__THIS_PROCESS_HAS_TOO_MANY_KQWORKLOOPS`.
+Boot 55 measured SpringBoard's hard limit as 5, BackBoard/biomed as 10, and
+several other services as 1. The iOS27 256-byte spawn attributes put crash
+count/throttle at 0xb4/0xb8 and workloop limits at 0xbc/0xc0. The older kernel
+read the crash values as limits. Root commit `5b5b6e7` translates the wire
+layout; it preserves explicit workloop limits rather than disabling enforcement.
+Actual stock setter bytes and the translator passed host and Cortex-A76
+fixtures. Boot 56's guarded RAM adapter kept the original Chrono and biomed
+processes alive and advanced BackBoard to a container-manager path request.
+
+AMFI then rejected configd and both container managers for missing hardened
+runtime metadata. `prepare-zeta-ios27-owner-daemons.py` derives three pinned
+owner copies: CodeDirectory flags 2 become 0x10002 and platform becomes 26.
+Executable bytes, entitlements, code-page hashes and original files remain
+unchanged. The new hashes require explicit owner trust admission; this is not
+Apple root authentication. All three staged Data copies were read back exactly.
+`select-zeta-ios27-container-system.py` adds four CPU edits plus a header word.
+A third read-only union exposes the owner files through `/usr/libexec`, while
+retaining the lower xpcproxy. Native boot 57 executes those services and opens
+BackBoard's real framebuffer user client. It then faults at Swift Concurrency
+LDAPUR 0x181be8300; no iOS frame is produced.
+
+Root `660e31d` integrates the third union behind `ios27-owner-runtime=2`;
+mode 1 retains the original two-union behavior. Missing required files,
+replacement dyld/xpcproxy, mount failures and bad stages fail closed. Both
+source-profile ASan/UBSan checks passed. SDK run `40687298022` succeeded for
+spawn translation and mode 1; retained SDK object instructions were compared
+to the linked kernel, including the inlined spawn translator. That source-built
+kernel has not been native-tested. Run `40694804317` compiles mode 2 separately.
+
+### Swift Concurrency and activation wait (boots 58–59)
+
+`select-zeta-ios27-swift-concurrency.py` pins the original cache SHA, eight
+LDAPUR words, seven function boundaries and unused executable header padding.
+It checks code membership and incoming references before inserting eight
+LDUR/DMB SY/branch-return islands (96 bytes; 14 additional table records).
+Only ordinary-pointer, naturally aligned normal-memory contexts are covered.
+The seven selected functions have no walk anomalies; 178 other walk anomalies
+outside them remain explicitly reported. This is not whole-library qualification.
+The fixture passes 1,024 state pairs on QEMU max and Cortex-A76, comparing
+memory, GPRs (except dispatch X16), SP/FP/LR and NZCV. Concurrent litmus behavior,
+fault PCs and asynchronous unwinding are separate limitations. Both production
+page-size checks passed for all 50 original signed files.
+
+Native boot 58 passes the old BackBoard fault, keeps original PID 65 alive at
+about 29 MiB and starts CoreAnimation render/display threads. Scanout remains
+zero. Deliberate SIGABRT diagnostics of SpringBoard and BackBoard are marked
+in the capture; these induced exits are not natural startup crashes.
+SpringBoard is synchronously waiting for MobileActivation's activation-state
+query, while mobileactivationd repeatedly dies at PACIBSP 0x10033960c.
+
+`select-zeta-ios27-mobileactivation.py` pins the 4,658,192-byte original daemon,
+its Apple trust membership and full instruction proof. It adds 12,334 CPU
+edits plus the header, grouped into 12,052 records (73,742 total). Eleven exact
+scalar CSSC words remain for the existing opt-in kernel emulator; the actual
+emulator passed 2,816 additional whole-state comparisons for those words.
+Both signed-page sanitizer checks passed for 51 original files. Boot 59 keeps
+the boot 58 kernel, trust cache and arguments, adding only these guarded table
+records. Native boot 59 keeps mobileactivationd PID 400 alive and advances the
+SpringBoard startup footprint to about 9 MiB. No frame is produced. The activation
+logic is unchanged; no activation status is fabricated and no job is disabled.
+
+The temporary watchdog-only disabled job remains the sole service exception.
+The missing tccd named sandbox profile and further stock-service CPU coverage
+remain unresolved. No visible iOS frame or full-service completion is claimed.
+
+
+Boot 59's deliberate SpringBoard SIGABRT stack has passed MobileActivation.
+It waits in ManagedConfiguration `checkInWithCompletion:`, through
+`publicXPCConnection` and `synchronousRemoteObjectProxyWithErrorHandler:`.
+Those method names are resolved from the exact selector-stub strings.
+The stock profiled launch job publishes both ManagedConfiguration Mach services;
+profiled itself repeatedly faults at its untranslated entry 0x100004f74.
+
+`select-zeta-ios27-profiled.py` pins its source and trust identity and complete
+instruction proof. It adds 9,553 CPU edits plus the header (8,906 records;
+82,648 total), retaining 63 exact scalar CSSC words for the existing handler.
+`check-zeta-ios27-retained-cssc.py` verifies each retained word against an
+independent mathematical oracle and compares complete register state. Its
+16,128 host checks pass; native EL0 trap integration remains separate. The
+selector's four rejection gates pass before output creation. Boot 60 will test
+this dependency without changing the stock configuration-management logic.

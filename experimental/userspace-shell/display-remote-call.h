@@ -23,17 +23,18 @@ static int start_edr_in_task(mach_port_t task){
 /* One owner diagnostic: let identityservicesd receive the normal invalidated
  * connection error for its blocked CoreDuet request. Stock launchd jobs remain.
  * Only existing library code executes on a normal pthread; no code injection. */
-static int cancel_coreduet_in_task(mach_port_t task,vm_address_t connection){
+static int cancel_named_service_in_task(mach_port_t task,vm_address_t connection,const char *expected){
  const vm_address_t create=0x180536d58ULL,park=0x180532e78ULL;
  const unsigned char create_bytes[]={0x24,0x00,0x80,0x52,0x11,0xef,0xff,0x17};
- const char expected[]="com.apple.coreduetd.context";unsigned char data[32];vm_size_t n=0;
+ unsigned char data[64];vm_size_t n=0;size_t label_bytes=strlen(expected)+1;
+ if(label_bytes>sizeof data)return 1;
  kern_return_t kr=vm_read_overwrite(task,create,sizeof create_bytes,(vm_address_t)data,&n);
  if(kr||n!=sizeof create_bytes||memcmp(data,create_bytes,n)){puts("pthread code guard failed; no call");return 1;}
  vm_address_t dm=0,label=0;
  kr=vm_read_overwrite(task,connection+0xa8,8,(vm_address_t)&dm,&n);if(kr||n!=8||!dm)return 1;
  kr=vm_read_overwrite(task,dm+0x48,8,(vm_address_t)&label,&n);if(kr||n!=8||!label)return 1;
- kr=vm_read_overwrite(task,label,sizeof expected,(vm_address_t)data,&n);
- if(kr||n!=sizeof expected||memcmp(data,expected,n)){puts("CoreDuet connection label guard failed; no call");return 1;}
+ kr=vm_read_overwrite(task,label,label_bytes,(vm_address_t)data,&n);
+ if(kr||n!=label_bytes||memcmp(data,expected,n)){puts("service connection label guard failed; no call");return 1;}
  void *entry=dlsym(RTLD_DEFAULT,"xpc_connection_cancel");if(!entry)return 1;
  kr=vm_read_overwrite(task,(vm_address_t)entry,sizeof data,(vm_address_t)data,&n);
  if(kr||n!=sizeof data||memcmp(data,entry,sizeof data)){puts("libxpc code guard failed; no call");return 1;}

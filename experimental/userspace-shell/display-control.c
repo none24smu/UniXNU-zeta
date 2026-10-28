@@ -31,6 +31,10 @@ static int control(int argc,char **argv){
   void *records=malloc((size_t)expected);void *readback=malloc((size_t)expected);uLongf length=(uLongf)expected;
   if(!records||!readback||uncompress(records,&length,container,(uLong)st.st_size)!=Z_OK||length!=expected){puts("fixup decompression failed");munmap(container,(size_t)st.st_size);free(records);free(readback);return 1;}
   munmap(container,(size_t)st.st_size);
+  size_t baseline=(size_t)expected;int initial=sysctlbyname("debug.bpf_debug",readback,&baseline,NULL,0);int zero=!initial&&baseline==expected;
+  if(zero){const unsigned char *bytes=readback;for(size_t i=0;i<baseline;i++)if(bytes[i]){zero=0;break;}}
+  if(!zero){puts("kernel destination is not the exact unused zero range; no upload");free(records);free(readback);return 1;}
+  puts("kernel destination full preimage zero verified");
   int result=sysctlbyname("debug.bpf_debug",NULL,NULL,records,(size_t)expected);int error=errno;
   size_t actual=(size_t)expected;int checked=result?-1:sysctlbyname("debug.bpf_debug",readback,&actual,NULL,0);
   int exact=!result&&!checked&&actual==expected&&!memcmp(records,readback,(size_t)expected);

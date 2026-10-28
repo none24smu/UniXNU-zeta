@@ -198,3 +198,46 @@ entitlement missing). Exact launchd kick policy requires
 **com.apple.private.xpc.service-attach**; build-display-control.py now signs the
 owner diagnostic with that entitlement. Retry execution and surviving service
 must be verified separately; an accepted kick alone is not UI startup proof.
+
+## TCC startup investigation (boot74, development workaround)
+
+The liveactivitiesd retry succeeded (PID5435 survived). Subsequent passive stacks
+placed identityservicesd in a synchronous CloudKit/TCC request while SpringBoard
+continued waiting through ActivityKit. tccd repeatedly aborted with the exact
+message `com.apple.tccd: profile not found`. The loaded Sandbox.kext comes from
+the macOS25F84 KDK; its builtin profile collection format differs from the stock
+iOS27 collection. The stock iOS root has no standalone tccd profile to copy.
+A proper iOS named-profile port is still required.
+
+For this owner development session ONLY, the runtime tccd text-fixup descriptor
+was changed to return from its void self-sandbox initializer at0x1000314ac.
+This deliberately skips tccd's own confinement; it does not change TCC privacy
+decisions or other processes' sandbox policies. This is a temporary behavioral
+workaround, not CPU instruction lowering or a completed sandbox port. It must
+not silently become a production driver/kernel change. Sealed file bytes and
+signatures remain original. The descriptor journal is
+live-display74/tccd-start1/runtime-applied.json.
+
+Live cache retries exposed a separate CPU compatibility defect. In this kernel,
+vm_page_validate_cs_fast accepts the vnode's validation bitmap without calling
+cs_text_fixup_page; only the slow signature-validation path applies the fixups.
+Discarding an already-validated page can therefore refault original ARMv9 text
+and skip the ARMv8 replacements. Clearing the single validation bit for tccd's
+0x30000 page, after invalidation, moved its next fault from main0x100030da4 to a
+later function0x10002c434. This is evidence of progress through the first page,
+not proof that tccd or SpringBoard is running successfully.
+
+`invalidate-tccd-file` extends the readonly, invalidate-only diagnostic to the
+exact known1127104-byte tccd file. No post-discard reread or synchronous dirty
+writeback is requested. Invalidation alone is insufficient: the matching vnode
+bitmap entries must force real signature validation again before the next exec.
+Never disable code-signature validation globally, blindly clear another vnode's
+state, or apply boot-specific addresses without verifying the live structures.
+A permanent compatibility fix must handle already-validated page refaults and
+be tested against original signed bytes after page eviction; this live retry
+does not implement that kernel fix.
+
+Evidence: live-display74/tccd-bitmap1/preflight.json, cleared.json, kick.txt,
+ps.txt; the latter shows tccd is not yet surviving. Preserve the sole USB reader,
+root Dash and agent while retrying the specific service. The physical logo and
+normal continuous UI presentation are separate proof gates.

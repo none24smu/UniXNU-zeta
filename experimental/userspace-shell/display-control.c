@@ -22,6 +22,14 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==2&&!strcmp(argv[1],"wake-bks")){
+  /* Shipped wrapper ABI verified at0x18a03c3cc: one Boolean argument,
+   * forwarded in a one-way BackBoard MIG request. A send is not wake proof. */
+  void *library=dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",RTLD_NOW|RTLD_LOCAL);
+  void(*blank)(int)=library?(void(*)(int))dlsym(library,"BKSDisplayServicesSetScreenBlanked"):NULL;
+  if(!blank){puts("BackBoard wake API unavailable; no request");return 1;}
+  blank(0);puts("BackBoard screen-unblank request sent; display state requires verification");return 0;
+ }
  if(argc==2&&!strcmp(argv[1],"check-debug-int")){
   unsigned char value[64]={0};size_t length=sizeof value;int result=sysctlbyname("debug.bpf_debug",value,&length,NULL,0);uint32_t word=0;memcpy(&word,value,4);printf("debug int result=%d bytes=%zu value=%#x\n",result,length,word);return !result&&length==4?0:1;
  }

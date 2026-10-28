@@ -36,3 +36,21 @@ The subtype padding in the three-field form is required by this exact source's p
 This override changes architecture admission only. Pointer instructions, signature/platform policy, imported-cache behavior and kernel APIs remain separate execution boundaries. No override was staged or applied during this audit.
 
 Evidence: summary.json and per-program plans; independent-plan-readback.json; bingrade-host/result.json, result.log and extracted test source; exact kernel source snapshots under kernel-source/. All are beneath `../x1-conversion/first-child-executables1/`.
+
+## Optional signed-page profile for these eight originals
+
+The separate, default-off `XNU_IOS27_TEXT_FIXUPS=1` kernel source profile reads `/chosen/text-fixups-ios27`. It supports at most 32768 descriptors across 64 basenames and preserves the original 32-entry `/chosen/text-fixups` and boot arguments. The build flag affects only `bsd/DEVELOPMENT/ubc_subr.o`; changing it invalidates that object. No checked-in payload or profile selects this option.
+
+Generate the exact table without rewriting the original files:
+
+```sh
+python3 scripts/generate-zeta-ios27-text-fixups.py \
+  --child-checkpoint ../x1-conversion/first-child-executables1 \
+  --output /new/output/directory
+```
+
+The generator pins all eight original SHA256 hashes and the eight reviewed plan hashes, verifies the original signed pages/CDHashes, checks each known lowering, and groups adjacent edits within 16 bytes and one 4KiB page. The retained output has 30949 instruction edits in 28208 descriptors, 1008132 ADT bytes, SHA256 `49bc5d3a26366fef7ed34685e0f3a51bba4000968ce47d2d4278b763682f2a86`. Pass the generated binary explicitly to the ordinary ADT generator with `--ios27-text-fixups PATH`. The architecture argument remains the padded, verified `bingrade=0x100000c:0x0000000c:0x80000000` above.
+
+The kernel rejects the whole new table on malformed records, sorting errors, overlaps, overflow, excess capacity or conflicts with legacy entries. Runtime lookup uses a binary filename index and a binary offset search. It changes a page only after original signature validation succeeds without taint and all new-profile original-byte checks on that page pass. A mismatch leaves that page's new-profile bytes untouched. The runtime identity guard is basename plus a validated original signed page and exact bytes; the manifest's whole-file SHA256/CDHash is retained generation evidence, not a fault-path whole-file identity lookup.
+
+Evidence under `../x1-conversion/signed-text-fixups1/`: `descriptors2/manifest.json`; `host3/result.json` and production C/VM-hook snapshots; build-flag tests; Python format tests; and a host-only ADT serialization/readback. The extracted production validator passes ASan/UBSan in both compile modes, including all 28208 descriptors on 810 original pages, legacy coexistence, rejection/atomicity and index bounds. These host checks do not qualify the actual kernel object or VM lifecycle. SDK compilation and a separately selected native diagnostic boot remain required. The 46 retained CSSC instructions remain unchanged; imported frameworks and unsupported cache instructions retain their separate compatibility gates.

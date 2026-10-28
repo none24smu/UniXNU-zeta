@@ -226,6 +226,9 @@ def main(argv=None, *, default_identity='iPhone18,2'):
                         help='/chosen/text-fixups entry <file name>,<hex file offset>,<hex original>,<hex replacement> (repeatable, '
                              'at most 32): signed text the kernel changes after page validation, as text-fixup0..7 without '
                              'the boot-argument space')
+    parser.add_argument('--ios27-text-fixups', type=Path,
+                        help='explicit NUL descriptor file for /chosen/text-fixups-ios27; requires the separately compiled '
+                             'default-off XNU_IOS27_TEXT_FIXUPS profile, preserves the ordinary32-entry mechanism')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.ipad_identity:
@@ -254,6 +257,14 @@ def main(argv=None, *, default_identity='iPhone18,2'):
         parser.error(f'--cpu-regs: distinct values from {",".join(hex(reg) for reg in CPU_REGS)}, boot CPU 0 first')
     if len(args.text_fixup) > 32 or any(len(f) >= 160 or f.count(',') != 3 for f in args.text_fixup):
         parser.error('--text-fixup: at most 32 entries of 4 comma-separated fields, each under 160 characters')
+    ios27_text_fixups = None
+    if args.ios27_text_fixups is not None:
+        from zeta_text_fixups import parse_table
+        try:
+            ios27_text_fixups = args.ios27_text_fixups.read_bytes()
+            parse_table(ios27_text_fixups)
+        except (OSError, ValueError, UnicodeError) as error:
+            parser.error('--ios27-text-fixups: ' + str(error))
     check_board_tree()
     identity_model, identity_target, identity_product = identity_values(args.identity_profile)
 
@@ -292,6 +303,7 @@ def main(argv=None, *, default_identity='iPhone18,2'):
                         ('osenvironment', b'main\0'),
                         # Read by the kernel's text fixups (native-text-fixup.patch) before the text-fixup0..7 boot arguments.
                         *([('text-fixups', b''.join(f.encode() + b'\0' for f in args.text_fixup))] if args.text_fixup else []),
+                        *([('text-fixups-ios27', ios27_text_fixups)] if ios27_text_fixups is not None else []),
                         # Bootloader contract read by ml_unsafe_kernel_text_init.
                         # This non-Apple platform does not enable Apple CTRR.
                         ('kernel-ctrr-to-be-enabled', struct.pack('<I', 0)),

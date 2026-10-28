@@ -239,3 +239,26 @@ Boot18 confirms original FinishRestoreFromBackup exited0, without reaching the
 diagnostic stop. Launchd advanced to finish-demo-restore; finish_demo_restore
 then faulted at0x100001ec0 on original PACIBSPPC. That helper remains the next
 qualification target; this result does not establish visible iOS27 UI.
+
+
+## Native early boot complete; public Lockdown Mode query
+
+Boot19 completes finish-demo-restore, launchd_cache_loader and init_exclavekit.
+Launchd prints Early boot complete. Continuing system boot, then aborts. The
+native return PCs identify libsystem_darwin's os_lockdown_mode_enabled once
+block: it requests security.mac.lockdown_mode_state_public with an8-byte output,
+and takes a fatal error edge when sysctlbyname returns-1. The old XNU source
+has only the4-byte private query. Native errno itself was not captured.
+
+Root6c161db adds a read-only8-byte public query forwarding the existing
+get_lockdown_mode_state result; existing private query, policy and NVRAM remain.
+Its extracted production handler passes host state/output/error checks. Root
+b08d65c expands indexed capacity to131072 records/512 filenames, with full-bound
+and overflow tests. CI40637340472 is the actual SDK/kernel validation.
+
+`select-zeta-ios27-ui-services.py` pins12 exact signed stock service images,
+trust membership and all28,701 admitted instruction edits. The combined65,553
+record/44-file table passes production-C4KiB/16KiB ASan/UBSan and actual cached
+mount repeat-exec/signature regression. This table requires the new capacity;
+it must not be booted with the old65,536-record kernel. Native UI-service
+execution and visible iOS27 UI remain unproven until the new RAM test.

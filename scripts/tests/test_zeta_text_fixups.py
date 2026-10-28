@@ -28,7 +28,7 @@ class TextFixupTests(unittest.TestCase):
         good=[('a',i,b'\0',b'\1') for i in range(fixups.MAX_ENTRIES)]
         self.assertEqual(len(fixups.parse_table(fixups.encode_table(good))),fixups.MAX_ENTRIES)
         with self.assertRaisesRegex(ValueError,'capacity'):fixups.encode_table(good+[('a',fixups.MAX_ENTRIES,b'\0',b'\1')])
-        with self.assertRaisesRegex(ValueError,'capacity'):fixups.encode_table([(f'name{i:03d}',0,b'\0',b'\1') for i in range(65)])
+        with self.assertRaisesRegex(ValueError,'capacity'):fixups.encode_table([(f'name{i:03d}',0,b'\0',b'\1') for i in range(fixups.MAX_FILES+1)])
 
 
 if __name__=='__main__':unittest.main()

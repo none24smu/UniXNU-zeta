@@ -143,3 +143,21 @@ and native mount run are required to establish this change's runtime result.
 
 mobile_obliterator --init is being inspected before selection because its
 non-no-op paths can erase Data. No instruction replacement changes its guards.
+
+
+`select-zeta-ios27-obliterator.py` composes its1,035 exact instruction edits
+(928 descriptors) with two temporary erase-path stops (930 total). It pins the
+original binary, signature/CDHash/TC membership, plan and complete main-function
+fingerprint. The original no-op conditional branches at1e24/1e28/1e38 remain
+unchanged. The stops at1e3c and1e9c are `B .` self branches: they prevent marker
+writing/common preparation without relying on recoverable breakpoint semantics.
+They share the entry PAC lowering's4KiB signed page and must be selected in the
+same page-atomic table. They are not unconditional success returns.
+
+The combined table has33,317 descriptors over23 input files. Production-C
+ASan/UBSan page readback passes at16KiB. Independent exact-byte direct-CFG
+readback reaches exit0 only for ephemeral=false/pending=false; the other three
+boolean combinations reach a stop before marker writing or common preparation.
+This is bounded static/host evidence; imported initializers/asynchronous control
+transfers and native execution remain separate. Evidence is retained under
+`../native27-obliterator-selected1/` and `../native27-obliterator-host16k/`.

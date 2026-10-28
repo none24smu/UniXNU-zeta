@@ -540,3 +540,23 @@ independent mathematical oracle and compares complete register state. Its
 16,128 host checks pass; native EL0 trap integration remains separate. The
 selector's four rejection gates pass before output creation. Boot 60 will test
 this dependency without changing the stock configuration-management logic.
+
+
+### ManagedSettings service dependency (boots 60–61)
+
+Boot 60 keeps profiled389 and mobileactivationd380 alive. SpringBoard30 still
+waits in ManagedConfiguration check-in. Marked intentional SIGABRT stacks show
+profiled's initialization synchronously requesting
+`responsibleClientsForSetting:replyHandler:` through ManagedSettingsObjC's
+`synchronousProxyFromConnection:withRetryCount:proxyHandler:`. Exact selector
+strings and the original ManagedSettingsAgent launch job establish the service
+edge. ManagedSettingsAgent repeatedly faults on PACIBSP at 0x100003690.
+
+`select-zeta-ios27-managedsettings.py` pins its original SHA/CDHash and full
+code proof, adds 7,019 edits and one header word (6,741 records; 89,389 total),
+and pins all 304 remaining scalar CSSC sites by a canonical manifest digest.
+The production emulator passes 77,824 whole-state oracle comparisons for those
+sites. Both production validator/VM/loader page-size checks pass for all 53
+original signed files, and all four rejection gates pass. Boot 61 tests this
+one dependency, preserving the boot 60 kernel, owner trust cache and arguments.
+Native service progress and a visible frame remain pending.

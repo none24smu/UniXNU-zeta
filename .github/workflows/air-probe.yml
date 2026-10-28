@@ -2,6 +2,10 @@ name: Duo Metal native GPU probe
 on:
   workflow_dispatch:
     inputs:
+      userspace_shell_only:
+        description: Build only the root userspace POSIX shell and USB file bridge
+        type: boolean
+        default: false
       resource_snapshot_run:
         description: Replay actual retained resource SDK headers from a completed root CI run
         type: string
@@ -25,6 +29,21 @@ on:
 permissions:
   contents: read
 jobs:
+  userspace-shell:
+    if: inputs.userspace_shell_only
+    runs-on: macos-26
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build signed ordinary ARM64 userspace shell
+        run: python3 experimental/userspace-shell/build.py --output userspace-shell
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: userspace-shell
+          path: userspace-shell/
+          if-no-files-found: error
+          retention-days: 14
   instruction-semantics:
     if: inputs.semantics_only
     uses: ./.github/workflows/isa-semantics.yml
@@ -44,7 +63,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   build:
-    if: ${{ !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only && !inputs.frontend_only && inputs.resource_snapshot_run == '' }}
+    if: ${{ !inputs.userspace_shell_only && !inputs.semantics_only && !inputs.cpu_probe_only && !inputs.spirv_only && !inputs.frontend_only && inputs.resource_snapshot_run == '' }}
     runs-on: macos-26
     timeout-minutes: 20
     env:

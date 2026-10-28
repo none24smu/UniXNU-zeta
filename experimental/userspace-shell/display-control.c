@@ -15,7 +15,8 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
- if(argc==3&&!strcmp(argv[1],"capture"))return capture_ca_display(argv[2]);
+ if(argc==3&&!strcmp(argv[1],"capture"))return capture_ca_display(argv[2],0);
+ if(argc==3&&!strcmp(argv[1],"present"))return capture_ca_display(argv[2],1);
  if(argc==2&&!strcmp(argv[1],"wake"))return probe_framebuffer(1);
  if(argc==2&&!strcmp(argv[1],"framebuffer"))return probe_framebuffer(0);
  if(argc==2&&!strcmp(argv[1],"probe")){const char *names[]={"com.apple.CARenderServer","com.apple.libEDR.Notification","com.apple.backboard.display.services"};for(unsigned i=0;i<3;i++){mach_port_t port=0;kern_return_t kr=bootstrap_look_up(bootstrap_port,names[i],&port);printf("lookup %s kr=%d port=%#x\n",names[i],kr,port);if(port)mach_port_deallocate(mach_task_self(),port);}return 0;}

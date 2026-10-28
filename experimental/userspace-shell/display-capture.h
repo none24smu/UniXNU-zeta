@@ -2,7 +2,7 @@
 static void capture_number(CFMutableDictionaryRef dictionary,const char *name,int64_t value){CFStringRef key=CFStringCreateWithCString(NULL,name,kCFStringEncodingUTF8);CFNumberRef number=CFNumberCreate(NULL,kCFNumberSInt64Type,&value);CFDictionarySetValue(dictionary,key,number);CFRelease(number);CFRelease(key);}
 /* Render the real CA display tree into an IOSurface and save a small readback.
  * This is an observation, not framebuffer presentation or software rendering. */
-static int capture_ca_display(const char *output){
+static int capture_ca_display(const char *output,int present){
  void *surface_library=dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface",RTLD_NOW|RTLD_LOCAL);if(!surface_library){printf("IOSurface dlopen: %s\n",dlerror());return 1;}
  void *ca=dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore",RTLD_NOW|RTLD_LOCAL);if(!ca){printf("QuartzCore dlopen: %s\n",dlerror());return 1;}
  void*(*create)(CFDictionaryRef)=(void*(*)(CFDictionaryRef))dlsym(surface_library,"IOSurfaceCreate");int(*lock)(void*,uint32_t,uint32_t*)=(int(*)(void*,uint32_t,uint32_t*))dlsym(surface_library,"IOSurfaceLock");int(*unlock)(void*,uint32_t,uint32_t*)=(int(*)(void*,uint32_t,uint32_t*))dlsym(surface_library,"IOSurfaceUnlock");void*(*base)(void*)=(void*(*)(void*))dlsym(surface_library,"IOSurfaceGetBaseAddress");size_t(*width)(void*)=(size_t(*)(void*))dlsym(surface_library,"IOSurfaceGetWidth"),(*height)(void*)=(size_t(*)(void*))dlsym(surface_library,"IOSurfaceGetHeight"),(*stride)(void*)=(size_t(*)(void*))dlsym(surface_library,"IOSurfaceGetBytesPerRow");unsigned(*getid)(void*)=(unsigned(*)(void*))dlsym(surface_library,"IOSurfaceGetID");mach_port_t(*getport)(void*)=(mach_port_t(*)(void*))dlsym(ca,"CARenderServerGetServerPort");int(*render)(mach_port_t,CFStringRef,void*,uint32_t,uint32_t)=(int(*)(mach_port_t,CFStringRef,void*,uint32_t,uint32_t))dlsym(ca,"CARenderServerRenderDisplay");
@@ -11,5 +11,20 @@ static int capture_ca_display(const char *output){
  size_t w=width(surface),h=height(surface),row=stride(surface);printf("capture IOSurface id=%u %zux%zu stride=%zu\n",getid(surface),w,h,row);if(w!=2754||h!=1892||row<w*4){CFRelease(surface);return 1;}
  mach_port_t server=getport(NULL);printf("CA render server port=%#x\n",server);int status=render(server,CFSTR("LCD"),surface,0,0);printf("CARenderServerRenderDisplay raw_result=%d\n",status);
  uint32_t seed=0;int lk=lock(surface,1,&seed);printf("IOSurfaceLock status=%#x seed=%u\n",lk,seed);if(lk){CFRelease(surface);return 1;}const unsigned char *pixels=base(surface);if(!pixels){unlock(surface,1,NULL);CFRelease(surface);return 1;}uint64_t nonblack=0,nonzero=0;for(size_t y=0;y<h;y++)for(size_t x=0;x<w;x++){const unsigned char*p=pixels+y*row+x*4;if(p[0]||p[1]||p[2])nonblack++;if(p[0]||p[1]||p[2]||p[3])nonzero++;}printf("CA capture nonblack_pixels=%llu nonzero_pixels=%llu total=%zu\n",(unsigned long long)nonblack,(unsigned long long)nonzero,w*h);
- FILE*f=fopen(output,"wb");if(!f){perror("capture output");unlock(surface,1,NULL);CFRelease(surface);return 1;}size_t ow=w/4,oh=h/4;fprintf(f,"P6\n%zu %zu\n255\n",ow,oh);for(size_t y=0;y<oh;y++)for(size_t x=0;x<ow;x++){const unsigned char*p=pixels+(y*4)*row+x*16;unsigned char rgb[3]={p[2],p[1],p[0]};if(fwrite(rgb,1,3,f)!=3){fclose(f);unlock(surface,1,NULL);CFRelease(surface);return 1;}}int err=fclose(f);unlock(surface,1,NULL);CFRelease(surface);printf("capture file=%s close=%d\n",output,err);return err?1:0;
+ FILE*f=fopen(output,"wb");if(!f){perror("capture output");unlock(surface,1,NULL);CFRelease(surface);return 1;}size_t ow=w/4,oh=h/4;fprintf(f,"P6\n%zu %zu\n255\n",ow,oh);for(size_t y=0;y<oh;y++)for(size_t x=0;x<ow;x++){const unsigned char*p=pixels+(y*4)*row+x*16;unsigned char rgb[3]={p[2],p[1],p[0]};if(fwrite(rgb,1,3,f)!=3){fclose(f);unlock(surface,1,NULL);CFRelease(surface);return 1;}}int err=fclose(f);unlock(surface,1,NULL);printf("capture file=%s close=%d\n",output,err);
+ if(present&&!err){
+  /* Exact iOS27 callback ABI: SwapBegin's x1 is a swap-ID output pointer;
+   * SwapSetLayer consumes two four-double HFA rectangles in d0..d7,
+   * with flags in x3. The exported trampoline clobbers x4. */
+  typedef struct {double x,y,width,height;} DisplayRect;
+  void *fb=dlopen("/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/IOMobileFramebuffer",RTLD_NOW|RTLD_LOCAL);
+  int(*getmain)(void**) = fb?(int(*)(void**))dlsym(fb,"IOMobileFramebufferGetMainDisplay"):NULL;
+  int(*begin)(void*,uint32_t*)=fb?(int(*)(void*,uint32_t*))dlsym(fb,"IOMobileFramebufferSwapBegin"):NULL;
+  int(*layer)(void*,unsigned,void*,DisplayRect,DisplayRect,unsigned)=fb?(int(*)(void*,unsigned,void*,DisplayRect,DisplayRect,unsigned))dlsym(fb,"IOMobileFramebufferSwapSetLayer"):NULL;
+  int(*end)(void*)=fb?(int(*)(void*))dlsym(fb,"IOMobileFramebufferSwapEnd"):NULL;
+  void *display=NULL;uint32_t swap_id=0;DisplayRect bounds={0,0,(double)w,(double)h};
+  if(!getmain||!begin||!layer||!end){puts("presentation API missing");err=1;}
+  else{int result=getmain(&display);printf("present GetMainDisplay=%#x ref=%p\n",result,display);if(!result&&display){result=begin(display,&swap_id);printf("present SwapBegin=%#x swap_id=%u\n",result,swap_id);if(!result){int ls=layer(display,0,surface,bounds,bounds,0);printf("present SwapSetLayer=%#x surface_id=%u\n",ls,getid(surface));int es=end(display);printf("present SwapEnd=%#x\n",es);result=ls?ls:es;}}else if(!result)result=1;err=result!=0;if(!err){puts("present surface retained for 10 seconds");sleep(10);}}
+ }
+ CFRelease(surface);return err?1:0;
 }

@@ -312,3 +312,76 @@ Cache invalidation still needs targeted validation-bit clearing; a record upload
 alone does not repair already-cached executable pages. Service admission, active
 request handling and visible UI must each be verified after the targeted kick.
 The TCC self-confinement workaround above remains separate and temporary.
+
+
+### Later boot74 startup and black-screen checkpoint (2026-10-28)
+
+The normal IOMobileFramebufferSwapEnd path is now qualified for the owned
+full-screen BGRA diagnostic: its exact signed cache member .36 instruction at
+0x227f81340 is selected from MOV w3,#0x6e0 to MOV w3,#0x588. The loaded 25F84
+family requires that older prefix. The selector checks the exact original cache
+and instruction; this is an ABI adaptation, separate from CPU instruction
+lowering. BackBoard66 read back the new instruction through its own task.
+`live-display74/wake-bks1/native-present.txt` then recorded normal SwapEnd=0
+without the legacy fallback, and display-after-present.json recorded presented2.
+That is two manually submitted frames total, not regular BackBoard presentation.
+The second real CA tree contained only560 nonblack pixels; visible GUI remains
+unproven. Do not infer that transport success fixes the rendered contents.
+
+SpringBoard30 later exited with BLS LCD-Off transition watchdog reason32/0xb;
+launchd restarted it as11154. BackBoard66, the root shell and the same kernel
+remained alive. The user reported a black display. A verified one-argument
+BKSDisplayServicesSetScreenBlanked(0) request was sent through BackBoardServices.
+This API sends a one-way Mach message and cannot itself prove wake completion.
+Do not treat the legacy unsupported IOMFB power selector as a proven cause of
+the watchdog: the blocked SpringBoard main may also prevent a transition reply.
+
+Stock followupd, accountsd, audiomxd, mobileassetd, cdpd, appprotectiond,
+systemstatusd, donotdisturbd, datamigrator, powerexperienced and
+localizationswitcherd joined the surviving providers through exact original
+signature-checked CPU selections. The pinned batch inventories are retained in
+selected-startup/. Every helper still needs live service and caller-return
+validation; merely surviving does not establish all hardware dependencies.
+The new SpringBoard main reached CoverSheet construction and waits in
+ChronoServices. Chronod workers wait in ReplicatorServices; replicatord itself
+was observed crashing on original PACIBSPPC at its first instruction. Its pinned
+77 instruction edits plus subtype descriptor are recorded separately.
+
+Root vnode validation caching had skipped post-validation CPU fixups on later
+refaults. For this live DEVELOPMENT kernel only, the owner diagnostic's rejected
+unknown-filesystem MNT_UNION probe sets root_fs_upgrade_try through the normal
+VFS branch. The root mount and fsid remain unchanged; mount returns ENODEV.
+Exact source inspection established that the only reader disables the cached
+validation-bitmap optimization; actual page signatures are still validated.
+This RAM mode requires a proper selected-page refault fix for future kernels.
+It is not an implementation to ship as a filesystem workaround.
+
+Live lookup metadata updates now use the normal kernel copy path. A temporary
+bounded opaque debug handler requires exact full64-byte preimages and verifies
+all intermediate normal copies; each transition changes one aligned32-bit word.
+Existing file lookups are modeled after every step. Mutable uncached MMIO views
+alone were insufficient proof of cache coherence. The original handler and
+arguments are restored after every operation, then the native integer handler
+must again return exactly4 bytes and its original zero value. The diagnostic
+parsed statistic stays803168 while the actual per-file index covers later
+appended records. Do not use that stale statistic as the active range bound.
+The earlier TCC self-sandbox RET and CoreDuet connection cancellation remain
+explicit temporary diagnostics; neither is a general service implementation.
+
+
+Normal frame rejection is independently diagnosed in black-screen1/: resetting
+only the capped diagnostic message counter through the normal integer sysctl
+handler exposed2754x1892 surfaces with format0x62336138 (b3a8), two planes and
+stride2816. dVerifySwap explicitly rejects those; it only accepts one full-size
+BGRA surface. Do not relax validation and treat a two-plane surface as BGRA.
+The debug OID was fully restored, including a native4-byte original-value check.
+
+Exact QuartzCore code at0x184683958 selects b3a8/other deep formats when the
+byte0x1e7199738 is enabled, and BGRA when disabled. Its once initializer
+0x18447d5f0 reads HasExtendedColorDisplay and CAEnableDeepFramebuffer. The live
+BackBoard66 word was1 and an ordinary guarded vm_write changed it to0 with
+readback. This changes only that process's RAM policy; existing framebuffer
+resources can still retain their prior format. A subsequent capture still had
+560 nonblack pixels and presented2. This is not yet a successful format or GUI
+repair. The purge-ca helper uses the verified single-port CARenderServerPurgeServer
+wrapper to test resource recreation without killing BackBoard or rebooting.

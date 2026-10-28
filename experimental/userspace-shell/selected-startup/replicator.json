@@ -1,0 +1,12 @@
+[
+  {
+    "name": "replicatord",
+    "path": "/System/Library/PrivateFrameworks/ReplicatorCore.framework/Support/replicatord",
+    "label": "com.apple.replicatord",
+    "size": 87088,
+    "sha256": "91466e3f2d2d94385138dc19abedde6555f07b80cbb18d012e3a10cd41b82714",
+    "cdhash": "001acb9c4431d9f48def4dde64f8eed798c3efb7",
+    "instruction_edits": 77,
+    "retained_isa": {}
+  }
+]

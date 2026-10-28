@@ -1,0 +1,67 @@
+[
+  {
+    "name": "mobileassetd",
+    "path": "/usr/libexec/mobileassetd",
+    "label": "com.apple.mobileassetd",
+    "size": 71744,
+    "sha256": "766e578ec332a9177d8515b26e43c75ae49576e2b01db7aa51c84b57395c3020",
+    "cdhash": "bd720cabe3b8e0103d078e0e4dec3f5201514da5",
+    "instruction_edits": 9,
+    "retained_isa": {}
+  },
+  {
+    "name": "audiomxd",
+    "path": "/usr/libexec/audiomxd",
+    "label": "com.apple.audiomxd",
+    "size": 147392,
+    "sha256": "8c75fe40a59f458aa584da18ac0a324920555f075fd6594237fdfb3c334b9688",
+    "cdhash": "7d462b41a1730a3b0b7da8df1e2795a8d946bd26",
+    "instruction_edits": 360,
+    "retained_isa": {
+      "cssc-trap": 6
+    }
+  },
+  {
+    "name": "cdpd",
+    "path": "/System/Library/PrivateFrameworks/CoreCDP.framework/cdpd",
+    "label": "com.apple.cdpd",
+    "size": 74400,
+    "sha256": "07456dc8cf6ed907aa90d7ab6fabdb216189b7ba02f6b1ab7c440e9b5a64e037",
+    "cdhash": "7ee8fac2f1c2c6c070d6304444df1a9c5cc5d41f",
+    "instruction_edits": 32,
+    "retained_isa": {}
+  },
+  {
+    "name": "appprotectiond",
+    "path": "/usr/libexec/appprotectiond",
+    "label": "com.apple.appprotectiond",
+    "size": 73712,
+    "sha256": "62687589673895dff90dc0adea1baa19c8e4fc944a5776b22ce8aeb850b67002",
+    "cdhash": "9b113da3a517d60e35988e5c3018f5dc0c80139c",
+    "instruction_edits": 3,
+    "retained_isa": {}
+  },
+  {
+    "name": "systemstatusd",
+    "path": "/System/Library/PrivateFrameworks/SystemStatusServer.framework/Support/systemstatusd",
+    "label": "com.apple.systemstatusd",
+    "size": 74944,
+    "additional_labels": [
+      "com.apple.systemstatusd"
+    ],
+    "sha256": "7e0b4618536d741f0a06d995d6c2a778a138b100db0f80e88ef9f459325fc18a",
+    "cdhash": "3b6f8301866898173df548240064d709d60ede5e",
+    "instruction_edits": 120,
+    "retained_isa": {}
+  },
+  {
+    "name": "donotdisturbd",
+    "path": "/System/Library/PrivateFrameworks/DoNotDisturbServer.framework/Support/donotdisturbd",
+    "label": "com.apple.donotdisturbd",
+    "size": 69760,
+    "sha256": "409e432c03db63faa5047385d0df5cc02b6908753b4258988748649b9d2fe884",
+    "cdhash": "d13acbe90ea6dbf53c19095dd4e0d8e5f132d27f",
+    "instruction_edits": 8,
+    "retained_isa": {}
+  }
+]

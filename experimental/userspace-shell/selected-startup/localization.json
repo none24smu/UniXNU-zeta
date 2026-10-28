@@ -1,0 +1,14 @@
+[
+  {
+    "name": "localizationswitcherd",
+    "path": "/System/Library/PrivateFrameworks/IntlPreferences.framework/Support/localizationswitcherd",
+    "label": "com.apple.localizationswitcherd",
+    "size": 162448,
+    "sha256": "26833ccd0ad21e07f821c95a34f6dd3daf7ab384a66ee491381ba8030fb6695c",
+    "cdhash": "f3c78f662e04b150611eec07aae8a1cad327cf41",
+    "instruction_edits": 928,
+    "retained_isa": {
+      "cssc-trap": 57
+    }
+  }
+]

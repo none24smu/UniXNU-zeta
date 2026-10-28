@@ -400,3 +400,19 @@ patch is needed merely from a pending IPC request.
 The CA purge returned0 after the deep-framebuffer policy change; presented
 remained2, BackBoard66 survived, and the policy read back0. These facts do not
 prove a new output format. Keep the original policy word1 for rollback.
+
+
+A normal blank/wake request pair completed (cycle-ca1/), but the regular
+b3a8 rejection persisted, with presented2. Disabling CAEnableDeepFramebuffer
+and purging caches are therefore NOT a verified live format fix. Full current
+rejection evidence is black-screen1/swap-diagnostics-after-cycle.log.
+
+The label-guarded DataMigration cancellation for SpringBoard12392 connection
+0xa9d80ee40 used only xpc_connection_cancel on a normal pthread. Its bootstrap
+thread terminated and scratch stack was freed; no job or migration code was
+disabled. The main thread left DataMigration and subsequently waited in
+PowerLog for com.apple.PerfPowerTelemetryClientRegistrationService. This proves
+an error-path caller transition, not successful data migration. PosterBoard,
+InputUI and AccessibilityUIServer began launching and faulted on unsupported
+entry instructions. Their exact signatures and complete CPU lowering plans,
+plus the PowerLog helpers, are pinned in selected-startup/ui.json.

@@ -1,8 +1,8 @@
 """Strict format for the optional post-validation iOS27 text-fixup table."""
 import re
 
-MAX_ENTRIES=65536
-MAX_FILES=256
+MAX_ENTRIES=131072
+MAX_FILES=512
 MAX_BYTES=16
 PAGE_SIZE=4096
 

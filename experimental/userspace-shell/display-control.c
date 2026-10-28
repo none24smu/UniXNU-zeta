@@ -10,7 +10,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <mach/mach_vm.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -27,7 +26,9 @@ static int control(int argc,char **argv){
   if(before!=0xd503201f&&before!=0xdac1a7fe&&before!=0xd65f03c0){puts("unexpected page bytes; no invalidation");munmap(page,4096);return 1;}
   /* Invalidate only: unlike msync(2)'s implicit synchronous mode, this
    * requests no dirty-page writeback to the sealed backing file. */
-  kern_return_t status=mach_vm_msync(mach_task_self(),(mach_vm_address_t)page,4096,VM_SYNC_INVALIDATE);
+  kern_return_t(*invalidate)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t)=(kern_return_t(*)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t))dlsym(RTLD_DEFAULT,"mach_vm_msync");
+  if(!invalidate){puts("mach_vm_msync unavailable; no invalidation");munmap(page,4096);return 1;}
+  kern_return_t status=invalidate(mach_task_self(),(mach_vm_address_t)page,4096,VM_SYNC_INVALIDATE);
   printf("tccd page invalidate-only kr=%d\n",status);uint32_t after=0;if(!status)memcpy(&after,(char*)page+0x4ac,4);
   printf("tccd refaulted entry after=%#x\n",after);munmap(page,4096);return status?1:0;
  }

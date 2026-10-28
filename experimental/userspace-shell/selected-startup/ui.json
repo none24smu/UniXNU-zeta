@@ -1,0 +1,60 @@
+[
+  {
+    "name": "PerfPowerTelemetryClientRegistrationService",
+    "path": "/System/Library/PrivateFrameworks/PowerLog.framework/XPCServices/PerfPowerTelemetryClientRegistrationService.xpc/PerfPowerTelemetryClientRegistrationService",
+    "size": 72672,
+    "sha256": "2d67cbb9bc73a0fadabd44e28624f4ad17ca7fb1e4e8aa813845673a5c8de276",
+    "cdhash": "b7d237cc871d569c216c6e763b3c07ff01f547a1",
+    "instruction_edits": 92,
+    "retained_isa": {}
+  },
+  {
+    "name": "PerfPowerServices",
+    "path": "/usr/libexec/PerfPowerServices",
+    "size": 86656,
+    "sha256": "ef022d4a495c6836aa7cbc7d256d4fa8b439399bd4253c959c31ba69fee3e316",
+    "cdhash": "28dc9779b2e14d07f4fbe2ef878c6ad44bd32396",
+    "instruction_edits": 12,
+    "retained_isa": {}
+  },
+  {
+    "name": "PowerUIAgent",
+    "path": "/usr/libexec/PowerUIAgent",
+    "size": 80336,
+    "sha256": "867c711901ca2d912cb3e72a8ce2c53d27a7d331f8e63716f9ae33de13adee91",
+    "cdhash": "825986422ca720163c0bb2cacddbd8757eec1f1c",
+    "instruction_edits": 71,
+    "retained_isa": {}
+  },
+  {
+    "name": "PosterBoard",
+    "path": "/Applications/PosterBoard.app/PosterBoard",
+    "size": 143952,
+    "sha256": "9307ba10cebc678ea4d4226417562da881ab5fa745a68b785965aed103e14bd6",
+    "cdhash": "fd64bc47c0133f591f26877de32c29b569bda432",
+    "instruction_edits": 572,
+    "retained_isa": {
+      "cssc-trap": 1
+    }
+  },
+  {
+    "name": "InputUI",
+    "path": "/Applications/InputUI.app/InputUI",
+    "size": 233840,
+    "sha256": "1d7b22ddf9f18273d57f275670c3eae80326a5552f188ab9a6bc2e927ec23b86",
+    "cdhash": "12d390928a6e1f6f9075cd230715c37db3d1f4bd",
+    "instruction_edits": 875,
+    "retained_isa": {}
+  },
+  {
+    "name": "AccessibilityUIServer",
+    "path": "/System/Library/CoreServices/AccessibilityUIServer.app/AccessibilityUIServer",
+    "size": 200128,
+    "sha256": "0aa1c755a27794947b2b9eb93e51af1afbf586cd6368db60eb5c49d5ca51548b",
+    "cdhash": "cb37fd17834153a2a485d612a374c01c55dab8e7",
+    "instruction_edits": 581,
+    "retained_isa": {
+      "cssc-trap": 5
+    }
+  }
+]

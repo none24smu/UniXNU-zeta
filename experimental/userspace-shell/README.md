@@ -385,3 +385,18 @@ resources can still retain their prior format. A subsequent capture still had
 560 nonblack pixels and presented2. This is not yet a successful format or GUI
 repair. The purge-ca helper uses the verified single-port CARenderServerPurgeServer
 wrapper to test resource recreation without killing BackBoard or rebooting.
+
+
+The coherent replicatord78-record extension was fully read back, all74 lookup
+entries verified, target pages invalidated readonly, and the stock service
+unthrottled normally. PID12029 survived. Source inventory:
+selected-startup/replicator.json. Runtime receipts:
+live-display74/replicator-start1/{bulk-upload2,coherent-result,runtime-applied}.json.
+A newer SpringBoard main then waited on com.apple.datamigrator. That provider
+was observed in its normal NSRunLoop at PID12320, then exited0 when idle.
+This differs from the CPU faults repaired earlier; do not infer another CPU
+patch is needed merely from a pending IPC request.
+
+The CA purge returned0 after the deep-framebuffer policy change; presented
+remained2, BackBoard66 survived, and the policy read back0. These facts do not
+prove a new output format. Keep the original policy word1 for rollback.

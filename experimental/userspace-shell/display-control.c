@@ -125,7 +125,7 @@ static int control(int argc,char **argv){
   const char *path=generic?argv[2]:(context?"/System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored":"/System/Library/PrivateFrameworks/TCC.framework/Support/tccd");
   uint64_t entry=generic?strtoull(argv[4],NULL,0):(context?0x2930ULL:0x314acULL);
   uint64_t expected=generic?strtoull(argv[3],NULL,0):(context?106416:1127104);
-  if(generic&&((strncmp(path,"/System/Library/",16)&&strncmp(path,"/usr/libexec/",13)&&strncmp(path,"/usr/sbin/",10))||strstr(path,"..")||expected<4||expected>64*1024*1024||entry>expected-4||(entry&3))){puts("invalid stock-file request");return 2;}
+  if(generic&&((strncmp(path,"/System/Library/",16)&&strncmp(path,"/usr/libexec/",13)&&strncmp(path,"/usr/sbin/",10)&&strncmp(path,"/Applications/",14))||strstr(path,"..")||expected<4||expected>64*1024*1024||entry>expected-4||(entry&3))){puts("invalid stock-file request");return 2;}
   int fd=open(path,O_RDONLY);if(fd<0){perror("open tccd");return 1;}
   size_t page_bytes=(size_t)getpagesize();off_t file_offset=(off_t)(entry&~((uint64_t)page_bytes-1));size_t entry_offset=entry-(uint64_t)file_offset;
   if(generic||context||!strcmp(argv[1],"invalidate-tccd-file")){

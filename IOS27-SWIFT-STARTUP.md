@@ -560,3 +560,21 @@ sites. Both production validator/VM/loader page-size checks pass for all 53
 original signed files, and all four rejection gates pass. Boot 61 tests this
 one dependency, preserving the boot 60 kernel, owner trust cache and arguments.
 Native service progress and a visible frame remain pending.
+
+
+### NetworkExtension initialization dependency (boots 61–62)
+
+Boot 61 keeps original ManagedSettingsAgent71 alive and profiled passes its
+ManagedSettings request. A marked intentional three-process SIGABRT diagnostic
+shows profiled's next initialization wait inside NetworkExtension. The caller
+creates a connection using the exact cached string `com.apple.nehelper` and
+performs its synchronous request. Native nehelper repeatedly faults at PACIBSP
+0x100026464. ManagedSettingsAgent itself is now in the libdispatch event wait.
+
+`select-zeta-ios27-nehelper.py` adds 1,252 proven CPU edits plus the header,
+grouped into 1,216 records (90,605 total). The exact original SHA/CDHash, Apple
+trust membership and whole-code proof are required. The one retained scalar
+CSSC site passed 256 production-emulator state comparisons; four rejection
+gates pass before output creation. Boot 62 tests this dependency using the
+same boot 61 kernel/trust/arguments and unchanged network/configuration logic.
+No visible iOS frame has been produced.

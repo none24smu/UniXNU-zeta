@@ -578,3 +578,54 @@ CSSC site passed 256 production-emulator state comparisons; four rejection
 gates pass before output creation. Boot 62 tests this dependency using the
 same boot 61 kernel/trust/arguments and unchanged network/configuration logic.
 No visible iOS frame has been produced.
+
+
+### Display takeover and missing GPU package (boots 63–64)
+
+The wide dual-panel framebuffer driver explicitly zeros the firmware image in
+`dStartHardware` when changing the stride. Native scanout samples remain zero,
+and no display swap has been logged. Framebuffer registration alone does not
+establish a working iOS27 compositor/presentation interface.
+
+Boot63 natively validates SDK9 root660e31d's spawn translator and owner-runtime
+mode2. The exact owner CodeDirectories are visible, original BackBoard65 remains
+alive, and the former postlink spawn/namespace slots are zero. This source-built
+kernel retains the same CPU table and owner trust as boot62. No iOS frame.
+
+Direct live inspection finds `NativeAdrenoGpu` registered with
+`MetalPluginName=NativeAdrenoMetal` and `MetalPluginClassName=NativeAdrenoMetalDevice`.
+However `/private/var/ngpu` and the discoverable NativeAdrenoMetal bundle are
+absent on iOS27 Data. The GPU log has only its two internal test clients.
+The existing plugin mount also checks a sealed lower AGXMetalG18P bundle,
+whereas this IPSW contains AGXMetalG19P. Root patch
+`zzzzzzzzzz-ios27-gpu-plugin-mount.patch` selects the appropriate lower entry per
+source profile; both host profile checks pass. It preserves the owner mount and
+AMFI requirements. SDK10 run40701589370 adds a typed UIO_SYSSPACE VFS mkdir
+entry and a bounded USB shell command for this owner package tree. The normal
+Data image and consolidated iOS27 job cache are preserved.
+
+The selected restore package is the exact last frame-producing iOS26 control,
+qcom-userland-cache-batch1 (kernel b988bfcb...), including the live MSAA plugin:
+`NativeAdrenoMetal.msaa`, SHA15756331f15708eeba938d988b065aac741ba7fddf1ab7bb991229efe5332dba,
+CD307f267a55d4f98b78aca9ed9212ea6f14cec70c. Matching Turnip is
+SHAa68b7ad2ac7fa1f53b3f97f92922b450f934155c5d6df22462234d55491cecdd,
+CD5b9c6a355d144f546a6ba5e4fe2d63d518c54954. Signed pages and membership in
+that control's trust cache are verified. Its client list includes MercuryPosterExtension
+and SBRendererService; BackBoard takes its separate compositor path. The older
+AIR diagnostic plugin and unqualified replacement frontend are not selected.
+
+`stage-zeta-ios27-gpu-package.py` installs only the seven pinned addon files,
+refuses different existing content, keeps Info.plist last and verifies full USB
+readback. No old job caches, probe jobs or SpringBoard preferences are imported.
+Two exact owner trust entries are still required in the boot image. Installation,
+iOS27 plugin loading, GPU composition and physical iOS27 frames remain pending.
+
+Boot64 adds 71 proven liveactivitiesd edits plus its guarded header (72 records;
+90,677 total). The original trusted executable has no remaining ISA after the
+plan. Both page-size sanitizer checks and four negative selector gates pass.
+Original liveactivitiesd257 now stays alive around3.5MiB, while SpringBoard30
+still waits in ActivityKit `subscribeWithOptions:error:`. Marked deliberate
+SIGABRT diagnostics show liveactivitiesd blocked during CarKit/Session initialization,
+with IDS requests waiting for the untranslated identityservicesd. This is a
+separate remaining startup dependency, not evidence that installing the plugin
+alone will finish UI startup.

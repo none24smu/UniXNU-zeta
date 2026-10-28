@@ -416,3 +416,58 @@ an error-path caller transition, not successful data migration. PosterBoard,
 InputUI and AccessibilityUIServer began launching and faulted on unsupported
 entry instructions. Their exact signatures and complete CPU lowering plans,
 plus the PowerLog helpers, are pinned in selected-startup/ui.json.
+
+
+### Live normal presentation fixed; remaining LCD-Off watchdog
+
+The direct framebuffer output selection diagnostic now works at runtime.
+scripts/select-zeta-ios27-bgra-output.py pins the exact132333568-byte .01 cache,
+SHA ec1f2ab4fb79f1fbf1d7115ae49fff2d93d4f7cfd93fe451f8f868b67f6c94fe,
+CD fac067f54dba8f64ed150be8694c3703248b9f0c. The WindowServer framebuffer format
+routine0x1843c293c (offset0x3fc293c) returns BGRA0x42475241. A caller compares
+its existing framebuffer format to this return value and recreates mismatched
+resources. This is a narrow output compatibility behavior, not CPU lowering
+or support for displaying b3a8 bytes as BGRA. Original files/signatures remain
+unchanged. Native reads in BackBoard66 confirmed all3 replacement instructions.
+
+The full .01 fixup interval was replaced by a fresh253-record closure containing
+all252 existing CPU records plus the one output record. The original interval
+was compared fully against the selected source before copying. The native bulk
+copy required an all-zero destination and verified the complete28336-byte range;
+64 independent device anchors matched. A guarded64-byte native copy replaces
+one aligned8-byte index entry while all neighboring entries remain identical.
+The loaded copyin64 path was verified to use paired64-bit register stores;
+never use the byte-copy tail to publish a range pair. Existing atomic32 line
+updates retain their narrower contract. All debug handler metadata was restored
+and a native4-byte original zero read verified after publication.
+Runtime receipts: live-display74/bgra-output1/{bulk-upload2,range-publication}.json.
+The live record high-water is809214 with252 old inactive records; the canonical
+active selection has808962 records over80 filenames. Parsed diagnostic803168
+remains unchanged. Do not confuse these different counters.
+
+After target-page invalidation, ordinary BackBoard swaps changed from repeated
+b3a8 rejection to accepted surfaces. Presented rose from2 prior manual frames
+to759, then1574 without any new manual presentation. One periodic GPU report
+recorded357 offers/357 done/0 failed; GPU reporting counters reset periodically,
+whereas presented is cumulative. Both physical INTF frame counters advanced by8
+in a read-only sample; VIG0/1 still fetchedE1000000 with stride11264 and source
+x0/1410 respectively. Physical output evidence:
+live-display74/bgra-output1/physical-output-registers.txt. The owner explicitly
+reported seeing the lock screen, then reported it went black.
+
+That later black screen coincided with SpringBoard13377 exiting for the same
+BLS LCD transitionToDisplayMode:Off watchdog (reason32/0xb), then restarting as
+13500. BackBoard66 and automatic presentation survived. Thus normal frame
+delivery is repaired, but stable GUI and the display-transition lifecycle are
+not. The next bounded diagnostic uses the normal SBSUndimScreen no-argument
+API plus a timed PreventUserIdleDisplaySleep assertion, without suppressing
+the watchdog. Keep all stock jobs and the current boot while testing it.
+
+The six exact UI/provider CPU closures are published and pages refreshed:
+PerfPowerTelemetryClientRegistrationService, PerfPowerServices, PowerUIAgent,
+PosterBoard, InputUI and AccessibilityUIServer all ran. Runtime evidence is
+live-display74/ui-start1/. Its first index cache line required48 bytes of
+unchanged prefix because the index begins at offset48 in a64-byte cache line.
+A malformed short payload was rejected before writing. The resumed publisher
+verified the complete intermediate index and included the immutable prefix;
+all80 entries then matched in both views and all diagnostic handlers restored.

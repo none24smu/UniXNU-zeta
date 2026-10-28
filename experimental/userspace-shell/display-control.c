@@ -15,6 +15,8 @@
 #include <zlib.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <sys/mount.h>
+#include <objc/runtime.h>
+#include <objc/message.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -22,6 +24,20 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if((argc==2&&(!strcmp(argv[1],"lock-service-info")||!strcmp(argv[1],"lock-status")))||(argc==3&&!strcmp(argv[1],"request-unlock"))){
+  void *sbs=dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",RTLD_NOW|RTLD_LOCAL);if(!sbs)return 1;
+  alarm(10);
+  if(!strcmp(argv[1],"lock-status")){unsigned char passcode=0;unsigned char(*status)(unsigned char*)=(unsigned char(*)(unsigned char*))dlsym(sbs,"SBSGetScreenLockStatus");if(!status)return 1;unsigned char locked=status(&passcode);printf("SpringBoard locked=%u passcode_enabled=%u\n",locked,passcode);alarm(0);return 0;}
+  Class service_class=objc_getClass("SBSLockScreenService"),options_class=objc_getClass("SBSUnlockOptions");if(!service_class||!options_class)return 1;
+  if(!strcmp(argv[1],"lock-service-info")){Class classes[]={service_class,options_class};for(unsigned ci=0;ci<2;ci++){unsigned count=0;Method *methods=class_copyMethodList(classes[ci],&count);for(unsigned i=0;i<count;i++)printf("%s %s %s\n",class_getName(classes[ci]),sel_getName(method_getName(methods[i])),method_getTypeEncoding(methods[i]));free(methods);}alarm(0);return 0;}
+  const char *name=argv[2];if(strncmp(name,"unlock",6)&&strncmp(name,"requestUnlock",13)){puts("unlock selector required");return 2;}SEL selector=sel_registerName(name);Method method=class_getInstanceMethod(service_class,selector);if(!method)return 1;unsigned count=method_getNumberOfArguments(method);char arg[32]={0},reply[32]={0},returns[16]={0};method_getReturnType(method,returns,sizeof returns);if(returns[0]!='v'&&returns[0]!='B'&&returns[0]!='c')return 1;if(count<3||count>4)return 1;method_getArgumentType(method,2,arg,sizeof arg);if(count==4)method_getArgumentType(method,3,reply,sizeof reply);if(arg[0]!='@'||(count==4&&strncmp(reply,"@?",2)))return 1;
+  id service=((id(*)(id,SEL))objc_msgSend)((id)service_class,sel_registerName("new"));id options=((id(*)(id,SEL))objc_msgSend)((id)options_class,sel_registerName("new"));if(!service||!options)return 1;
+  SEL source=sel_registerName("setUnlockSource:");Method setter=class_getInstanceMethod(options_class,source);if(setter){char type[16]={0};method_getArgumentType(setter,2,type,sizeof type);if(strchr("qiIQ",type[0]))((void(*)(id,SEL,long))objc_msgSend)(options,source,24);}
+  void(^completion)(void)=^{puts("unlock completion received; lock status still requires verification");};
+  printf("requesting normal %s %s\n",class_getName(service_class),name);
+  if(count==4)((void(*)(id,SEL,id,id))objc_msgSend)(service,selector,options,(id)completion);else ((void(*)(id,SEL,id))objc_msgSend)(service,selector,!strncmp(arg,"@?",2)?(id)completion:options);
+  CFRunLoopRunInMode(kCFRunLoopDefaultMode,3,0);alarm(0);puts("unlock request returned; verify SpringBoard lock status");return 0;
+ }
  if((argc==2&&!strcmp(argv[1],"wake-sbs"))||(argc==3&&!strcmp(argv[1],"keep-display-awake"))){
   /* Shipped SBSUndimScreen0x199d57f54 has no arguments. Use the normal
    * user-idle display assertion and repeated wake requests, with a bounded

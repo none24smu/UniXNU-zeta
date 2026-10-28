@@ -17,11 +17,16 @@ def main():
     assert sha(archive)==EXPECTED
     src=out/'source';src.mkdir(exist_ok=True)
     with tarfile.open(archive) as t:t.extractall(src,filter='data')
+    # Keep SDK declarations out of Dash's builtins.def preprocessor input.
+    # Only C translation units need the owner-platform fork declarations.
+    shim=(ROOT/'ios-posix.h').read_text()
+    for unit in (src/'dash-0.5.12/src').glob('*.c'):
+        unit.write_text(shim+'\n'+unit.read_text())
     sdk=read('xcrun','--sdk','iphoneos','--show-sdk-path');cc=read('xcrun','--sdk','iphoneos','--find','clang')
     flags=['-target','arm64-apple-ios17.0','-march=armv8-a','-isysroot',sdk,'-O2','-fstack-protector-strong']
     ios=out/'ios-cc';ios.write_text('#!/bin/sh\nexec '+shlex.join([cc,*flags])+' "$@"\n');ios.chmod(0o755)
     host=out/'host-cc';host_sdk=read('xcrun','--sdk','macosx','--show-sdk-path');host.write_text('#!/bin/sh\nexec '+shlex.join([cc,'-isysroot',host_sdk])+' "$@"\n');host.chmod(0o755)
-    env=os.environ.copy();env.pop('SDKROOT',None);env.update(CC=str(ios),CC_FOR_BUILD=str(host),CFLAGS='-O2',CPPFLAGS='-include '+shlex.quote(str(ROOT/'ios-posix.h')),ac_cv_func_stat64='no')
+    env=os.environ.copy();env.pop('SDKROOT',None);env.update(CC=str(ios),CC_FOR_BUILD=str(host),CFLAGS='-O2',CPPFLAGS='',ac_cv_func_stat64='no')
     build=out/'dash-build';build.mkdir(exist_ok=True)
     run(src/'dash-0.5.12/configure','--host=aarch64-apple-darwin','--build=aarch64-apple-darwin-build','--without-libedit',cwd=build,env=env)
     run('make','-j3',cwd=build,env=env)

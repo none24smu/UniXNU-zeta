@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <zlib.h>
+#include <CommonCrypto/CommonDigest.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -20,6 +21,12 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==4&&!strcmp(argv[1],"hash-file")){
+  uint64_t expected=strtoull(argv[3],NULL,0);struct stat st;int fd=open(argv[2],O_RDONLY);
+  if(fd<0){perror("open hash file");return 1;}if(fstat(fd,&st)||(uint64_t)st.st_size!=expected||!expected||expected>1024*1024*1024){close(fd);puts("hash file size mismatch");return 1;}
+  void *data=mmap(NULL,(size_t)expected,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(data==MAP_FAILED){perror("map hash file");return 1;}
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data,(CC_LONG)expected,digest);munmap(data,(size_t)expected);printf("file sha256=");for(unsigned i=0;i<sizeof digest;i++)printf("%02x",digest[i]);printf(" bytes=%llu\n",(unsigned long long)expected);return 0;
+ }
  if((argc==6||argc==7)&&!strcmp(argv[1],"invalidate-cache-page")){
   const char *prefix="/System/Library/Caches/com.apple.dyld/";
   const char *cryptex="/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/";

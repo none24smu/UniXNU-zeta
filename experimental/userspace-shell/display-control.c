@@ -12,8 +12,10 @@ extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
 #include "display-framebuffer.h"
+#include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==3&&!strcmp(argv[1],"capture"))return capture_ca_display(argv[2]);
  if(argc==2&&!strcmp(argv[1],"framebuffer"))return probe_framebuffer();
  if(argc==2&&!strcmp(argv[1],"probe")){const char *names[]={"com.apple.CARenderServer","com.apple.libEDR.Notification","com.apple.backboard.display.services"};for(unsigned i=0;i<3;i++){mach_port_t port=0;kern_return_t kr=bootstrap_look_up(bootstrap_port,names[i],&port);printf("lookup %s kr=%d port=%#x\n",names[i],kr,port);if(port)mach_port_deallocate(mach_task_self(),port);}return 0;}
  if(argc<3){fprintf(stderr,"usage: display-control probe | threads PID | abort PID TID | read32 PID ADDRESS | write32 PID ADDRESS EXPECTED VALUE\n");return 2;}

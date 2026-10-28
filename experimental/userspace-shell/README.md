@@ -241,3 +241,74 @@ Evidence: live-display74/tccd-bitmap1/preflight.json, cleared.json, kick.txt,
 ps.txt; the latter shows tccd is not yet surviving. Preserve the sole USB reader,
 root Dash and agent while retrying the specific service. The physical logo and
 normal continuous UI presentation are separate proof gates.
+
+## Stock startup dependencies advanced live (boot74)
+
+With the targeted cache refresh, tccd PID6386 survived and identityservicesd's
+main thread moved from TCC to `com.apple.coreduetd.context`. Actual connection
+labels were recovered from the blocked libxpc connection, not the Mach reply
+port: the dispatch sync wrapper saves the original connection in its frame;
+connection+0xa8 points to the dispatch_mach, whose label is at+0x48. Saved trap
+x3 in a split send/receive is a reply right and does NOT identify the server.
+See live-display74/tccd-start4/dispatch-labels.json.
+
+That service is contextstored, not coreduetd. contextstored's original main had
+faulted on PACIBSPPC0x100002930. The exact signed source passed complete code
+proof (217 edits,205 grouped/header records). The new selector is
+scripts/select-zeta-ios27-contextstored.py. All new records were appended to
+unused runtime capacity; the sorted file index points at this appended range.
+No original sealed executable was rewritten. Targeted file discard and reset
+of only its two __TEXT validation bits let launchd start PID6689 successfully.
+
+contextstored then waited for `com.apple.calaccessd`, established by its actual
+XPC connection. The original calaccessd passed complete proof (36 edits,37
+records). scripts/select-zeta-ios27-calaccessd.py retains the exact fingerprints
+and original trust membership. The live extension and a one-page bitmap refresh
+started calaccessd PID6798. Its main thread then waited for
+`com.apple.locationd.synchronous`. Other workers waiting for remindd, linkd and
+appprotectiond were observed separately; do not confuse them with the main wait.
+SpringBoard's main still waited through ActivityKit at this checkpoint.
+
+Index publication preserves existing lookups at every intermediate32-bit store:
+copy the old final entry into the unused next slot, enlarge file_count, then
+shift duplicate entries backward, writing first before end. Lower_bound always
+finds the earlier complete duplicate. The final new-name range is empty until
+its end is published; all prior names retain their exact intervals. The host
+model verifies every existing lookup after every store. Never replace an active
+index wholesale or shift the huge existing record array. Each original interval
+and preimage is journaled. One per-word readback disagreement stopped the first
+attempt; a complete index read confirmed the pending store in both views, then
+publication resumed with aligned64-byte checks. Completed receipts are
+live-display74/contextstored-start1/runtime-applied.json and
+live-display74/calaccessd-start1/runtime-applied.json. The canonical next-build
+tables are sorted normally and remain distinct from the live append layout.
+
+locationd's exact original39,904,816-byte binary passed complete code proof:
+266,961 edits,250,961 grouped/header records;1,669 CSSC instructions remain for
+the already-qualified kernel trap mechanism. The selector is
+scripts/select-zeta-ios27-locationd.py. The canonical cumulative table is
+native27-locationd-selected1/ (801,531 records). Future boot packaging must use
+the updated selection and recheck ADT/firmware size limits; do not assume the
+previous32MiB loader cap fits the larger table. Runtime capacity remains1,048,576.
+
+To avoid hundreds of thousands of USB word writes, the owner diagnostic supports
+`upload-fixup-records-zlib OWNER_FILE EXACT_UNCOMPRESSED_BYTES`. Host validation
+and exact staged-file readback precede it. A temporary existing debug.bpf_debug
+OID uses sysctl_handle_opaque with arg1 set to the precise unused record range
+and arg2 to its exact size. No kernel instruction bytes are changed. The helper
+first reads the entire destination and requires an exact zero preimage; it then
+copies the verified decompressed records and reads the entire kernel range back
+for memcmp. The handler is restored FIRST, then its arguments; all original80
+OID bytes must match in both views before publication. Never leave this handler
+configured or use it for arbitrary kernel data. Independently read deterministic
+device anchors before publishing the new lookup. This is RAM data, not executable
+injection, code-signature bypass or a sealed-file write.
+
+The first bulk upload transferred28,107,632 bytes from a1,155,952-byte container:
+full zero preimage verified, native exact readback1, CRC32a6f116e3,64 device record
+anchors exact, original debug handler/arguments restored. Receipt:
+live-display74/locationd-start1/bulk-upload.json and native-bulk-upload.txt.
+Cache invalidation still needs targeted validation-bit clearing; a record upload
+alone does not repair already-cached executable pages. Service admission, active
+request handling and visible UI must each be verified after the targeted kick.
+The TCC self-confinement workaround above remains separate and temporary.

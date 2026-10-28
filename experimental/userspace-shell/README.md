@@ -148,3 +148,53 @@ into the next reproducible build after the live fix is qualified. The current RA
 trust edits are not automatically present in the saved boot image. Preserve Dash
 and shell-agent trust entries and all other modules. No OS reboot or flash was
 used for this presentation result. Never open a second USB reader.
+
+## Keybag event service and UI startup (same boot74)
+
+After physical logo proof, a passive SpringBoard PID30 stack showed its main
+thread in a synchronous ActivityKit/BoardServices request. liveactivitiesd had
+repeatedly trapped at SessionSyncEngine0x2a0e21924. Exact call analysis found
+MKBEventsRegister returningNULL, followed by an explicit nil trap; this was not
+an unsupported CPU instruction at that site.
+
+IORegistry had no AppleKeyStore. The compiled native_keyevents_stage was0 and
+status-1. The boot74 arguments included sheng-aks=1 but omitted its companion
+**offline-key-events=1**; KeyStoreProbe.cpp explicitly requires both for this
+persistent owner configuration. The working iOS26 arguments had both. Future
+boot configurations must retain both flags and verify native stage3/status0 and
+real IORegistry publication. This is the existing owner development state/event
+service; it does not provide a real SEP or Apple hardware key protection.
+
+The already-loaded native_keystore_probe was initialized live in a normal
+kernel thread. A guarded, temporary debug sysctl callback and temporary argument
+substitution invoked the existing function once. The original handler/kind were
+restored. The original complete1024-byte argument buffer was then restored and
+verified in both device and normal aperture views. No executable code, sealed
+file or persistent partition was changed by this activation. Service publication
+succeeded: AppleKeyStore, stage3/status0. The RAM service survives argument cleanup
+until reboot; the saved boot image still needs the missing flag added.
+
+Readback detail: per-word immediate device reads sometimes disagreed with the
+normal aperture. Do not claim the views agree or attribute this to a Python data
+cache. The completed cleanup used batched reverse-order writes, whole aligned
+64-byte device reads and a final complete normal read. Both views exactly matched
+the original1024 bytes. Do not blindly replay a live callback patch using these
+boot-specific addresses. Retain preimages, guards, journals and exact restoration.
+
+Evidence: live-display74/keyevents-start1/preflight.json,
+keyevents-start2/result.json, keyevents-start2/bootargs-restore.json,
+springboard-after-logo.json, liveactivities-crash-api/, liveactivities-target-api/.
+The initial activation attempt was aborted and rolled back on a readback mismatch.
+The successful initializer receipt's intermediate bootargs_restored=false is
+superseded only by the separate completed bootargs-restore.json receipt.
+
+The last liveactivitiesd crash preceded service publication. Recent launchd retries
+were1200 seconds apart, so a targeted unthrottle is preferable to waiting20minutes.
+The shipped libxpc xpc_service_create_from_specifier(specifier,queue) and
+xpc_service_kickstart_with_flags(service,0) issue a request with
+unthrottle=true, suspended=false and kill=false. The helper hardcodes
+system/com.apple.liveactivitiesd. Its first request returned144 (required
+entitlement missing). Exact launchd kick policy requires
+**com.apple.private.xpc.service-attach**; build-display-control.py now signs the
+owner diagnostic with that entitlement. Retry execution and surviving service
+must be verified separately; an accepted kick alone is not UI startup proof.

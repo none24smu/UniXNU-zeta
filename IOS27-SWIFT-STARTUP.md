@@ -173,3 +173,31 @@ over27 files, retains both initializer stops unchanged, and passes production-C
 16KiB readback and the initializer direct-CFG gate. No new native service result
 follows from these host checks. Evidence: `../native27-next-helpers-plan1/`,
 `../native27-next-helpers-selected1/`, `../native27-next-helpers-host16k/`.
+
+
+## Native repeat-exec signature fix and APFS phase helper
+
+Boot13 accepted all39,311 indexed records (no table rejection or mismatch in the
+verified counter snapshot) and the initializer took its unchanged no-op path.
+Boot14 proved the next repeat-exec failure: a read-only /sbin/mount capture had
+1,104 changed bytes, all admitted translations. The original CodeDirectory
+rejected page0, and the actual kernel bad-hash counter was1. The source loader
+revalidates its initial-page copy, producing LOAD_FAILURE/EBADEXEC85 on reuse.
+
+Root commitaa739d6 restores exact replacement bytes in the loader's private
+kalloc/vn_rdwr buffer before parsing and the normal signature checks. It leaves
+UBC/executable pages translated. Host captured-file regression tests pass all23
+original signature pages and repeated copies; an unrelated mutation still fails.
+CI40623291492 passed, and exact SDK object/linked code plus resolved BL targets
+prove the loader calls the restore function before cs_validate_range. The final
+prelinked/guarded loader bytes match the SDK-linked bytes.
+
+Boot15 confirms this fix on hardware: it logged79 restored mount records, then
+the second mount exec succeeded. That process exec'd apfs_boot_util, which
+faulted at0x100000d28 on entry PACIBSPPC; the phase2 boot task was not complete.
+The helper's actual execv arguments are its full path and literal2. Its signed
+original and proof plan have149 edits,141 grouped descriptors, zero anomalies
+and one retained CSSC instruction. `select-zeta-ios27-apfs-boot.py` binds those
+exact inputs and extends the table to39,452 entries/28 files. It does not change
+arguments, filesystem policy, source images or signatures. Production-C16KiB
+page readback passes. Native result is separate, under ../native27-boot-isolation1/.

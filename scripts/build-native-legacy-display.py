@@ -52,6 +52,9 @@ command += ['-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-deprecated-declar
 def compile_unit(source, output, name, extra=(), base=None, check=True, cwd=None):
     base = base or command
     unit = [str(source) if part == str(SOURCE) else str(output) if part == str(destination) else part for part in base]
+    (OUT / (name + '.command.json')).write_text(json.dumps(dict(
+        arguments=unit + list(extra), directory=str(cwd or record['directory']),
+        source=str(source), source_sha256=hashlib.sha256(Path(source).read_bytes()).hexdigest()), indent=2) + '\n')
     result = subprocess.run(unit + list(extra), cwd=cwd or record['directory'], capture_output=True, text=True, timeout=300)
     (OUT / (name + '.log')).write_text(result.stdout + result.stderr)
     if result.returncode and check:

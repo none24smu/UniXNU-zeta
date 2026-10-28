@@ -33,6 +33,7 @@ extern const char *proc_best_name(proc_t);
 extern int kernel_sysctlbyname(const char *, void *, size_t *, void *, size_t);
 extern uint64_t get_task_phys_footprint(task_t);
 extern int unlink1(vfs_context_t, vnode_t, user_addr_t, enum uio_seg, int);
+extern int native_owner_mkdir_gpu_path(const char *) __attribute__((weak_import));
 extern unsigned long long ml_phys_read_double_64(unsigned long long paddr);
 // xnu-12377 machine_routines.c: ml_io_map allocates KMA_PERMANENT, so ml_io_unmap of it panics ("Attempting to remove permanent
 // VM map entry", bis2); a mapping the shell drops again comes from ml_io_map_unmappable.
@@ -608,6 +609,7 @@ static void help(void) {
         "get <path> [off] [len]     base64 for the host (zeta-shell.py get/plist)",
         "put <path> <off> <b64>     write; offset 0 creates/truncates (zeta-shell.py put)",
         "rm <path>                  unlink",
+        "mkdir <path>               create owner GPU package directory (0755; /private/var/ngpu only)",
         "chown <path> <uid> <gid> | chmod <path> <mode>",
         "sysctl <name> [int]        read, or set an integer",
         "phys <pa> [words] | mmio <pa> [words] | mmiow <pa> <value>",
@@ -676,6 +678,11 @@ static int run(char *text) {
     }
     if (!strcmp(c, "put") && argc >= 4) return put(argv[1], argv[2], argv[3]);
     if (!strcmp(c, "rm") && argc >= 2) return remove_file(argv[1]);
+    if (!strcmp(c, "mkdir") && argc == 2) {
+        const int error = native_owner_mkdir_gpu_path ? native_owner_mkdir_gpu_path(argv[1]) : ENOTSUP;
+        zeta_shell_line("%s: mkdir %d", argv[1], error);
+        return error;
+    }
     if (!strcmp(c, "chown") && argc >= 4) return set_owner_or_mode(argv[1], argv[2], argv[3], 0);
     if (!strcmp(c, "chmod") && argc >= 3) return set_owner_or_mode(argv[1], argv[2], NULL, 1);
     if (!strcmp(c, "sysctl") && argc >= 2) return sysctl_command(argv[1], argc > 2 ? argv[2] : NULL);

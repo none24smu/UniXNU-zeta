@@ -15,6 +15,17 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==2&&!strcmp(argv[1],"kick-liveactivities")){
+  /* Verified shipped iOS27 libxpc service API. flags0: not suspended,
+   * no kill; the API always includes unthrottle=true in the launchd request. */
+  void *xpc=dlopen("/usr/lib/system/libxpc.dylib",RTLD_NOW|RTLD_LOCAL);
+  void*(*create)(const char*,void*)=xpc?(void*(*)(const char*,void*))dlsym(xpc,"xpc_service_create_from_specifier"):NULL;
+  int(*kick)(void*,uint64_t)=xpc?(int(*)(void*,uint64_t))dlsym(xpc,"xpc_service_kickstart_with_flags"):NULL;
+  void(*release)(void*)=xpc?(void(*)(void*))dlsym(xpc,"xpc_release"):NULL;
+  if(!create||!kick||!release){puts("service APIs missing");return 1;}
+  void *service=create("system/com.apple.liveactivitiesd",NULL);printf("create liveactivities service=%p\n",service);if(!service)return 1;
+  int status=kick(service,0);printf("liveactivities kickstart/unthrottle status=%d\n",status);release(service);return status?1:0;
+ }
  if(argc==3&&!strcmp(argv[1],"capture"))return capture_ca_display(argv[2],0);
  if(argc==3&&!strcmp(argv[1],"present"))return capture_ca_display(argv[2],1);
  if(argc==2&&!strcmp(argv[1],"wake"))return probe_framebuffer(1);

@@ -18,17 +18,20 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
- if(argc==2&&(!strcmp(argv[1],"invalidate-tccd-page")||!strcmp(argv[1],"invalidate-tccd-file")||!strcmp(argv[1],"invalidate-contextstored-file"))){
+ if((argc==5&&!strcmp(argv[1],"invalidate-stock-file"))||(argc==2&&(!strcmp(argv[1],"invalidate-tccd-page")||!strcmp(argv[1],"invalidate-tccd-file")||!strcmp(argv[1],"invalidate-contextstored-file")))){
+  int generic=argc==5;
   int context=!strcmp(argv[1],"invalidate-contextstored-file");
-  const char *path=context?"/System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored":"/System/Library/PrivateFrameworks/TCC.framework/Support/tccd";
-  uint64_t entry=context?0x2930ULL:0x314acULL;
+  const char *path=generic?argv[2]:(context?"/System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored":"/System/Library/PrivateFrameworks/TCC.framework/Support/tccd");
+  uint64_t entry=generic?strtoull(argv[4],NULL,0):(context?0x2930ULL:0x314acULL);
+  uint64_t expected=generic?strtoull(argv[3],NULL,0):(context?106416:1127104);
+  if(generic&&((strncmp(path,"/System/Library/",16)&&strncmp(path,"/usr/libexec/",13)&&strncmp(path,"/usr/sbin/",10))||strstr(path,"..")||!expected||expected>32*1024*1024||entry>expected-4||(entry&3))){puts("invalid stock-file request");return 2;}
   int fd=open(path,O_RDONLY);if(fd<0){perror("open tccd");return 1;}
   size_t page_bytes=(size_t)getpagesize();off_t file_offset=(off_t)(entry&~((uint64_t)page_bytes-1));size_t entry_offset=entry-(uint64_t)file_offset;
-  if(context||!strcmp(argv[1],"invalidate-tccd-file")){
-   struct stat st;if(fstat(fd,&st)||st.st_size!=(context?106416:1127104)){puts("unexpected stock file size; no invalidation");close(fd);return 1;}
+  if(generic||context||!strcmp(argv[1],"invalidate-tccd-file")){
+   struct stat st;if(fstat(fd,&st)||(uint64_t)st.st_size!=expected){puts("unexpected stock file size; no invalidation");close(fd);return 1;}
    file_offset=0;entry_offset=(size_t)entry;page_bytes=((size_t)st.st_size+(size_t)getpagesize()-1)&~((size_t)getpagesize()-1);
   }
-  printf("tccd VM page=%zu file_offset=%#llx entry_offset=%#zx\n",page_bytes,(unsigned long long)file_offset,entry_offset);
+  printf("invalidate %s mapping=%zu file_offset=%#llx entry_offset=%#zx\n",path,page_bytes,(unsigned long long)file_offset,entry_offset);
   void *page=mmap(NULL,page_bytes,PROT_READ|PROT_EXEC,MAP_SHARED,fd,file_offset);close(fd);
   if(page==MAP_FAILED){perror("map tccd page");return 1;}
   uint32_t before=0;memcpy(&before,(char*)page+entry_offset,4);printf("tccd mapped entry before=%#x\n",before);
@@ -43,7 +46,7 @@ static int control(int argc,char **argv){
    * validation context before tccd's exec fixups can run. Leave it discarded. */
   munmap(page,page_bytes);return status?1:0;
  }
- if(argc==2&&(!strcmp(argv[1],"kick-liveactivities")||!strcmp(argv[1],"kick-tccd")||!strcmp(argv[1],"kick-contextstored"))){
+ if((argc==3&&!strcmp(argv[1],"kick-service"))||(argc==2&&(!strcmp(argv[1],"kick-liveactivities")||!strcmp(argv[1],"kick-tccd")||!strcmp(argv[1],"kick-contextstored")))){
   /* Verified shipped iOS27 libxpc service API. flags0: not suspended,
    * no kill; the API always includes unthrottle=true in the launchd request. */
   void *xpc=dlopen("/usr/lib/system/libxpc.dylib",RTLD_NOW|RTLD_LOCAL);
@@ -51,7 +54,8 @@ static int control(int argc,char **argv){
   int(*kick)(void*,uint64_t)=xpc?(int(*)(void*,uint64_t))dlsym(xpc,"xpc_service_kickstart_with_flags"):NULL;
   void(*release)(void*)=xpc?(void(*)(void*))dlsym(xpc,"xpc_release"):NULL;
   if(!create||!kick||!release){puts("service APIs missing");return 1;}
-  const char *specifier=!strcmp(argv[1],"kick-contextstored")?"system/com.apple.contextstored":(!strcmp(argv[1],"kick-tccd")?"system/com.apple.tccd":"system/com.apple.liveactivitiesd");
+  const char *specifier=argc==3?argv[2]:(!strcmp(argv[1],"kick-contextstored")?"system/com.apple.contextstored":(!strcmp(argv[1],"kick-tccd")?"system/com.apple.tccd":"system/com.apple.liveactivitiesd"));
+  if(strncmp(specifier,"system/com.apple.",17)||strstr(specifier,"..")||strchr(specifier+7,'/')){puts("invalid stock service specifier");return 2;}
   void *service=create(specifier,NULL);printf("create %s service=%p\n",specifier,service);if(!service)return 1;
   int status=kick(service,0);printf("%s kickstart/unthrottle status=%d\n",specifier,status);release(service);return status?1:0;
  }

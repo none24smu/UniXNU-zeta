@@ -225,7 +225,7 @@ def capture(args):
                             time.sleep(.01)
                     event('sent', command=command.decode('ascii', 'replace'), bytes=written)
                 try:
-                    readable, _, _ = select.select([fd], [], [], 0.1)
+                    readable, _, _ = select.select([fd], [], [], args.command_poll_ms / 1000)
                     if not readable:
                         continue
                     data = os.read(fd, 65536)
@@ -275,11 +275,14 @@ def main():
     parser.add_argument('--port', help='specific ttyACM path (still verifies zeta identity)')
     parser.add_argument('--output', help='new capture directory (default: build/usb-log/<UTC time>)')
     parser.add_argument('--duration', type=float, default=0, help='total seconds including waiting; 0 waits until Ctrl-C')
+    parser.add_argument('--command-poll-ms', type=float, default=100, help='host command polling interval in milliseconds (1..1000)')
     parser.add_argument('--quiet', action='store_true', help='save without echoing the device log')
     parser.add_argument('--keep-running', action='store_true', help='leave the phone running after capture')
     parser.add_argument('--device-serial', default='0F00EFK214800A', help='Duo fastboot serial to verify after reset')
     parser.add_argument('--bootloader-timeout', type=float, default=30, help='seconds to wait for verified fastboot return')
     args = parser.parse_args()
+    if not 1 <= args.command_poll_ms <= 1000:
+        parser.error('--command-poll-ms must be between 1 and 1000')
     if args.duration < 0:
         parser.error('--duration must be nonnegative')
     if args.bootloader_timeout <= 0:

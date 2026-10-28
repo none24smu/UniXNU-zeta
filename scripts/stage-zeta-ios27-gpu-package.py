@@ -65,14 +65,30 @@ def save():
     temporary.replace(journal)
 
 
-def readback(path, size):
+def readback(path, size, expected):
     output = bytearray()
-    for offset in range(0, size, 1024 * 1024):
-        length = min(1024 * 1024, size-offset)
-        status, lines = shell.run(f'get {path} {offset} {length}', quiet=True, timeout=60)
-        assert status == 0, (path, offset, status)
-        piece = b''.join(base64.b64decode(line, validate=True) for line in lines if not line.startswith('bytes '))
-        assert len(piece) == length
+    # Bound retries to64KiB so interleaved diagnostic output cannot invalidate
+    # an entire large transfer. Every accepted chunk must match its source.
+    for offset in range(0, size, 64 * 1024):
+        length = min(64 * 1024, size-offset)
+        for attempt in range(3):
+            status, lines = shell.run(f'get {path} {offset} {length}', quiet=True, timeout=30)
+            assert status == 0, (path, offset, status)
+            try:
+                piece = b''.join(base64.b64decode(line, validate=True) for line in lines if not line.startswith('bytes '))
+                valid = len(piece) == length and piece == expected[offset:offset+length]
+                reason = 'source mismatch' if len(piece) == length else 'short readback'
+            except ValueError as error:
+                piece = b''
+                valid = False
+                reason = 'invalid readback framing: ' + str(error)
+            if valid:
+                break
+            report.setdefault('readback_retries', []).append(dict(path=path, offset=offset,
+                bytes=length, attempt=attempt+1, reason=reason,
+                observed_sha256=hashlib.sha256(piece).hexdigest()))
+            save()
+        assert valid, (path, offset, 'readback failed three times; no repair attempted')
         output.extend(piece)
     return bytes(output)
 
@@ -102,7 +118,7 @@ try:
         prior = shell.stat(path)
         if prior:
             assert prior['uid'] == '0' and prior['size'] <= len(content)
-            observed = readback(path, prior['size'])
+            observed = readback(path, prior['size'], content)
             assert observed == content[:len(observed)], 'preserve differing existing owner file'
             if len(observed) != len(content):
                 assert path in report['files'] and report['files'][path]['created_by_this_install']
@@ -127,9 +143,9 @@ try:
                 save()
                 print(f"  {offset}/{len(content)} bytes", flush=True)
                 next_progress += 1024 * 1024
-        status, lines = shell.run(f"chmod {path} {row['mode'][2:]}", quiet=True)
+        status, lines = shell.run(f"chmod {path} 0{int(row['mode'], 8):o}", quiet=True)
         assert status == 0, lines
-        observed = readback(path, len(content))
+        observed = readback(path, len(content), content)
         assert observed == content
         info = shell.stat(path)
         assert info['size'] == len(content) and info['uid'] == '0' and info['gid'] == '0'
@@ -141,6 +157,7 @@ try:
     report['all_staged_and_verified'] = all(item['full_readback_exact'] for item in report['files'].values())
     assert len(report['files']) == 7 and report['all_staged_and_verified']
     report['native_compositor_frame_verified'] = False
+    report.pop('last_error', None)
     save()
 except BaseException as error:
     report['last_error'] = str(error)

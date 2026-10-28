@@ -629,3 +629,32 @@ SIGABRT diagnostics show liveactivitiesd blocked during CarKit/Session initializ
 with IDS requests waiting for the untranslated identityservicesd. This is a
 separate remaining startup dependency, not evidence that installing the plugin
 alone will finish UI startup.
+
+
+Boot65 staged the exact seven-file MSAA/Turnip control into owner Data. Every
+file passed full USB readback, correct root ownership and mode before Info.plist
+was exposed last. Two transient stream errors were detected; fresh bounded
+readbacks matched the original. No repair of differing stored content occurred.
+The installer now retries bounded readbacks and sends explicit octal chmod modes.
+Capture moved intentionally with --keep-running to device-capture-resumed2,
+command polling5ms, sole capture PID3550995; the phone was not reset by that move.
+Fresh validated live base/function reads confirm boot65 addon stage1/status2
+(source absent at startup), parsed90677/rejected0/mismatched-pages0. Thus staging
+files live cannot activate the current boot's absent startup-only union mount.
+
+SDK10 CI40701589370 compiled/linked its kernel and passed prior gates, but its
+final mkdir host fixture failed a macOS macro collision. Actual SDK objects and
+linked functions were retained/audited; native boot65 mkdir/file staging worked.
+SDK11 CI40706527500 succeeds end-to-end with the fixture fixed, compiled capacity
+262144 and source G19 lower verification. Linked BSS and eight startup/display
+function bodies match retained SDK objects. The host report's old hardcoded
+capacity metadata was corrected to parse actual production constants; both
+4KiB/16KiB IdentityServices200226-record checks pass with262144 actual capacity.
+The original121332 IdentityServices edits retain1326 scalar CSSC instructions,
+qualified by339456 whole-state checks, using the existing trap handler.
+
+RAM boot66 selects qcom-ios27-identity-gpu1, SDK11 kernel2d1163cc... and
+boot3e41881b..., same boot65 trust payloads/arguments, with the200226-record
+IdentityServices table. No userdata reflash. Its purpose is plugin discovery,
+BackBoard Metal initialization, original IdentityServices/ActivityKit progress
+and an actual iOS27 compositor frame. Those native results remain pending.

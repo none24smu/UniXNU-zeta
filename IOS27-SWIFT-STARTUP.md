@@ -262,3 +262,52 @@ record/44-file table passes production-C4KiB/16KiB ASan/UBSan and actual cached
 mount repeat-exec/signature regression. This table requires the new capacity;
 it must not be booted with the old65,536-record kernel. Native UI-service
 execution and visible iOS27 UI remain unproven until the new RAM test.
+
+## Native ObjC runtime namespace and architecture diagnostic
+
+Boot26 reached the original SpringBoard framework and aborted because
+`/usr/lib/libobjc-trampolines.dylib` was absent from the plain namespace. The
+original file exists in mounted SystemOS. Boot27 exposed SystemOS `usr/lib`
+through a read-only bindfs union and changed that failure into an explicit dyld
+architecture rejection. VM-time header lowering is too late for this standalone
+library: dyld reads its on-disk header before executable mapping.
+
+`prepare-zeta-ios27-objc-runtime.py` prepares only the pinned original library
+(SHA256 `ce6ad3551dcd442d0b2ab172d93a5323d5976746e62a8fea8fc4161185e5dcc1`).
+It requires original code-page validation and membership in the supplied Apple
+trust cache, admits exactly the function-start `BRAA x16,x15` at file offset
+`0x4010`, lowers it to `BR x16`, sets the on-disk subtype to ARM64_ALL, and uses
+the existing owner-signature writer. There are no unresolved code boundaries or
+remaining unsupported instructions in this exact input. The derived owner
+CDHash is `585337d11d3e7a686735bf96efd65b8f418159a1`, with original trust-cache
+attributes copied. This is a separate exact-input diagnostic; the general x1
+converter remains unqualified.
+
+Boot30 verified the complete uploaded library by readback and verified the new
+header through `/usr/lib`. Boot31 left the initial SpringBoard untouched: it
+grew to approximately3.3MiB and exited with status`0xffffff00` (exit−1), rather
+than the previous dlopen abort. Boot32 kept SpringBoard alive in repeated process
+samples until a later system reset. These observations do not establish a UI,
+a rendered frame, or general service compatibility. The next instrumented
+capture targets the actual exit caller and code-signing decisions.
+
+The diagnostic namespace wrapper reuses the real SDK-built boot bindfs helper
+only after successful Data verification. It was compiled freestanding, checked
+with host sanitizers and an AArch64 Cortex-A76 fixture, and RAM-tested; it is not
+yet an SDK-integrated permanent namespace implementation. It adds two read-only
+unions while preserving the converted MainOS dyld. Its temporary owner-runtime
+source is an otherwise empty root-owned Data directory. A short staging boot
+followed immediately by PSCI reset did not retain the new file; a longer run did.
+Installation and durable transaction handling must remain explicit. No
+additional partition flashing was used for these tests.
+
+Boot35's intentional SIGABRT stack places the SpringBoard main thread in
+`FBSystemShellInitialize` → BackBoardServices display startup →
+`BKSDisplayGetMainScreenInfo` → synchronous Mach messaging. That is a diagnostic
+capture, not a spontaneous application crash. Code-signing diagnostics also
+caught a revalidation mismatch on cache page`0x624c000`, which contains the old
+Lockdown Mode C-string alias. Boot36 uses SDK build6's real8-byte public query
+(native shell returned0) and removes that alias entirely. The namespace and
+owner-library checks passed, but SpringBoard still received SIGKILL. Removing
+the alias therefore does not establish that the UI path is fixed; signal origin
+and BackBoard's display request remain the next discriminating observations.

@@ -22,6 +22,28 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==2&&!strcmp(argv[1],"check-debug-int")){
+  unsigned char value[64]={0};size_t length=sizeof value;int result=sysctlbyname("debug.bpf_debug",value,&length,NULL,0);uint32_t word=0;memcpy(&word,value,4);printf("debug int result=%d bytes=%zu value=%#x\n",result,length,word);return !result&&length==4?0:1;
+ }
+ if(argc==3&&!strcmp(argv[1],"patch-debug-lines")){
+  /* An owner record file holds a chain of exact64-byte pre/post images.
+   * Each transition changes at most one aligned32-bit word. A wrong debug
+   * target or handler fails the full preimage check before any write. */
+  struct stat st;if(strncmp(argv[2],"/private/var/ngpu/shell/",24))return 2;
+  int fd=open(argv[2],O_RDONLY);if(fd<0)return 1;if(fstat(fd,&st)||st.st_size<132||st.st_size>2116){close(fd);return 1;}
+  unsigned char *data=mmap(NULL,(size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(data==MAP_FAILED)return 1;
+  uint32_t count=0;memcpy(&count,data,4);if(!count||count>32||(uint64_t)st.st_size!=4+(uint64_t)(count+1)*64){munmap(data,(size_t)st.st_size);return 1;}
+  for(uint32_t i=0;i<count;i++){unsigned changes=0;for(unsigned off=0;off<64;off+=4)if(memcmp(data+4+i*64+off,data+4+(i+1)*64+off,4))changes++;if(changes>1){munmap(data,(size_t)st.st_size);puts("non-atomic line transition; no write");return 1;}}
+  unsigned char current[64];size_t length=sizeof current;int result=sysctlbyname("debug.bpf_debug",current,&length,NULL,0);
+  if(result||length!=64){printf("line handler guard result=%d bytes=%zu; no write\n",result,length);munmap(data,(size_t)st.st_size);return 1;}
+  uint32_t begin=count+1;for(uint32_t i=0;i<=count;i++)if(!memcmp(current,data+4+i*64,64))begin=i;
+  if(begin==count+1){puts("full line preimage mismatch; no write");munmap(data,(size_t)st.st_size);return 1;}
+  for(uint32_t i=begin;i<count;i++){
+   result=sysctlbyname("debug.bpf_debug",NULL,NULL,data+4+(i+1)*64,64);length=64;
+   if(result||sysctlbyname("debug.bpf_debug",current,&length,NULL,0)||length!=64||memcmp(current,data+4+(i+1)*64,64)){puts("native line readback mismatch");munmap(data,(size_t)st.st_size);return 1;}
+  }
+  printf("kernel line transitions=%u resumed_at=%u readback_exact=1\n",count,begin);munmap(data,(size_t)st.st_size);return 0;
+ }
  if(argc==2&&!strcmp(argv[1],"root-revalidation-probe")){
   /* Exact DEVELOPMENT kernel path: a root union request selects fresh-mount
    * handling; an unregistered filesystem type fails before mount mutation.

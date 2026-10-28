@@ -343,3 +343,40 @@ used by the fatal-port no-senders path. Resource notifications and the debug
 `machdep.task_get_fatal_port` facility can create such a port; the creation or
 drop caller has not yet been established. Do not suppress the kill or assume a
 resource-limit value without capturing its cause.
+
+## Verified watchdog-exit reset cause
+
+Boot40's repeat of the MobileGestalt image returned USB and kept the helper
+running. Boot42 captured the helper in its ordinary CoreFoundation run loop;
+BackBoard had progressed beyond the MobileGestalt XPC wait into Biome/attention
+initialization. The4.2-second timer calibration agreed with the host interval
+(CNTFRQ19.2MHz), so there was no measured timebase-rate error.
+
+A terminal-only USB logger in boot43 exposed the recurring exception at
+`DebuggerTrapWithState+0xec` (`0xfffffff00733c94c`), XNU's intentional debugger
+trap, rather than a direct fault in a display driver. Boot44 then captured the
+formatted reason before that trap: `watchdogd[233] exited`, signalSIGILL. The
+original watchdog entry `PACIBSPPC` at`0x10000a42c` had not been selected.
+
+`select-zeta-ios27-watchdog.py` admits only original watchdogd SHA256
+`03c8eb8b3b3ef5e64d9cf452a4a0212d24ac30c10788e79deaad99930c80f14a`,
+CDHash`0be506bab86845c35d8a285dd531860ca39eff0a`. Its870 proven translations
+and one header word become830 records, bringing the combined table to61,477.
+The sole retained instruction is exact `UMAX` word`0x9ac86528` at offset`0x26d8`,
+covered by the existing `zeta-cssc-compat=2` decoder. Original pages and Apple TC
+membership are required. Both page-size sanitizer checks and four negative
+selector cases passed; public output matches the RAM candidate byte for byte.
+
+Boot45 passed the original entry failure and reached an explicit breakpoint:
+`connect_to_kext() unexpectedly failed - unable to lookup watchdog KEXT service`.
+The watchdog backend is absent; CPU translation does not supply it. Subsequent
+re-executions also exposed original instructions returning on cached pages.
+Do not call watchdogd operational or claim a working hardware watchdog.
+
+For the next UI diagnostic, the existing `sheng-disable-watchdogd=1` bring-up
+policy is selected for this one unavailable job. Boot46 preserved the prior
+state: no`disabled.plist`, and an existing empty root-owned`disabled.migrated`.
+No broad lite/job-disable list is selected. The resulting single-key override
+must be verified on-device and removed when a real backend is integrated; merely
+removing the boot argument does not delete the persistent override. This is an
+explicit diagnostic exception to the full-service target, not its completion.

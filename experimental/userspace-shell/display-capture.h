@@ -24,7 +24,17 @@ static int capture_ca_display(const char *output,int present){
   int(*end)(void*)=fb?(int(*)(void*))dlsym(fb,"IOMobileFramebufferSwapEnd"):NULL;
   void *display=NULL;uint32_t swap_id=0;DisplayRect bounds={0,0,(double)w,(double)h};
   if(!getmain||!begin||!layer||!end){puts("presentation API missing");err=1;}
-  else{int result=getmain(&display);printf("present GetMainDisplay=%#x ref=%p\n",result,display);if(!result&&display){result=begin(display,&swap_id);printf("present SwapBegin=%#x swap_id=%u\n",result,swap_id);if(!result){int ls=layer(display,0,surface,bounds,bounds,0);printf("present SwapSetLayer=%#x surface_id=%u\n",ls,getid(surface));int es=end(display);printf("present SwapEnd=%#x\n",es);result=ls?ls:es;}}else if(!result)result=1;err=result!=0;if(!err){puts("present surface retained for 10 seconds");sleep(10);}}
+  else{int result=getmain(&display);printf("present GetMainDisplay=%#x ref=%p\n",result,display);if(!result&&display){result=begin(display,&swap_id);printf("present SwapBegin=%#x swap_id=%u\n",result,swap_id);if(!result){int ls=layer(display,0,surface,bounds,bounds,0);printf("present SwapSetLayer=%#x surface_id=%u\n",ls,getid(surface));int es=end(display);printf("present SwapEnd=%#x\n",es);result=ls?ls:es;}
+   /* The loaded 25F84 user client requires exactly 0x588 bytes. iOS27
+    * sends 0x6e0; swap ID, surface IDs, bounds and update masks retain
+    * their old prefix offsets. Retry only this owned single BGRA layer
+    * with that verified legacy prefix; never alter a system transaction. */
+   if((uint32_t)result==0xe00002bcU){
+    void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);
+    int(*submit)(uint32_t,uint32_t,const void*,size_t,void*,size_t*)=io?(int(*)(uint32_t,uint32_t,const void*,size_t,void*,size_t*))dlsym(io,"IOConnectCallStructMethod"):NULL;
+    if(submit){result=begin(display,&swap_id);printf("legacy SwapBegin=%#x swap_id=%u\n",result,swap_id);if(!result){result=layer(display,0,surface,bounds,bounds,0);printf("legacy SwapSetLayer=%#x\n",result);if(!result){uint32_t connection=0;memcpy(&connection,(unsigned char*)display+0x14,4);result=submit(connection,5,(unsigned char*)display+0x18,0x588,NULL,NULL);printf("legacy submit prefix=0x588 connection=%#x status=%#x\n",connection,result);}}}
+   }
+  }else if(!result)result=1;err=result!=0;if(!err){puts("present surface retained for 10 seconds");sleep(10);}}
  }
  CFRelease(surface);return err?1:0;
 }

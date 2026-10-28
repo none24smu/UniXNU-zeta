@@ -14,6 +14,7 @@
 #include <sys/sysctl.h>
 #include <zlib.h>
 #include <CommonCrypto/CommonDigest.h>
+#include <sys/mount.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -21,6 +22,24 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==2&&!strcmp(argv[1],"root-revalidation-probe")){
+  /* Exact DEVELOPMENT kernel path: a root union request selects fresh-mount
+   * handling; an unregistered filesystem type fails before mount mutation.
+   * The earlier root branch sets only root_fs_upgrade_try, which disables
+   * the validated-page bitmap optimization (actual signature checks remain). */
+  struct statfs before,after;if(statfs("/",&before)){perror("statfs before");return 1;}
+  printf("root before type=%s flags=%#x fsid=%#x:%#x\n",before.f_fstypename,before.f_flags,before.f_fsid.val[0],before.f_fsid.val[1]);
+  if(!(before.f_flags&MNT_ROOTFS)){puts("root mount guard failed; no request");return 1;}
+  int(*lookup)(const char*,void*)=(int(*)(const char*,void*))dlsym(RTLD_DEFAULT,"getvfsbyname");
+  int(*request)(const char*,const char*,int,void*)=(int(*)(const char*,const char*,int,void*))dlsym(RTLD_DEFAULT,"mount");unsigned char config[4096]={0};
+  if(!lookup||!request){puts("VFS APIs unavailable; no request");return 1;}
+  errno=0;int found=lookup("zeta_cs_diag",config);int reason=errno;printf("diagnostic filesystem lookup result=%d errno=%d\n",found,reason);
+  if(found==0||(reason!=ENOENT&&reason!=ENODEV)){puts("unknown filesystem guard failed; no request");return 1;}
+  errno=0;int result=request("zeta_cs_diag","/",MNT_UNION,NULL);reason=errno;
+  if(statfs("/",&after)){perror("statfs after");return 1;}
+  int same=before.f_flags==after.f_flags&&!memcmp(&before.f_fsid,&after.f_fsid,sizeof before.f_fsid)&&!strcmp(before.f_fstypename,after.f_fstypename);
+  printf("invalid-type union request result=%d errno=%d root_mount_unchanged=%d\n",result,reason,same);return result==-1&&same?0:1;
+ }
  if(argc==4&&!strcmp(argv[1],"hash-file")){
   uint64_t expected=strtoull(argv[3],NULL,0);struct stat st;int fd=open(argv[2],O_RDONLY);
   if(fd<0){perror("open hash file");return 1;}if(fstat(fd,&st)||(uint64_t)st.st_size!=expected||!expected||expected>1024*1024*1024){close(fd);puts("hash file size mismatch");return 1;}

@@ -161,3 +161,15 @@ boolean combinations reach a stop before marker writing or common preparation.
 This is bounded static/host evidence; imported initializers/asynchronous control
 transfers and native execution remain separate. Evidence is retained under
 `../native27-obliterator-selected1/` and `../native27-obliterator-host16k/`.
+
+
+`select-zeta-ios27-next-helpers.py` adds the four normal Boot tasks keybagd,
+usermanagerd, init_featureflags and launchd_cache_loader. The read-only original
+plans have zero code-boundary anomalies,6,530 instruction edits and5,994 grouped
+descriptors; signature/TC membership, exact sources/plans and every lowering are
+revalidated. Their original startup predicates remain intact. This excludes
+restore/erase commands such as HorizonSetup. The new table has39,311 descriptors
+over27 files, retains both initializer stops unchanged, and passes production-C
+16KiB readback and the initializer direct-CFG gate. No new native service result
+follows from these host checks. Evidence: `../native27-next-helpers-plan1/`,
+`../native27-next-helpers-selected1/`, `../native27-next-helpers-host16k/`.

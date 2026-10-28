@@ -311,3 +311,35 @@ Lockdown Mode C-string alias. Boot36 uses SDK build6's real8-byte public query
 owner-library checks passed, but SpringBoard still received SIGKILL. Removing
 the alias therefore does not establish that the UI path is fixed; signal origin
 and BackBoard's display request remain the next discriminating observations.
+
+## BackBoard display initialization and MobileGestalt
+
+Boot37 captured BackBoard's main thread inside an NSXPC synchronous request from
+`libMobileGestaltExtensions`, reached through `MGGetBoolAnswer` during
+AttentionAwareness event-filter initialization. The stock service plist
+`com.apple.mobilegestalt.xpc.plist` launches `/usr/libexec/MobileGestaltHelper`;
+that helper had repeatedly faulted at its unsupported original entry instruction.
+
+`select-zeta-ios27-mobilegestalt.py` adds only this exact helper (SHA256
+`9adf5e0c8510d84873f42d01a08896ab428bdfaba64f402afbac5b8ccfb6688a`, original
+CDHash`8dd24ccf6df1662d4b3385f88344084b87d36964`). Original code pages and Apple
+trust membership are required; its147 proven instruction translations have no
+unresolved boundaries or retained unsupported ISA.139 grouped instruction
+records and one guarded runtime header word extend the selected build6 table
+from60,507 to60,647 records. The original executable is unchanged. Production-C
+sanitizer checks passed with both4KiB and16KiB pages; the public selector
+reproduces the RAM candidate exactly and rejects changed, untrusted, duplicate
+and non-opted-in inputs before writing output.
+
+Boot39 was accepted by fastboot, but did not re-enumerate USB within the capture
+window. Its kernel, firmware and trust cache match boot38; the selected ADT table
+is the functional change. This is not native proof that MobileGestalt runs or
+that BackBoard's display request returns. A recovery to the bootloader and a
+repeat RAM test remain necessary.
+
+The separate signal-origin diagnostic identifies SpringBoard kills through
+`task_identity_token_try_sigkill` rather than a sender in launchd. That helper is
+used by the fatal-port no-senders path. Resource notifications and the debug
+`machdep.task_get_fatal_port` facility can create such a port; the creation or
+drop caller has not yet been established. Do not suppress the kill or assume a
+resource-limit value without capturing its cause.

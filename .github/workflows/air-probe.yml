@@ -35,7 +35,7 @@ permissions:
 jobs:
   live-display:
     if: inputs.live_display_only
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4

@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -18,13 +19,24 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==4&&!strcmp(argv[1],"upload-fixup-records")){
+  /* Host must guard and temporarily configure debug.bpf_debug's existing
+   * opaque handler for precisely this unused BSS range, then restore it. */
+  uint64_t expected=strtoull(argv[3],NULL,0);struct stat st;
+  if(strncmp(argv[2],"/private/var/ngpu/shell/",24)||!expected||expected>64*1024*1024||expected%112){puts("invalid fixup-record request");return 2;}
+  int fd=open(argv[2],O_RDONLY);if(fd<0){perror("open fixup records");return 1;}
+  if(fstat(fd,&st)||(uint64_t)st.st_size!=expected){close(fd);puts("fixup record size mismatch");return 1;}
+  void *records=mmap(NULL,(size_t)expected,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(records==MAP_FAILED){perror("map fixup records");return 1;}
+  int result=sysctlbyname("debug.bpf_debug",NULL,NULL,records,(size_t)expected);int error=errno;
+  munmap(records,(size_t)expected);printf("bounded fixup upload bytes=%llu result=%d errno=%d\n",(unsigned long long)expected,result,result?error:0);return result?1:0;
+ }
  if((argc==5&&!strcmp(argv[1],"invalidate-stock-file"))||(argc==2&&(!strcmp(argv[1],"invalidate-tccd-page")||!strcmp(argv[1],"invalidate-tccd-file")||!strcmp(argv[1],"invalidate-contextstored-file")))){
   int generic=argc==5;
   int context=!strcmp(argv[1],"invalidate-contextstored-file");
   const char *path=generic?argv[2]:(context?"/System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored":"/System/Library/PrivateFrameworks/TCC.framework/Support/tccd");
   uint64_t entry=generic?strtoull(argv[4],NULL,0):(context?0x2930ULL:0x314acULL);
   uint64_t expected=generic?strtoull(argv[3],NULL,0):(context?106416:1127104);
-  if(generic&&((strncmp(path,"/System/Library/",16)&&strncmp(path,"/usr/libexec/",13)&&strncmp(path,"/usr/sbin/",10))||strstr(path,"..")||!expected||expected>32*1024*1024||entry>expected-4||(entry&3))){puts("invalid stock-file request");return 2;}
+  if(generic&&((strncmp(path,"/System/Library/",16)&&strncmp(path,"/usr/libexec/",13)&&strncmp(path,"/usr/sbin/",10))||strstr(path,"..")||expected<4||expected>64*1024*1024||entry>expected-4||(entry&3))){puts("invalid stock-file request");return 2;}
   int fd=open(path,O_RDONLY);if(fd<0){perror("open tccd");return 1;}
   size_t page_bytes=(size_t)getpagesize();off_t file_offset=(off_t)(entry&~((uint64_t)page_bytes-1));size_t entry_offset=entry-(uint64_t)file_offset;
   if(generic||context||!strcmp(argv[1],"invalidate-tccd-file")){

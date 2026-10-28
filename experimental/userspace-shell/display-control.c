@@ -22,6 +22,15 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==2&&!strcmp(argv[1],"purge-ca")){
+  /* Exact shipped iOS27 wrapper0x184639cb8 takes only the server port.
+   * Release reusable render-server resources after a format-policy change.
+   * A successful request does not establish a new physical frame. */
+  void *library=dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore",RTLD_NOW|RTLD_LOCAL);
+  int(*purge)(mach_port_t)=library?(int(*)(mach_port_t))dlsym(library,"CARenderServerPurgeServer"):NULL;
+  if(!purge){puts("CA purge API unavailable; no request");return 1;}
+  int status=purge(MACH_PORT_NULL);printf("CA render-server purge status=%d\n",status);return status?1:0;
+ }
  if(argc==2&&!strcmp(argv[1],"wake-bks")){
   /* Shipped wrapper ABI verified at0x18a03c3cc: one Boolean argument,
    * forwarded in a one-way BackBoard MIG request. A send is not wake proof. */

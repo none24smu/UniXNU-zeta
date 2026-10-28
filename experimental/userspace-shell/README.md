@@ -41,8 +41,12 @@ jobs and other cache sections are preserved, signs the owner cache and adds its
 SHA-256 CDHash to the trust module. Stage the generated five-file `xpc` directory
 under `/private/var/ngpu/xpc`, verify every byte, and select the existing
 `zeta-air-probe=1` owner cache mount in the RAM boot arguments. It mounts this full
-job cache; it does not select a renderer or disable stock services. Keep kernel
-arguments within the existing 1023-byte limit.
+job cache; it does not select a renderer or disable stock services. iOS27 may
+reject the derived detached cache signature with errSecCSUnsigned. The existing
+Apple cache loader has `launchd_unsecure_cache=1`, which skips this data-cache
+verification and reads the full owner cache. Use it explicitly for this owner
+development image; executable AMFI admission remains separate and enabled.
+Keep kernel arguments within the existing 1023-byte limit.
 
 One RAM boot is needed for initial launchd/trust admission. After that:
 

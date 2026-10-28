@@ -21,9 +21,17 @@ class Session:
             assert int(lines[-1].split()[1])==len(b),'USB readback incomplete'
         return b
     def put(self,name,data):
+        # The current APFS kernel transport can retain an old tail on a
+        # shorter offset-zero write. Publish a fresh inode for every request.
+        if self.shell.stat(self.remote+'/'+name):
+            st,lines=self.shell.run(f'rm {self.remote}/{name}',quiet=True)
+            if st:raise RuntimeError('cannot replace request: '+str(lines))
         for off in range(0,len(data),2048):
             st,lines=self.shell.run(f'put {self.remote}/{name} {off} '+base64.b64encode(data[off:off+2048]).decode(),quiet=True)
             if st:raise RuntimeError(str(lines))
+        # Publishing ready is the commit: the agent can consume/unlink it
+        # immediately. Its containing directory is root-only (0700).
+        if name=='ready':return
         st,_=self.shell.run(f'chmod {self.remote}/{name} 0600',quiet=True)
         if st:raise RuntimeError('chmod request')
     def execute(self,command):

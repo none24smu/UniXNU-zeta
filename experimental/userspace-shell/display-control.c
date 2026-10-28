@@ -42,7 +42,8 @@ static int control(int argc,char **argv){
  if(argc==2&&!strcmp(argv[1],"check-debug-int")){
   unsigned char value[64]={0};size_t length=sizeof value;int result=sysctlbyname("debug.bpf_debug",value,&length,NULL,0);uint32_t word=0;memcpy(&word,value,4);printf("debug int result=%d bytes=%zu value=%#x\n",result,length,word);return !result&&length==4?0:1;
  }
- if(argc==3&&!strcmp(argv[1],"patch-debug-lines")){
+ if(argc==3&&(!strcmp(argv[1],"patch-debug-lines")||!strcmp(argv[1],"patch-debug-index-pair"))){
+  int pair=!strcmp(argv[1],"patch-debug-index-pair");
   /* An owner record file holds a chain of exact64-byte pre/post images.
    * Each transition changes at most one aligned32-bit word. A wrong debug
    * target or handler fails the full preimage check before any write. */
@@ -50,7 +51,11 @@ static int control(int argc,char **argv){
   int fd=open(argv[2],O_RDONLY);if(fd<0)return 1;if(fstat(fd,&st)||st.st_size<132||st.st_size>2116){close(fd);return 1;}
   unsigned char *data=mmap(NULL,(size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(data==MAP_FAILED)return 1;
   uint32_t count=0;memcpy(&count,data,4);if(!count||count>32||(uint64_t)st.st_size!=4+(uint64_t)(count+1)*64){munmap(data,(size_t)st.st_size);return 1;}
-  for(uint32_t i=0;i<count;i++){unsigned changes=0;for(unsigned off=0;off<64;off+=4)if(memcmp(data+4+i*64+off,data+4+(i+1)*64+off,4))changes++;if(changes>1){munmap(data,(size_t)st.st_size);puts("non-atomic line transition; no write");return 1;}}
+  for(uint32_t i=0;i<count;i++){
+   unsigned changes=0,changed_pair=8;for(unsigned off=0;off<64;off+=4)if(memcmp(data+4+i*64+off,data+4+(i+1)*64+off,4)){changes++;if(changed_pair==8)changed_pair=off/8;else if(pair&&changed_pair!=off/8){munmap(data,(size_t)st.st_size);puts("multiple index pairs changed; no write");return 1;}}
+   if((!pair&&changes>1)||(pair&&(count!=1||!changes||changes>2))){munmap(data,(size_t)st.st_size);puts("invalid bounded line transition; no write");return 1;}
+   if(pair){uint32_t before[2],after[2];memcpy(before,data+4+i*64+changed_pair*8,8);memcpy(after,data+4+(i+1)*64+changed_pair*8,8);if(before[0]>=before[1]||after[0]>=after[1]||after[1]>1048576||after[1]-after[0]!=before[1]-before[0]+1){munmap(data,(size_t)st.st_size);puts("invalid replacement fixup range; no write");return 1;}}
+  }
   unsigned char current[64];size_t length=sizeof current;int result=sysctlbyname("debug.bpf_debug",current,&length,NULL,0);
   if(result||length!=64){printf("line handler guard result=%d bytes=%zu; no write\n",result,length);munmap(data,(size_t)st.st_size);return 1;}
   uint32_t begin=count+1;for(uint32_t i=0;i<=count;i++)if(!memcmp(current,data+4+i*64,64))begin=i;

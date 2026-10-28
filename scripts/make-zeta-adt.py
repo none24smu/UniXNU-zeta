@@ -167,6 +167,31 @@ def filesystems(blocks, template='/private/var/'):
     return node('filesystems', [('e-apfs', u32(1))], [node('fstab', [('max_fs_entries', u32(1))], [data])])
 
 
+def persistent_filesystems():
+    """Describe the existing owner-mounted root and separate persistent APFS Data.
+
+    Requires the XNU_EDT_FSTAB mounted-Data bridge. os_env_type stays omitted:
+    this owner layout has separate root/Data containers, not Apple's volume group.
+    /chosen/osenvironment still names the main OS independently.
+    """
+    u32 = lambda value: struct.pack('<I', value)
+    entries = []
+    for name, path, mode, opts, role, order in (
+        ('system-vol', '/', 'ro', 'ro', 1, 0),
+        ('data-vol', '/private/var', 'rw', 'rw,nosuid,nodev', 64, 1),
+    ):
+        entries.append(node(name, [
+            ('vol.fs_file', path.encode() + b'\0'),
+            ('vol.fs_type', mode.encode() + b'\0'),
+            ('vol.fs_mntopts', opts.encode() + b'\0'),
+            ('vol.fs_role', u32(role)),
+            ('vol.fs_passno', u32(0)),
+            ('vol.fs_mntorder', u32(order)),
+        ]))
+    return node('filesystems', [('e-apfs', u32(1))], [
+        node('fstab', [('max_fs_entries', u32(len(entries)))], entries)])
+
+
 def check_board_tree():
     """Compare the constants with the stock tree when it is there (scripts/make-zeta-dtb.py builds it)."""
     if not DTB.is_file():
@@ -210,6 +235,8 @@ def main(argv=None, *, default_identity='iPhone18,2'):
     parser.add_argument('--persistent-data', action='store_true',
                         help='The Data disk keeps its writes across boots: no ephemeral-storage')
     parser.add_argument('--trust-cache', action='store_true', help='TrustCache placeholder')
+    parser.add_argument('--persistent-data-fstab', action='store_true',
+                        help='describe the already owner-mounted root and persistent APFS Data; requires updated XNU_EDT_FSTAB')
     parser.add_argument('--ephemeral-data-blocks', type=int, default=None,
                         help='/filesystems/fstab with one ephemeral Data entry: mount(8) builds /private/var as a '
                              'tmpfs of this many 512-byte blocks from the root volume\'s /private/var')
@@ -231,6 +258,8 @@ def main(argv=None, *, default_identity='iPhone18,2'):
                              'default-off XNU_IOS27_TEXT_FIXUPS profile, preserves the ordinary32-entry mechanism')
     parser.add_argument('--ipad-identity', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.persistent_data_fstab and (not args.persistent_data or args.ephemeral_data_blocks is not None):
+        parser.error('--persistent-data-fstab requires --persistent-data and excludes --ephemeral-data-blocks')
     if args.ipad_identity:
         parser.error('zeta targets an iPhone identity; remove ipad_identity from board.toml [payload.adt]')
     if args.ephemeral_data_blocks is not None and not 0 < args.ephemeral_data_blocks < 1 << 32:
@@ -339,6 +368,7 @@ def main(argv=None, *, default_identity='iPhone18,2'):
                 if args.csr_config is not None else [])]),
         *([filesystems(args.ephemeral_data_blocks, args.ephemeral_data_template)]
           if args.ephemeral_data_blocks is not None else []),
+        *([persistent_filesystems()] if args.persistent_data_fstab else []),
         node('cpus', children=cpus),
         *([node('psci', [('compatible', b'arm,psci-1.0\0'), ('method', args.psci_method.encode() + b'\0')])] if len(cpus) > 1 else []),
         # Suspend/resume is not implemented: keep the CPU from parking forever.

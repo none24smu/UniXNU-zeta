@@ -109,3 +109,37 @@ boot3 to map the cache at `0x180000000` and test the first Swift fix. This is a
 temporary bring-up setting. A permanent region-sizing/slide-bound correction is
 still required. Boot retries preserve the kernel/firmware and installed userdata;
 only the RAM payload's chosen fixup table and diagnostic boot argument change.
+
+
+## Native indexed startup and persistent Data description
+
+Boot6 applied the indexed Swift/original-child table and passed the Swift
+startup failures. launchd then executed fsck, exposing its original entry
+PACIBSPPC. Boot7 supplied fsck's signature-checked 84 descriptors; it exited0.
+Boot8 added the twelve exact original boot-helper plans (3,762 descriptors):
+fsck, mount and seputil all exited0. The next entry fault was mobile_obliterator
+at0x100001ca0. These are native process-startup checkpoints; no Apple logo,
+SpringBoard or iOS27 UI is claimed.
+
+The original32768-record kernel held32387 entries after boot8. The next original
+helper alone requires928 more, so the next explicit diagnostic profile raises
+the bound to65536 records and256 file names. The ordinary32-entry mechanism
+stays separate. New limits require a newly compiled kernel; a larger host
+formatter alone cannot enlarge an old kernel.
+
+Boot8 mount printed `failed to get filesystem info` because its exact lookup of
+`IODeviceTree:/filesystems/fstab` failed: that subtree had been removed with the
+old ephemeral Data description. The persistent owner profile restores System
+and Data entries using `--persistent-data --persistent-data-fstab`. The kernel
+reports Data only if a distinct APFS filesystem is actually mounted at
+/private/var, copying its actual device name. It refuses the root's ordinary
+/private/var directory, tmpfs, aliases and truncated device names. This metadata
+bridge does not create, erase or format a filesystem.
+
+The separate-container owner layout omits fstab's os_env_type, preserving the
+existing custom environment0; it does not pretend to be Apple's unified volume
+group. The independent /chosen/osenvironment remains `main`. A fresh SDK build
+and native mount run are required to establish this change's runtime result.
+
+mobile_obliterator --init is being inspected before selection because its
+non-no-op paths can erase Data. No instruction replacement changes its guards.

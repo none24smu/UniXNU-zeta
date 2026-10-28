@@ -412,3 +412,45 @@ kernel, trust cache and launch policy were unchanged from boot 48. Boot 50
 adds read-only console stack sampling for Chrono, SpringBoard, BackBoard and
 MobileGestaltHelper; its native result remains pending. This is startup
 progress only, not rendering or UI qualification.
+
+
+### Biome file-access wait (boots 50–53)
+
+Boot 50 did not reach XNU: the diagnostic arguments exceeded DarwinBoot's
+1023-byte command-line limit and firmware returned `Bad Buffer Size`. USB
+firmware control returned to fastboot without physical recovery. Boot 51 used
+1015 bytes and reached userspace, but `zeta-trace-console` needs the disabled
+`boot-progress` monitor. No console samples were produced. Instead, one
+explicit SIGABRT to BackBoard PID 65 captured its blocked startup stack. All
+subsequent BackBoard/SpringBoard exits in that capture follow this deliberate
+diagnostic restart and are not evidence of a spontaneous initial crash.
+
+The stack shows AttentionAwareness initializing Biome storage, then
+`_BMXPCFileManager._fileHandleForFileAtPath:flags:protection:error:` waiting in
+`_synchronousRemoteObjectProxyWithErrorHandler:` and
+`fileHandleForFileAtPath:flags:protection:reply:`. These selector strings were
+resolved from the exact shared-cache stub addresses; nearby export names
+alone were not used as method names. The stock `biomed` publishes Biome
+access services and was dying on its untranslated entry.
+
+`scripts/select-zeta-ios27-biomed.py` requires the exact original SHA/CDHash,
+valid code-page hashes, Apple trust membership and complete instruction proof.
+It adds 190 instruction edits and a guarded header word, grouped into 175
+records (61,671 total). No retained ISA, original-file writes or extra service
+disables. Public output reproduced exactly; four negative gates rejected bad
+inputs before output creation. The production-C validator/VM/loader checks
+passed under ASan/UBSan at both 4 KiB and 16 KiB.
+
+Boot 52 passed biomed's former illegal instruction, then biomed received
+SIGKILL. SpringBoard and BackBoard stayed at startup footprints with no real
+UI frame. Boot 53 adds exact kill-origin logging and user frames for a
+self-killing biomed; no signal is suppressed. It temporarily replaces the
+formatted panic hook in the same verified 224-byte slot and restores the
+original DebuggerTrapWithState entry; namespace and reset probes remain.
+A Cortex-A76 fixture checked signal/non-signal, null target, another name,
+non-self target and all six original arguments before this diagnostic.
+
+The source integration for the two owner-runtime unions and the explicit
+watchdog-only gate is root commit `9264ff6`; the real SDK compile/check run is
+`40683467887`. Host selection/failure-injection checks pass, but SDK completion
+and native testing of that source-built replacement are separate gates.

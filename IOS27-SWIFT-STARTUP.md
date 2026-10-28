@@ -201,3 +201,41 @@ and one retained CSSC instruction. `select-zeta-ios27-apfs-boot.py` binds those
 exact inputs and extends the table to39,452 entries/28 files. It does not change
 arguments, filesystem policy, source images or signatures. Production-C16KiB
 page readback passes. Native result is separate, under ../native27-boot-isolation1/.
+
+
+## Native mount phase2 and libunwind fixed-register instructions
+
+Boot16 confirms apfs_boot_util exited0 and launchd completed mount-phase-2.
+Several subsequent stock tasks also exited0, including cc_fips_test, keybagd,
+usermanagerd, init_featureflags and both earlyboot helpers. The explicitly
+ignored overprovisioning error remains unresolved.
+
+Tzinit then faulted in libunwind on AUTIB171615 (0xdac1bffe), not PACIASPPC.
+The decoder and cache candidate inventory now recognize the four exact
+PAuth_LR fixed-register encodings. Primary LLVM instruction definitions specify
+X17 as destination and X15/X16 as modifiers:
+https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/AArch64/AArch64InstrInfo.td
+Independent LLVM assembler and decoder/walk/candidate regression checks pass.
+The selected ordinary-pointer ABI permits lowering these authentication/signing
+operations; this does not emulate authenticated pointers, MTE, SVE or SME.
+
+`select-zeta-ios27-libunwind.py` verifies the current signed cache file, all
+signature pages, actual boot trust-cache membership, proof digest, complete
+selected function and exactly four remaining PAC sites. A reported boundary
+anomaly is outside that selected function. The table has39,456 descriptors/29
+files. Boot17 confirms tzinit exited0; FinishRestoreFromBackup then faulted on
+its original PACIBSPPC entry at0x100001e54. No visible iOS27 UI is proven.
+
+`select-zeta-ios27-finish-restore.py` admits159 exact original CPU edits plus one
+B-to-self diagnostic stop immediately before the direct Mobile_Obliterate call.
+The stop at0x100000a68 shares its4KiB page with the owning PAC entry0x10000090c;
+normal restore decisions remain unchanged. The original helper signature and
+trust-cache membership are verified. The guarded39,611-descriptor/30-file table
+passes production C with ASan/UBSan at4KiB and16KiB. Boot18 is its separate RAM
+execution test; no kernel rebuild, source executable rewrite or userdata flash.
+
+
+Boot18 confirms original FinishRestoreFromBackup exited0, without reaching the
+diagnostic stop. Launchd advanced to finish-demo-restore; finish_demo_restore
+then faulted at0x100001ec0 on original PACIBSPPC. That helper remains the next
+qualification target; this result does not establish visible iOS27 UI.

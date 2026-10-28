@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <zlib.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -19,16 +20,21 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
- if(argc==4&&!strcmp(argv[1],"upload-fixup-records")){
+ if(argc==4&&!strcmp(argv[1],"upload-fixup-records-zlib")){
   /* Host must guard and temporarily configure debug.bpf_debug's existing
    * opaque handler for precisely this unused BSS range, then restore it. */
   uint64_t expected=strtoull(argv[3],NULL,0);struct stat st;
   if(strncmp(argv[2],"/private/var/ngpu/shell/",24)||!expected||expected>64*1024*1024||expected%112){puts("invalid fixup-record request");return 2;}
   int fd=open(argv[2],O_RDONLY);if(fd<0){perror("open fixup records");return 1;}
-  if(fstat(fd,&st)||(uint64_t)st.st_size!=expected){close(fd);puts("fixup record size mismatch");return 1;}
-  void *records=mmap(NULL,(size_t)expected,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(records==MAP_FAILED){perror("map fixup records");return 1;}
+  if(fstat(fd,&st)||st.st_size<=0||st.st_size>64*1024*1024){close(fd);puts("fixup container size mismatch");return 1;}
+  void *container=mmap(NULL,(size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(container==MAP_FAILED){perror("map fixup container");return 1;}
+  void *records=malloc((size_t)expected);void *readback=malloc((size_t)expected);uLongf length=(uLongf)expected;
+  if(!records||!readback||uncompress(records,&length,container,(uLong)st.st_size)!=Z_OK||length!=expected){puts("fixup decompression failed");munmap(container,(size_t)st.st_size);free(records);free(readback);return 1;}
+  munmap(container,(size_t)st.st_size);
   int result=sysctlbyname("debug.bpf_debug",NULL,NULL,records,(size_t)expected);int error=errno;
-  munmap(records,(size_t)expected);printf("bounded fixup upload bytes=%llu result=%d errno=%d\n",(unsigned long long)expected,result,result?error:0);return result?1:0;
+  size_t actual=(size_t)expected;int checked=result?-1:sysctlbyname("debug.bpf_debug",readback,&actual,NULL,0);
+  int exact=!result&&!checked&&actual==expected&&!memcmp(records,readback,(size_t)expected);
+  printf("bounded fixup upload bytes=%llu result=%d errno=%d kernel_readback_exact=%d crc32=%#lx\n",(unsigned long long)expected,result,result?error:0,exact,(unsigned long)crc32(0,records,(uInt)expected));free(records);free(readback);return exact?0:1;
  }
  if((argc==5&&!strcmp(argv[1],"invalidate-stock-file"))||(argc==2&&(!strcmp(argv[1],"invalidate-tccd-page")||!strcmp(argv[1],"invalidate-tccd-file")||!strcmp(argv[1],"invalidate-contextstored-file")))){
   int generic=argc==5;

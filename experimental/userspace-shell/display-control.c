@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <mach/mach_vm.h>
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
@@ -15,7 +18,20 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
- if(argc==2&&!strcmp(argv[1],"kick-liveactivities")){
+ if(argc==2&&!strcmp(argv[1],"invalidate-tccd-page")){
+  const char *path="/System/Library/PrivateFrameworks/TCC.framework/Support/tccd";
+  int fd=open(path,O_RDONLY);if(fd<0){perror("open tccd");return 1;}
+  void *page=mmap(NULL,4096,PROT_READ|PROT_EXEC,MAP_SHARED,fd,0x31000);close(fd);
+  if(page==MAP_FAILED){perror("map tccd page");return 1;}
+  uint32_t before=0;memcpy(&before,(char*)page+0x4ac,4);printf("tccd mapped entry before=%#x\n",before);
+  if(before!=0xd503201f&&before!=0xdac1a7fe&&before!=0xd65f03c0){puts("unexpected page bytes; no invalidation");munmap(page,4096);return 1;}
+  /* Invalidate only: unlike msync(2)'s implicit synchronous mode, this
+   * requests no dirty-page writeback to the sealed backing file. */
+  kern_return_t status=mach_vm_msync(mach_task_self(),(mach_vm_address_t)page,4096,VM_SYNC_INVALIDATE);
+  printf("tccd page invalidate-only kr=%d\n",status);uint32_t after=0;if(!status)memcpy(&after,(char*)page+0x4ac,4);
+  printf("tccd refaulted entry after=%#x\n",after);munmap(page,4096);return status?1:0;
+ }
+ if(argc==2&&(!strcmp(argv[1],"kick-liveactivities")||!strcmp(argv[1],"kick-tccd"))){
   /* Verified shipped iOS27 libxpc service API. flags0: not suspended,
    * no kill; the API always includes unthrottle=true in the launchd request. */
   void *xpc=dlopen("/usr/lib/system/libxpc.dylib",RTLD_NOW|RTLD_LOCAL);
@@ -23,8 +39,9 @@ static int control(int argc,char **argv){
   int(*kick)(void*,uint64_t)=xpc?(int(*)(void*,uint64_t))dlsym(xpc,"xpc_service_kickstart_with_flags"):NULL;
   void(*release)(void*)=xpc?(void(*)(void*))dlsym(xpc,"xpc_release"):NULL;
   if(!create||!kick||!release){puts("service APIs missing");return 1;}
-  void *service=create("system/com.apple.liveactivitiesd",NULL);printf("create liveactivities service=%p\n",service);if(!service)return 1;
-  int status=kick(service,0);printf("liveactivities kickstart/unthrottle status=%d\n",status);release(service);return status?1:0;
+  const char *specifier=!strcmp(argv[1],"kick-tccd")?"system/com.apple.tccd":"system/com.apple.liveactivitiesd";
+  void *service=create(specifier,NULL);printf("create %s service=%p\n",specifier,service);if(!service)return 1;
+  int status=kick(service,0);printf("%s kickstart/unthrottle status=%d\n",specifier,status);release(service);return status?1:0;
  }
  if(argc==3&&!strcmp(argv[1],"capture"))return capture_ca_display(argv[2],0);
  if(argc==3&&!strcmp(argv[1],"present"))return capture_ca_display(argv[2],1);

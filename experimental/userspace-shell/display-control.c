@@ -22,6 +22,22 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if((argc==2&&!strcmp(argv[1],"wake-sbs"))||(argc==3&&!strcmp(argv[1],"keep-display-awake"))){
+  /* Shipped SBSUndimScreen0x199d57f54 has no arguments. Use the normal
+   * user-idle display assertion and repeated wake requests, with a bounded
+   * lifetime. Neither bypasses the display-transition watchdog. */
+  unsigned seconds=argc==3?(unsigned)strtoul(argv[2],NULL,0):0;
+  if(argc==3&&(seconds<10||seconds>3600))return 2;
+  void *sbs=dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",RTLD_NOW|RTLD_LOCAL);
+  void(*undim)(void)=sbs?(void(*)(void))dlsym(sbs,"SBSUndimScreen"):NULL;
+  if(!undim){puts("SpringBoard wake API unavailable; no request");return 1;}
+  uint32_t assertion=0;int(*release)(uint32_t)=NULL;
+  if(seconds){void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);int(*create)(CFStringRef,uint32_t,CFStringRef,uint32_t*)=io?(int(*)(CFStringRef,uint32_t,CFStringRef,uint32_t*))dlsym(io,"IOPMAssertionCreateWithName"):NULL;release=io?(int(*)(uint32_t))dlsym(io,"IOPMAssertionRelease"):NULL;int status=create&&release?create(CFSTR("PreventUserIdleDisplaySleep"),255,CFSTR("UniXNU bounded live display diagnosis"),&assertion):-1;printf("display-idle assertion status=%#x id=%#x duration=%u\n",status,assertion,seconds);}
+  undim();puts("SpringBoard undim request sent; visible state requires verification");
+  for(unsigned elapsed=0;elapsed<seconds;elapsed++){sleep(1);if((elapsed+1)%5==0)undim();}
+  if(assertion&&release)printf("display-idle assertion release=%#x\n",release(assertion));
+  return 0;
+ }
  if(argc==2&&!strcmp(argv[1],"purge-ca")){
   /* Exact shipped iOS27 wrapper0x184639cb8 takes only the server port.
    * Release reusable render-server resources after a format-policy change.

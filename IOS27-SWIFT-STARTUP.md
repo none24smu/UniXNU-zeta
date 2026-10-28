@@ -658,3 +658,25 @@ boot3e41881b..., same boot65 trust payloads/arguments, with the200226-record
 IdentityServices table. No userdata reflash. Its purpose is plugin discovery,
 BackBoard Metal initialization, original IdentityServices/ActivityKit progress
 and an actual iOS27 compositor frame. Those native results remain pending.
+
+
+Boot66 native result: addon stage5/status0, accepted200226 CPU records and0
+rejected/mismatched pages. BackBoard65 (~43MiB) opens GPU slot0 without admission
+refusal; Metal telemetry records commits/completions and P4/e0 presenter serving.
+No accepted framebuffer swap or iOS27 frame. The logged unanswered capability
+supportsConditionalLoadStore was not proven causal: frontend installation skips
+unknown answers, and Metal rendering proceeds after it. Do not describe that
+warning as the display fix.
+
+Marked deliberate SIGABRT traces (not spontaneous crashes) show SpringBoard
+still in ActivityKit, liveactivities in IDS requests, and identityservices58 now
+past entry but in ApplePushService synchronous requests. Original apsd repeatedly
+faults at0x10005a330 on0xdac123f0 before answering its Mach service. Exact original
+APSD SHA0e5974afb60bc6f2f20822a30f7d142237a2d02fbc5e0af6396ed5cb6498cbfb,
+CDd285ef8c7241f0a6aca969aa8c5c2fd277736860, all signed pages/original TC verified.
+select-zeta-ios27-apsd.py adds14850 proven edits/13294 records (213520 total),
+retaining153 exact CSSC sites qualified by39168 whole-state host comparisons.
+4KiB/16KiB production validator/VM/loader sanitizer checks and three rejection
+gates pass. Native67 is a same-kernel/TC/args RAM-only table retry; it neither
+rebuilds the kernel nor changes APS response semantics. Actual APS completion,
+ActivityKit return and an iOS27 scanout frame remain pending.

@@ -57,4 +57,26 @@ class CandidateMasks(unittest.TestCase):
   words += [0xd65f0be0|(key<<10)|rm for key in range(2) for rm in range(31)]
   self.assertEqual(list(module.pac_candidates(np.array(words+[0xd503201f,0xffffffff],dtype=np.uint32),True)),list(range(126)))
 
+class FixedRegisterLR(unittest.TestCase):
+ def test_exact_encodings_against_independent_assembler(self):
+  names=['pacia171615','pacib171615','autia171615','autib171615']
+  words=[0xdac18bfe,0xdac18ffe,0xdac1bbfe,0xdac1bffe]
+  result=subprocess.run(['llvm-mc','-triple=aarch64','-mattr=+pauth,+pauth-lr','-show-encoding'],input='\n'.join(names),text=True,capture_output=True,check=True)
+  encoded=re.findall(r'encoding: \[([^]]+)\]',result.stdout)
+  self.assertEqual(len(encoded),4)
+  for name,word,value in zip(names,words,encoded):
+   self.assertEqual(int.from_bytes(bytes(int(x,16) for x in value.split(',')),'little'),word)
+   self.assertEqual(p.lower(word),(name,p.NOP))
+   for bit in range(10):self.assertIsNone(p.decode_lr(word^(1<<bit)))
+ def test_walk_and_candidate_inventory_include_fixed_register_forms(self):
+  import numpy as np
+  spec=importlib.util.spec_from_file_location('fixed_register_prover',ROOT/'prove-zeta-dyld-cache.py')
+  module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+  words=[0xdac18bfe,0xdac18ffe,0xdac1bbfe,0xdac1bffe]
+  self.assertEqual(list(module.pac_candidates(np.array(words+[0xdac1bfff,0xffffffff],dtype=np.uint32),True)),list(range(4)))
+  raw=struct.pack('<6I',*words,0xd65f03c0,0xffffffff)
+  insns=c.decode(raw,[{'addr':0x1000,'offset':0,'size':len(raw)}])
+  result=c.walk(insns,raw,lambda a,n:a-0x1000,[0x1000],set(),set(),True,{0x1000})
+  self.assertEqual(result,({0x1000,0x1004,0x1008,0x100c,0x1010},[],[]))
+
 if __name__=='__main__':unittest.main()

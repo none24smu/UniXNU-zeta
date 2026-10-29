@@ -56,14 +56,26 @@ static int apps_control(int argc,char **argv){
  CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8*)path,strlen(path),true);
  if(!dictionary||!url){printf("stock install options dictionary=%p URL=%p\n",dictionary,url);return 1;}
  printf("install stock staged app %s options=",path);CFShow((CFTypeRef)dictionary);
- SEL selector=sel_registerName("installApplication:withOptions:error:usingBlock:");
- Method method=class_getInstanceMethod(workspace_class,selector);char returns[16]={0};
- if(!method||method_getNumberOfArguments(method)!=6){puts("stock installation API unavailable; no request");CFRelease(url);return 1;}
- method_getReturnType(method,returns,sizeof returns);
- if(returns[0]!='B'&&returns[0]!='c'){puts("installation return ABI mismatch; no request");CFRelease(url);return 1;}
- const char expected[]={'@','@','^','@'};
- for(unsigned i=0;i<4;i++){char type[32]={0};method_getArgumentType(method,i+2,type,sizeof type);const char *t=type;while(*t&&strchr("rnNoORV",*t))t++;if(*t!=expected[i]){printf("installation argument%u ABI=%s; no request\n",i,type);CFRelease(url);return 1;}}
- id error=NULL;Boolean ok=((Boolean(*)(id,SEL,id,id,id*,id))objc_msgSend)(workspace,selector,(id)url,dictionary,&error,NULL);
- printf("stock staged installation success=%u\n",ok);if(error)CFShow((CFTypeRef)error);
+ Class installer_class=objc_getClass("MIInstallerClient");
+ if(!installer_class){puts("stock MIInstallerClient unavailable; no request");CFRelease(url);return 1;}
+ SEL factory=sel_registerName("installerWithProgressBlock:");
+ if(!class_getClassMethod(installer_class,factory)){puts("stock installer factory unavailable; no request");CFRelease(url);return 1;}
+ id installer=((id(*)(id,SEL,id))objc_msgSend)((id)installer_class,factory,NULL);
+ SEL selector=sel_registerName("installURL:identity:targetingDomain:withOptions:returningResultInfo:completion:");
+ Method method=class_getInstanceMethod(installer_class,selector);
+ if(!installer||!method||method_getNumberOfArguments(method)!=8){puts("stock installer method unavailable; no request");CFRelease(url);return 1;}
+ const char expected[]={'@','@','Q','@','B','@'};
+ for(unsigned i=0;i<6;i++){char type[32]={0};method_getArgumentType(method,i+2,type,sizeof type);if(type[0]!=expected[i]){printf("installer argument%u ABI=%s; no request\n",i,type);CFRelease(url);return 1;}}
+ /* Exact shipped reply block: v36@?0B8@NSArray12@LSRecordPromise20@NSError28. */
+ __block int completed=0,successful=0;
+ void(^completion)(Boolean,id,id,id)=^(Boolean ok,id records,id promise,id error){
+  (void)promise;printf("stock staged installation success=%u\n",ok);
+  if(records)CFShow((CFTypeRef)records);if(error)CFShow((CFTypeRef)error);
+  __atomic_store_n(&successful,ok?1:0,__ATOMIC_RELEASE);__atomic_store_n(&completed,1,__ATOMIC_RELEASE);
+ };
+ ((void(*)(id,SEL,id,id,uint64_t,id,Boolean,id))objc_msgSend)(installer,selector,(id)url,NULL,1,options,true,(id)completion);
+ for(unsigned seconds=0;seconds<170&&!__atomic_load_n(&completed,__ATOMIC_ACQUIRE);seconds++)CFRunLoopRunInMode(kCFRunLoopDefaultMode,1,0);
+ int ok=__atomic_load_n(&completed,__ATOMIC_ACQUIRE)&&__atomic_load_n(&successful,__ATOMIC_ACQUIRE);
+ if(!__atomic_load_n(&completed,__ATOMIC_ACQUIRE))puts("stock installer completion not received before diagnostic deadline");
  CFRelease(url);return ok?0:1;
 }

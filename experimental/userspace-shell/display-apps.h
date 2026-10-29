@@ -12,7 +12,7 @@ static void app_methods(Class cls){
 }
 static id app_send(id object,const char *name){return ((id(*)(id,SEL))objc_msgSend)(object,sel_registerName(name));}
 static int apps_control(int argc,char **argv){
- alarm((!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"apps-rebuild-system"))?180:20);
+ alarm((!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"app-register-root")||!strcmp(argv[1],"apps-rebuild-system"))?180:20);
  if(!strcmp(argv[1],"app-architecture")){
   if(argc!=3||strstr(argv[2],"..")||(strncmp(argv[2],"/Applications/",14)&&strncmp(argv[2],"/private/var/containers/Bundle/Application/",43)))return 2;
   void *library=dlopen("/System/Library/PrivateFrameworks/InstalledContentLibrary.framework/InstalledContentLibrary",RTLD_NOW|RTLD_LOCAL);
@@ -35,7 +35,7 @@ static int apps_control(int argc,char **argv){
   for(unsigned i=2;i<5;i++){method_getArgumentType(method,i,type,sizeof type);if(type[0]!='B'&&type[0]!='c')return 1;}
   puts("requesting native system-app database rebuild system=1 internal=0 user=0");Boolean ok=((Boolean(*)(id,SEL,Boolean,Boolean,Boolean))objc_msgSend)(workspace,selector,true,false,false);printf("native system-app database rebuild accepted=%u; app classification requires reread\n",ok);return ok?0:1;
  }
- if(!strcmp(argv[1],"app-info")||!strcmp(argv[1],"app-reregister")){
+ if(!strcmp(argv[1],"app-info")||!strcmp(argv[1],"app-reregister")||!strcmp(argv[1],"app-register-root")){
   Class cls=objc_getClass("LSApplicationProxy");SEL factory=sel_registerName("applicationProxyForIdentifier:");
   Method method=cls?class_getClassMethod(cls,factory):NULL;char returns[16]={0},argument[16]={0};
   if(!method||method_getNumberOfArguments(method)!=3)return 1;
@@ -54,10 +54,21 @@ static int apps_control(int argc,char **argv){
    else if(type[0]=='I'||type[0]=='i')printf("%u\n",((uint32_t(*)(id,SEL))objc_msgSend)(proxy,sel));
    else printf("unsupported ABI %s\n",type);
   }
-  if(!strcmp(argv[1],"app-reregister")){
+  if(!strcmp(argv[1],"app-reregister")||!strcmp(argv[1],"app-register-root")){
    /* Rescan only an installed built-in app at its existing bundle URL. */
    id kind=app_send(proxy,"applicationType"),url=app_send(proxy,"bundleURL");char path[1024]={0};
    if(!kind||!CFEqual((CFTypeRef)kind,CFSTR("System"))||!url||CFGetTypeID((CFTypeRef)url)!=CFURLGetTypeID()||!CFURLGetFileSystemRepresentation((CFURLRef)url,true,(UInt8*)path,sizeof path)||strncmp(path,"/Applications/",14)){puts("built-in application location guard failed; no registration");return 1;}
+   if(!strcmp(argv[1],"app-register-root")){
+    /* Exact original MI service accepts an NSSet of bundle paths, with
+     * an NSError-only reply. It retains its internal-build/role checks. */
+    Class cls=objc_getClass("MIInstallerClient");SEL factory=sel_registerName("installerWithProgressBlock:"),reg=sel_registerName("registerContentsOnRoot:deferUntilNextBoot:completion:");Method maker=cls?class_getClassMethod(cls,factory):NULL,method=cls?class_getInstanceMethod(cls,reg):NULL;char type[16]={0};
+    if(!maker||!method||method_getNumberOfArguments(maker)!=3||method_getNumberOfArguments(method)!=5)return 1;
+    method_getReturnType(method,type,sizeof type);if(type[0]!='v')return 1;method_getArgumentType(method,2,type,sizeof type);if(type[0]!='@')return 1;method_getArgumentType(method,3,type,sizeof type);if(type[0]!='B'&&type[0]!='c')return 1;method_getArgumentType(method,4,type,sizeof type);if(strncmp(type,"@?",2))return 1;
+    id installer=((id(*)(id,SEL,id))objc_msgSend)((id)cls,factory,NULL);CFStringRef name=CFStringCreateWithCString(NULL,path,kCFStringEncodingUTF8);const void *value=name;CFSetRef paths=name?CFSetCreate(NULL,&value,1,&kCFTypeSetCallBacks):NULL;if(!installer||!paths)return 1;
+    __block int done=0,ok=0;void(^reply)(id)=^(id error){printf("native root registration error=%p\n",error);if(error){CFShow((CFTypeRef)error);id info=app_send(error,"userInfo");if(info)CFShow((CFTypeRef)info);}__atomic_store_n(&ok,error==NULL,__ATOMIC_RELEASE);__atomic_store_n(&done,1,__ATOMIC_RELEASE);};
+    printf("requesting native registration for one existing built-in bundle %s\n",path);((void(*)(id,SEL,id,Boolean,id))objc_msgSend)(installer,reg,(id)paths,false,(id)reply);
+    for(unsigned i=0;i<170&&!__atomic_load_n(&done,__ATOMIC_ACQUIRE);i++)CFRunLoopRunInMode(kCFRunLoopDefaultMode,1,0);int completed=__atomic_load_n(&done,__ATOMIC_ACQUIRE),success=__atomic_load_n(&ok,__ATOMIC_ACQUIRE);printf("native root registration completed=%d success=%d; metadata must be reread\n",completed,success);CFRelease(paths);CFRelease(name);return completed&&success?0:1;
+   }
    SEL reg=sel_registerName("registerApplication:");Method registration=class_getInstanceMethod(workspace_class,reg);char rt[16]={0},at[16]={0};
    if(!registration||method_getNumberOfArguments(registration)!=3)return 1;method_getReturnType(registration,rt,sizeof rt);method_getArgumentType(registration,2,at,sizeof at);if((rt[0]!='B'&&rt[0]!='c')||at[0]!='@')return 1;
    Boolean ok=((Boolean(*)(id,SEL,id))objc_msgSend)(workspace,reg,url);printf("stock built-in registration request %s accepted=%u; metadata requires reread\n",argv[2],ok);return ok?0:1;

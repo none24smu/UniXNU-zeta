@@ -651,3 +651,47 @@ reported locked with no passcode. The direct root diagnostic was then stopped (S
 to avoid interfering with a normal SpringBoard launch. Other app executables
 have not all received instruction conversion, so52 registrations must not be
 reported as52 qualified working applications.
+
+### Native inner-fold layout on the Duo wide canvas (2026-10-29)
+
+The owner requested the iPhone Duo inner Home layout, including the right-side
+vertical dock. Read-only observations in the actual SpringBoard process14984
+showed cached SBH screen type23, artwork2034, native2754x1892 pixels,
+1377x946 logical points, scale2, and Home window/scene interface orientation1.
+The original type32 catalog only matched669x951@3. Product identity alone was
+therefore insufficient.
+
+`select-zeta-ios27-duo-inner-layout.py` adapts only that native inner descriptor
+to the measured Duo tuple1377x946@2. Five instructions in the type32-only
+constructor directly load its existing reference tuple and select scale2,
+then enter the stock artwork2034/home-button-class2 tail. Cover type31 keeps
+its original scale3 path. The reference tuple and original instruction bytes
+are pinned by complete original-cache SHA/signature checks. No screen-support
+predicate is forced, and real scanout bounds remain2754x1892.
+
+A fresh native query returned screen.sbh_screenType32. After a normal
+SpringBoard service restart, reading the actual process26598 confirmed cached
+type32 as well. BackBoard and the kernel were retained. Home window orientation
+remained1: this port's native canvas is already wide, unlike Apple's
+portrait-native inner reference. `select-zeta-ios27-duo-dock-basis.py` therefore
+maps the existing type32 dock orientation test to1/2 for this strictly matched
+wide-native descriptor;3/4 are the narrow orientations on this basis. The
+existing type31 and unsupported-screen branches remain intact. The exact
+instruction was read back as0xd1000408 at0x223bc9030 in SpringBoard.
+
+Current selected profile: `native27-duo-dock-selected1`,923565 active records,
+88 filenames, append high-water924327. Workspace receipts are under
+`live-display74/duo-inner-layout1` and `duo-dock-basis1`. SpringBoard26932 was
+restarted to build fresh dock views. Its ordinary main event loop returned
+after cancellation of the specifically identified stale datamigrator XPC
+connection; no migration completion or dispatch-group result was fabricated.
+The stock SBSLockScreenService requestPasscodeUnlockUIWithOptions:withCompletion:
+then delivered its completion and lock-status verified locked0/passcode0.
+Visual placement still requires a usable Home capture or owner observation:
+CARenderServerRenderDisplay currently captures a transient spinner/black layers,
+which does not by itself establish physical presentation.
+
+The normal CADisplay.setDisplayProperties pointScale3 request was accepted by
+WindowServer, but CADisplay, currentMode.preferredScale and FBS/UIKit all
+remained at2. This is explicitly NOT a successful scale change. Scale and
+rendering work remain separate from the now-verified type32 classification.

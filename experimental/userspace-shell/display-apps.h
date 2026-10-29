@@ -22,6 +22,51 @@ static int apps_control(int argc,char **argv){
   app_methods(workspace_class);app_methods(object_getClass((id)workspace_class));app_methods(options_class);app_methods(objc_getClass("MIInstallerClient"));return 0;
  }
  id workspace=app_send((id)workspace_class,"defaultWorkspace");if(!workspace){puts("stock workspace factory returned nil");return 1;}
+ if(!strcmp(argv[1],"app-info")){
+  Class cls=objc_getClass("LSApplicationProxy");SEL factory=sel_registerName("applicationProxyForIdentifier:");
+  Method method=cls?class_getClassMethod(cls,factory):NULL;char returns[16]={0},argument[16]={0};
+  if(!method||method_getNumberOfArguments(method)!=3)return 1;
+  method_getReturnType(method,returns,sizeof returns);method_getArgumentType(method,2,argument,sizeof argument);
+  if(returns[0]!='@'||argument[0]!='@')return 1;
+  CFStringRef bundle=CFStringCreateWithCString(NULL,argv[2],kCFStringEncodingUTF8);if(!bundle)return 1;
+  id proxy=((id(*)(id,SEL,id))objc_msgSend)((id)cls,factory,(id)bundle);CFRelease(bundle);if(!proxy)return 1;
+  const char *names[]={"applicationIdentifier","applicationType","bundleURL","appState","signerIdentity","isInstalled","isRestricted","isLaunchProhibited","isPlaceholder","isDeletable","isContainerized","requiresDeveloperMode"};
+  for(unsigned i=0;i<sizeof names/sizeof names[0];i++){
+   SEL sel=sel_registerName(names[i]);Method getter=class_getInstanceMethod(object_getClass(proxy),sel);char type[32]={0};
+   if(!getter||method_getNumberOfArguments(getter)!=2){printf("app.%s unavailable\n",names[i]);continue;}
+   method_getReturnType(getter,type,sizeof type);printf("app.%s=",names[i]);
+   if(type[0]=='@'){id value=((id(*)(id,SEL))objc_msgSend)(proxy,sel);if(value)CFShow((CFTypeRef)value);else puts("nil");}
+   else if(type[0]=='B'||type[0]=='c')printf("%u\n",((Boolean(*)(id,SEL))objc_msgSend)(proxy,sel));
+   else printf("unsupported ABI %s\n",type);
+  }
+  return 0;
+ }
+ if(!strcmp(argv[1],"app-open-error")){
+  /* Exact iOS27 FrontBoard callback: v24@?0@BSProcessHandle8@NSError16.
+   * Keep the original error; the older LS Boolean API discards it. */
+  if(!dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices",RTLD_NOW|RTLD_LOCAL))return 1;
+  Class service_class=objc_getClass("FBSOpenApplicationService"),options_class=objc_getClass("FBSOpenApplicationOptions");
+  SEL service_factory=sel_registerName("serviceWithDefaultShellEndpoint"),options_factory=sel_registerName("optionsWithDictionary:"),open=sel_registerName("openApplication:withOptions:completion:");
+  Method sf=service_class?class_getClassMethod(service_class,service_factory):NULL,of=options_class?class_getClassMethod(options_class,options_factory):NULL,op=service_class?class_getInstanceMethod(service_class,open):NULL;
+  char type[32]={0};if(!sf||!of||!op||method_getNumberOfArguments(sf)!=2||method_getNumberOfArguments(of)!=3||method_getNumberOfArguments(op)!=5)return 1;
+  method_getReturnType(sf,type,sizeof type);if(type[0]!='@')return 1;
+  method_getReturnType(of,type,sizeof type);if(type[0]!='@')return 1;
+  method_getArgumentType(of,2,type,sizeof type);if(type[0]!='@')return 1;
+  method_getReturnType(op,type,sizeof type);if(type[0]!='v')return 1;
+  for(unsigned i=2;i<=4;i++){method_getArgumentType(op,i,type,sizeof type);if(type[0]!='@'||(i==4&&type[1]!='?'))return 1;}
+  CFStringRef bundle=CFStringCreateWithCString(NULL,argv[2],kCFStringEncodingUTF8);CFDictionaryRef empty=CFDictionaryCreate(NULL,NULL,NULL,0,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);if(!bundle||!empty)return 1;
+  id service=((id(*)(id,SEL))objc_msgSend)((id)service_class,service_factory),options=((id(*)(id,SEL,id))objc_msgSend)((id)options_class,options_factory,(id)empty);
+  if(!service||!options){CFRelease(bundle);CFRelease(empty);return 1;}
+  __block int completed=0,successful=0;
+  void(^completion)(id,id)=^(id process,id error){
+   printf("FrontBoard completion process=%p error=%p\n",process,error);if(process)CFShow((CFTypeRef)process);if(error)CFShow((CFTypeRef)error);
+   if(error){id info=app_send(error,"userInfo");if(info)CFShow((CFTypeRef)info);}
+   __atomic_store_n(&successful,process&&!error,__ATOMIC_RELEASE);__atomic_store_n(&completed,1,__ATOMIC_RELEASE);
+  };
+  printf("FrontBoard normal open request %s\n",argv[2]);((void(*)(id,SEL,id,id,id))objc_msgSend)(service,open,(id)bundle,options,(id)completion);
+  for(unsigned i=0;i<18&&!__atomic_load_n(&completed,__ATOMIC_ACQUIRE);i++)CFRunLoopRunInMode(kCFRunLoopDefaultMode,1,0);
+  int done=__atomic_load_n(&completed,__ATOMIC_ACQUIRE),ok=__atomic_load_n(&successful,__ATOMIC_ACQUIRE);printf("FrontBoard completed=%d successful=%d; actual process/UI still require verification\n",done,ok);CFRelease(bundle);CFRelease(empty);return done&&ok?0:1;
+ }
  if(!strcmp(argv[1],"app-open")){
   if(argc!=3||!argv[2][0]||strlen(argv[2])>200)return 2;
   for(const char *p=argv[2];*p;p++)if(!((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||(*p>='0'&&*p<='9')||*p=='.'||*p=='-'||*p=='_'))return 2;

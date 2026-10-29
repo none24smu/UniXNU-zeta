@@ -113,6 +113,11 @@ static int run_input_bridge(unsigned seconds){
     IOHIDEventSetSenderID(event,IOHIDServiceClientGetRegistryID(s->service));
     IOHIDEventSetIntegerValue(event,4,1);
     if(type==11){IOHIDEventSetIntegerValue(event,0xb0019,1);CFArrayRef children=IOHIDEventGetChildren(event);if(children)for(CFIndex ci=0;ci<CFArrayGetCount(children);ci++){CFTypeRef child=CFArrayGetValueAtIndex(children,ci);IOHIDEventSetIntegerValue(child,4,1);IOHIDEventSetIntegerValue(child,0xb0019,1);}}
+    if(type==11&&s->forwarded<4){
+     CFArrayRef children=IOHIDEventGetChildren(event);
+     printf("input touch bytes=%u children=%ld type=%ld mask=%#lx range=%ld touch=%ld integrated=%ld\n",count,children?(long)CFArrayGetCount(children):0L,(long)IOHIDEventGetIntegerValue(event,0xb0006),(unsigned long)IOHIDEventGetIntegerValue(event,0xb0007),(long)IOHIDEventGetIntegerValue(event,0xb0008),(long)IOHIDEventGetIntegerValue(event,0xb0009),(long)IOHIDEventGetIntegerValue(event,0xb0019));
+     CFShow(event);
+    }
     if(type==s->type&&__atomic_load_n(&s->opened,__ATOMIC_ACQUIRE)){if(IOHIDVirtualServiceClientDispatchEvent(s->service,event))s->forwarded++;else s->failed++;}
     CFRelease(event);
    }

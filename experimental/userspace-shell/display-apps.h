@@ -41,10 +41,10 @@ static int apps_control(int argc,char **argv){
   }
   return 0;
  }
- if(!strcmp(argv[1],"app-open-error")){
+ if(!strcmp(argv[1],"app-open-error")||!strcmp(argv[1],"app-open-unlock")){
   /* Exact iOS27 FrontBoard callback: v24@?0@BSProcessHandle8@NSError16.
    * Keep the original error; the older LS Boolean API discards it. */
-  if(!dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices",RTLD_NOW|RTLD_LOCAL))return 1;
+  void *fbs=dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices",RTLD_NOW|RTLD_LOCAL);if(!fbs)return 1;
   Class service_class=objc_getClass("FBSOpenApplicationService"),options_class=objc_getClass("FBSOpenApplicationOptions");
   SEL service_factory=sel_registerName("serviceWithDefaultShellEndpoint"),options_factory=sel_registerName("optionsWithDictionary:"),open=sel_registerName("openApplication:withOptions:completion:");
   Method sf=service_class?class_getClassMethod(service_class,service_factory):NULL,of=options_class?class_getClassMethod(options_class,options_factory):NULL,op=service_class?class_getInstanceMethod(service_class,open):NULL;
@@ -54,7 +54,12 @@ static int apps_control(int argc,char **argv){
   method_getArgumentType(of,2,type,sizeof type);if(type[0]!='@')return 1;
   method_getReturnType(op,type,sizeof type);if(type[0]!='v')return 1;
   for(unsigned i=2;i<=4;i++){method_getArgumentType(op,i,type,sizeof type);if(type[0]!='@'||(i==4&&type[1]!='?'))return 1;}
-  CFStringRef bundle=CFStringCreateWithCString(NULL,argv[2],kCFStringEncodingUTF8);CFDictionaryRef empty=CFDictionaryCreate(NULL,NULL,NULL,0,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);if(!bundle||!empty)return 1;
+  CFStringRef bundle=CFStringCreateWithCString(NULL,argv[2],kCFStringEncodingUTF8);CFMutableDictionaryRef empty=CFDictionaryCreateMutable(NULL,0,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);if(!bundle||!empty)return 1;
+  if(!strcmp(argv[1],"app-open-unlock")){
+   CFStringRef *unlock=dlsym(fbs,"FBSOpenApplicationOptionKeyUnlockDevice"),*prompt=dlsym(fbs,"FBSOpenApplicationOptionKeyPromptUnlockDevice");
+   if(!unlock||!prompt||!*unlock||!*prompt||CFGetTypeID(*unlock)!=CFStringGetTypeID()||CFGetTypeID(*prompt)!=CFStringGetTypeID()){puts("normal unlock option keys unavailable; no launch request");CFRelease(bundle);CFRelease(empty);return 1;}
+   CFDictionarySetValue(empty,*unlock,kCFBooleanTrue);CFDictionarySetValue(empty,*prompt,kCFBooleanTrue);puts("requesting normal FrontBoard unlock/prompt handling");
+  }
   id service=((id(*)(id,SEL))objc_msgSend)((id)service_class,service_factory),options=((id(*)(id,SEL,id))objc_msgSend)((id)options_class,options_factory,(id)empty);
   if(!service||!options){CFRelease(bundle);CFRelease(empty);return 1;}
   __block int completed=0,successful=0;

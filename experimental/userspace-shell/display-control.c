@@ -33,6 +33,16 @@ static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
  if(argc==4&&!strcmp(argv[1],"finger-hit-test-filter"))return finger_hit_test_filter(argv[2],argv[3]);
  if(argc==6&&!strcmp(argv[1],"trace-native-touches"))return trace_native_touches(argc,argv);
+ if(argc==2&&!strcmp(argv[1],"reset-home")){
+  if(!dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",RTLD_NOW|RTLD_LOCAL))return 1;
+  Class cls=objc_getClass("SBSTestAutomationService");SEL reset=sel_registerName("resetToHomeScreenAnimated:");
+  Method method=cls?class_getInstanceMethod(cls,reset):NULL;
+  if(!method||strcmp(method_getTypeEncoding(method),"v20@0:8B16")){puts("native reset-to-Home ABI unavailable; no request");return 1;}
+  alarm(12);id service=((id(*)(id,SEL))objc_msgSend)((id)cls,sel_registerName("new"));if(!service)return 1;
+  ((void(*)(id,SEL,Boolean))objc_msgSend)(service,reset,false);
+  puts("normal SpringBoard reset-to-Home request sent; switcher and physical navigation require verification");
+  CFRunLoopRunInMode(kCFRunLoopDefaultMode,3,0);alarm(0);return 0;
+ }
  if(argc==4&&!strcmp(argv[1],"set-display-scale"))return set_display_scale(argv[2],argv[3]);
  if(argc==2&&!strcmp(argv[1],"ui-metrics"))return ui_metrics();
  if(argc>=3&&!strcmp(argv[1],"perf-sample"))return perf_sample(argc,argv);

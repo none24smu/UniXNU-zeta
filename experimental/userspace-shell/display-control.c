@@ -22,8 +22,10 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-remote-call.h"
 #include "display-framebuffer.h"
 #include "display-capture.h"
+#include "display-hid.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if((argc==2||argc==3)&&!strcmp(argv[1],"hid"))return probe_hid(argc==3?(unsigned)strtoul(argv[2],NULL,0):0);
  if((argc==2&&(!strcmp(argv[1],"lock-service-info")||!strcmp(argv[1],"lock-status")))||(argc==3&&!strcmp(argv[1],"request-unlock"))){
   void *sbs=dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",RTLD_NOW|RTLD_LOCAL);if(!sbs)return 1;
   alarm(10);

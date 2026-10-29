@@ -647,7 +647,7 @@ append high-water924,321). A direct diagnostic process23746 executed the real
 Calculator through SwiftUI into UIApplicationMain/GSEventRunModal without the
 old instruction fault. This is execution/run-loop proof, not foreground-window
 proof. The stock workspace foreground request returned false while the device
-reported locked with no passcode. The direct root diagnostic was then stopped
+reported locked with no passcode. The direct root diagnostic was then stopped (SIGKILL after SIGTERM was ignored)
 to avoid interfering with a normal SpringBoard launch. Other app executables
 have not all received instruction conversion, so52 registrations must not be
 reported as52 qualified working applications.

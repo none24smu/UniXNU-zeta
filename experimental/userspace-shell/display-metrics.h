@@ -1,7 +1,7 @@
 /* Read-only UIKit/display traits and sampled task counters. */
 typedef struct { double x,y,w,h; } UIProbeRect;
 static Method ui_getter(id object,const char *name,char kind){
- if(!object)return NULL;Method m=class_getInstanceMethod(object_getClass(object),sel_registerName(name));char type[100]={0};if(!m||method_getNumberOfArguments(m)!=2)return NULL;method_getReturnType(m,type,sizeof type);return type[0]==kind?m:NULL;
+ if(!object)return NULL;Method m=class_getInstanceMethod(object_getClass(object),sel_registerName(name));char type[100]={0};if(!m||method_getNumberOfArguments(m)!=2)return NULL;method_getReturnType(m,type,sizeof type);return(type[0]==kind||(kind=='q'&&type[0]=='Q'))?m:NULL;
 }
 static id ui_object(id object,const char *name){return ui_getter(object,name,'@')?((id(*)(id,SEL))objc_msgSend)(object,sel_registerName(name)):NULL;}
 static void ui_rect(id object,const char *label,const char *name){
@@ -24,6 +24,16 @@ static int ui_metrics(void){
  const char *trait_names[]={"UITraitArtworkSubtype","UITraitDisplayCornerRadius"};const char *selectors[]={"valueForNSIntegerTrait:","valueForCGFloatTrait:"};
  for(unsigned i=0;i<2;i++){Class trait=objc_getClass(trait_names[i]);SEL sel=sel_registerName(selectors[i]);Method method=traits?class_getInstanceMethod(object_getClass(traits),sel):NULL;char result[16]={0},argument[16]={0};if(method){method_getReturnType(method,result,sizeof result);method_getArgumentType(method,2,argument,sizeof argument);}if(!trait||!method||method_getNumberOfArguments(method)!=3||argument[0]!='#'||result[0]!=(i?'d':'q')){printf("trait %s unavailable\n",trait_names[i]);continue;}if(i)printf("trait %s=%.10g\n",trait_names[i],((double(*)(id,SEL,Class))objc_msgSend)(traits,sel,trait));else printf("trait %s=%lld\n",trait_names[i],((long long(*)(id,SEL,Class))objc_msgSend)(traits,sel,trait));}
  Class device=objc_getClass("UIDevice");id dev=device&&class_getClassMethod(device,sel_registerName("currentDevice"))?((id(*)(id,SEL))objc_msgSend)((id)device,sel_registerName("currentDevice")):NULL;ui_number(dev,"device","userInterfaceIdiom",'q');ui_number(dev,"device","orientation",'q');
+ Class ca=objc_getClass("CADisplay");id display=ca&&class_getClassMethod(ca,sel_registerName("mainDisplay"))?((id(*)(id,SEL))objc_msgSend)((id)ca,sel_registerName("mainDisplay")):NULL;
+ printf("CA display class=%s\n",display?object_getClassName(display):"nil");ui_rect(display,"caDisplay","bounds");ui_number(display,"caDisplay","scale",'d');ui_number(display,"caDisplay","pointScale",'d');
+ id mode=ui_object(display,"currentMode");printf("CA mode class=%s\n",mode?object_getClassName(mode):"nil");ui_number(mode,"caMode","pointScale",'d');ui_number(mode,"caMode","scale",'d');ui_number(mode,"caMode","refreshRate",'d');
+ const char *names[]={"UIScreen","CADisplay","CADisplayMode","FBSDisplayMonitor","FBSDisplayConfigurationBuilder","FBSDisplayMode","UISDisplayContext"};
+ for(unsigned c=0;c<sizeof names/sizeof names[0];c++){
+  Class cl=objc_getClass(names[c]);if(!cl)continue;
+  for(unsigned meta=0;meta<2;meta++){unsigned count=0;Method *methods=class_copyMethodList(meta?object_getClass((id)cl):cl,&count);
+   for(unsigned i=0;i<count;i++){const char *name=sel_getName(method_getName(methods[i]));if(strstr(name,"cale")||strstr(name,"ounds")||strstr(name,"Mode")||strstr(name,"mode")||strstr(name,"ransform")||strstr(name,"artwork")||strstr(name,"Artwork")||strstr(name,"Orientation")||strstr(name,"Context")||strstr(name,"mainScreen")||strstr(name,"mainDisplay"))printf("metrics API %c%s %s %s\n",meta?'+':'-',names[c],name,method_getTypeEncoding(methods[i]));}free(methods);
+  }
+ }
  puts("metrics sampled in diagnostic process; SpringBoard scene orientation/cache require separate verification");return 0;
 }
 struct perf_snapshot {task_thread_times_info_data_t times;task_events_info_data_t events;kern_return_t times_kr,events_kr;};

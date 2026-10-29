@@ -59,7 +59,7 @@ static int run_input_bridge(unsigned seconds){
  INPUT_API(uint64_t,IOHIDServiceClientGetRegistryID,(CFTypeRef))
  INPUT_API(CFArrayRef,IOHIDEventGetChildren,(CFTypeRef))
 #undef INPUT_API
- CFTypeRef client=IOHIDEventSystemClientCreateWithType(NULL,4,NULL);if(!client)return 1;
+ CFTypeRef client=IOHIDEventSystemClientCreateWithType(NULL,3,NULL);if(!client)return 1;printf("input bridge client type=3 (rate controlled)\n");
  dispatch_queue_t queue=dispatch_queue_create("org.unixnu.zeta.live-input",NULL);IOHIDEventSystemClientScheduleWithDispatchQueue(client,queue);
  mach_port_t iterator=0;int status=IOServiceGetMatchingServices(MACH_PORT_NULL,IOServiceMatching("IOHIDEventService"),&iterator);if(status){CFRelease(client);return 1;}
  unsigned sources=0;mach_port_t entry;

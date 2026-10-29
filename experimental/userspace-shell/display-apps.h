@@ -52,6 +52,20 @@ static int apps_control(int argc,char **argv){
   method_getArgumentType(method,2,type,sizeof type);if(type[0]!='B'&&type[0]!='c'){printf("install option setter %s ABI=%s\n",setters[i],type);return 1;}
   ((void(*)(id,SEL,Boolean))objc_msgSend)(options,sel,true);
  }
+ /* Modern installd requires the requested bundle ID explicitly. Read it from
+  * the original bundle, rather than inferring IDs from directory names. */
+ char info_path[280];snprintf(info_path,sizeof info_path,"%s/Info.plist",path);
+ CFStringRef info_name=CFStringCreateWithCString(NULL,info_path,kCFStringEncodingUTF8);
+ id info=((id(*)(id,SEL,id))objc_msgSend)((id)objc_getClass("NSDictionary"),sel_registerName("dictionaryWithContentsOfFile:"),(id)info_name);
+ CFRelease(info_name);
+ id bundle=info?((id(*)(id,SEL,id))objc_msgSend)(info,sel_registerName("objectForKey:"),(id)CFSTR("CFBundleIdentifier")):NULL;
+ SEL bundle_setter=sel_registerName("setBundleIdentifier:");
+ Method bundle_method=class_getInstanceMethod(options_class,bundle_setter);
+ if(!bundle||CFGetTypeID((CFTypeRef)bundle)!=CFStringGetTypeID()||!bundle_method||method_getNumberOfArguments(bundle_method)!=3){puts("original bundle identifier or option setter unavailable; no request");return 1;}
+ char bundle_type[16]={0};method_getArgumentType(bundle_method,2,bundle_type,sizeof bundle_type);
+ if(bundle_type[0]!='@'){puts("bundle identifier setter ABI mismatch; no request");return 1;}
+ ((void(*)(id,SEL,id))objc_msgSend)(options,bundle_setter,bundle);
+ printf("original staged bundle identifier=");CFShow((CFTypeRef)bundle);
  id dictionary=app_send(options,"legacyOptionsDictionary");
  CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8*)path,strlen(path),true);
  if(!dictionary||!url){printf("stock install options dictionary=%p URL=%p\n",dictionary,url);return 1;}

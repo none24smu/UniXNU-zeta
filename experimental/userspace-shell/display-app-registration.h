@@ -25,7 +25,16 @@ static id registration_record(const char *path,const char *identifier,int extens
  const char *query="dataContainersForExecutableBundle:createIfNeeded:temporary:created:error:";
  if(!registration_method((id)data_class,query,'@',"@BB^^"))return NULL;
  Boolean created=false;id containers=((id(*)(id,SEL,id,Boolean,Boolean,Boolean*,id*))objc_msgSend)((id)data_class,sel_registerName(query),bundle,false,false,&created,&error);
- if(error||created){if(error)CFShow((CFTypeRef)error);puts("existing-container query failed; no registration");return NULL;}
+ if(error){
+  if(!registration_method(bundle,"needsDataContainer",'B',""))return NULL;
+  Boolean needed=((Boolean(*)(id,SEL))objc_msgSend)(bundle,sel_registerName("needsDataContainer"));
+  id domain=app_send(error,"domain");long code=((long(*)(id,SEL))objc_msgSend)(error,sel_registerName("code"));
+  if(domain&&CFEqual((CFTypeRef)domain,CFSTR("MIContainerManagerErrorDomain"))&&code==21){
+   if(!needed&&type==1){puts("native non-containerized built-in has no data container; retaining nil");error=NULL;containers=NULL;}
+   else if(needed){error=NULL;containers=((id(*)(id,SEL,id,Boolean,Boolean,Boolean*,id*))objc_msgSend)((id)data_class,sel_registerName(query),bundle,true,false,&created,&error);printf("native required data-container initialization created=%u\n",created);}
+  }
+ }
+ if(error){CFShow((CFTypeRef)error);puts("native container query failed; no registration");return NULL;}
  id strings=NULL;
  if(containers){if(!registration_method(containers,"allPersonaUniqueStrings",'@',""))return NULL;strings=app_send(containers,"allPersonaUniqueStrings");}
  if(strings){if(CFGetTypeID((CFTypeRef)strings)!=CFSetGetTypeID())return NULL;CFIndex n=CFSetGetCount((CFSetRef)strings);if(n>32)return NULL;const void *items[32];CFSetGetValues((CFSetRef)strings,items);for(CFIndex i=0;i<n;i++)CFSetAddValue(personas,items[i]);}

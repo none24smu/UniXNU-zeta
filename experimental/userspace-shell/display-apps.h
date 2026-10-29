@@ -22,6 +22,17 @@ static int apps_control(int argc,char **argv){
   app_methods(workspace_class);app_methods(object_getClass((id)workspace_class));app_methods(options_class);app_methods(objc_getClass("MIInstallerClient"));return 0;
  }
  id workspace=app_send((id)workspace_class,"defaultWorkspace");if(!workspace){puts("stock workspace factory returned nil");return 1;}
+ if(!strcmp(argv[1],"app-open")){
+  if(argc!=3||!argv[2][0]||strlen(argv[2])>200)return 2;
+  for(const char *p=argv[2];*p;p++)if(!((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||(*p>='0'&&*p<='9')||*p=='.'||*p=='-'||*p=='_'))return 2;
+  SEL open_selector=sel_registerName("openApplicationWithBundleID:");Method open_method=class_getInstanceMethod(workspace_class,open_selector);char ret[16]={0},arg[16]={0};
+  if(!open_method||method_getNumberOfArguments(open_method)!=3){puts("stock app open API unavailable");return 1;}
+  method_getReturnType(open_method,ret,sizeof ret);method_getArgumentType(open_method,2,arg,sizeof arg);
+  if((ret[0]!='B'&&ret[0]!='c')||arg[0]!='@'){puts("stock app open ABI mismatch");return 1;}
+  CFStringRef bundle=CFStringCreateWithCString(NULL,argv[2],kCFStringEncodingUTF8);if(!bundle)return 1;
+  Boolean accepted=((Boolean(*)(id,SEL,id))objc_msgSend)(workspace,open_selector,(id)bundle);CFRelease(bundle);
+  printf("stock app open request %s accepted=%u; process and UI require verification\n",argv[2],accepted);return accepted?0:1;
+ }
  if(!strcmp(argv[1],"apps-list")){
   SEL selector=sel_registerName("allInstalledApplications");
   if(!class_getInstanceMethod(workspace_class,selector)){puts("installed app enumeration API unavailable");return 1;}

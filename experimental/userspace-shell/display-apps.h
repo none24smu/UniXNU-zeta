@@ -80,6 +80,16 @@ static int apps_control(int argc,char **argv){
  if(!installer||!method||method_getNumberOfArguments(method)!=8){puts("stock installer method unavailable; no request");CFRelease(url);return 1;}
  const char expected[]={'@','@','Q','@','B','@'};
  for(unsigned i=0;i<6;i++){char type[32]={0};method_getArgumentType(method,i+2,type,sizeof type);if(type[0]!=expected[i]){printf("installer argument%u ABI=%s; no request\n",i,type);CFRelease(url);return 1;}}
+ /* Use the stock initializer's common Data location and default persona.
+  * A nil identity reaches ICL as an unknown location type. */
+ Class identity_class=objc_getClass("MIAppIdentity");SEL identity_init=sel_registerName("initWithBundleID:");
+ Method identity_method=identity_class?class_getInstanceMethod(identity_class,identity_init):NULL;
+ if(!identity_method||method_getNumberOfArguments(identity_method)!=3){puts("stock app identity initializer unavailable; no request");CFRelease(url);return 1;}
+ char identity_type[16]={0};method_getArgumentType(identity_method,2,identity_type,sizeof identity_type);
+ if(identity_type[0]!='@'){puts("stock identity initializer ABI mismatch; no request");CFRelease(url);return 1;}
+ id identity=((id(*)(id,SEL,id))objc_msgSend)(app_send((id)identity_class,"alloc"),identity_init,bundle);
+ if(!identity){puts("stock app identity initializer returned nil; no request");CFRelease(url);return 1;}
+ printf("stock app identity=");CFShow((CFTypeRef)identity);
  /* Exact shipped reply block: v36@?0B8@NSArray12@LSRecordPromise20@NSError28. */
  __block int completed=0,successful=0;
  void(^completion)(Boolean,id,id,id)=^(Boolean ok,id records,id promise,id error){
@@ -87,7 +97,7 @@ static int apps_control(int argc,char **argv){
   if(records)CFShow((CFTypeRef)records);if(error)CFShow((CFTypeRef)error);
   __atomic_store_n(&successful,ok?1:0,__ATOMIC_RELEASE);__atomic_store_n(&completed,1,__ATOMIC_RELEASE);
  };
- ((void(*)(id,SEL,id,id,uint64_t,id,Boolean,id))objc_msgSend)(installer,selector,(id)url,NULL,1,options,true,(id)completion);
+ ((void(*)(id,SEL,id,id,uint64_t,id,Boolean,id))objc_msgSend)(installer,selector,(id)url,identity,1,options,true,(id)completion);
  for(unsigned seconds=0;seconds<170&&!__atomic_load_n(&completed,__ATOMIC_ACQUIRE);seconds++)CFRunLoopRunInMode(kCFRunLoopDefaultMode,1,0);
  int ok=__atomic_load_n(&completed,__ATOMIC_ACQUIRE)&&__atomic_load_n(&successful,__ATOMIC_ACQUIRE);
  if(!__atomic_load_n(&completed,__ATOMIC_ACQUIRE))puts("stock installer completion not received before diagnostic deadline");

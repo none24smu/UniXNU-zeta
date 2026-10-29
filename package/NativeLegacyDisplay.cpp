@@ -254,12 +254,26 @@ bool surfaceBounds(uint32_t width, uint32_t height, uint64_t stride, uint64_t al
 
 void kick(IOService *self);
 
-// sheng's native_legacy_prepare_scanout: yield to an in-flight diagnostic writer, never spin on a preempted one.
+// Release the standard XNU video console as well as the optional diagnostic
+// painter. The console otherwise retains the firmware's single-panel pitch
+// after the compositor begins presenting the spanned two-panel framebuffer.
+static bool releaseBootConsole() {
+    static unsigned state;
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&state, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        int status = PE_initialize_console(nullptr, kPEReleaseScreen);
+        __atomic_store_n(&state, status ? 0U : 2U, __ATOMIC_RELEASE);
+        return status == 0;
+    }
+    return expected == 2;
+}
+
+// Yield to an in-flight diagnostic writer, never spin on a preempted one.
 bool prepareScanout() {
-    if (!boot_progress_prepare_scanout) return true;
     if (ml_at_interrupt_context() || !ml_get_interrupts_enabled()) return false;
+    if (!boot_progress_prepare_scanout) return releaseBootConsole();
     for (unsigned attempt = 0; attempt < 100; ++attempt) {
-        if (boot_progress_prepare_scanout()) return true;
+        if (boot_progress_prepare_scanout()) return releaseBootConsole();
         IOSleep(1);
     }
     if (boot_progress_cancel_scanout) boot_progress_cancel_scanout();

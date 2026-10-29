@@ -26,8 +26,11 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-input-bridge.h"
 #include "display-apps.h"
 #include "display-stage-restore.h"
+#include "display-metrics.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==2&&!strcmp(argv[1],"ui-metrics"))return ui_metrics();
+ if(argc>=3&&!strcmp(argv[1],"perf-sample"))return perf_sample(argc,argv);
  if(argc==9&&!strcmp(argv[1],"restore-staged-file"))return restore_staged_file(argc,argv);
  if((argc==2&&(!strcmp(argv[1],"apps-api")||!strcmp(argv[1],"apps-list")))||(argc==3&&(!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"app-open"))))return apps_control(argc,argv);
  if(argc==3&&(!strcmp(argv[1],"input-bridge")||!strcmp(argv[1],"input-bridge-native")))return run_input_bridge((unsigned)strtoul(argv[2],NULL,0),!strcmp(argv[1],"input-bridge-native"));

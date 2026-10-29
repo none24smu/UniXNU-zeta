@@ -21,7 +21,7 @@ static int apps_control(int argc,char **argv){
  if(!strcmp(argv[1],"apps-api")){
   app_methods(workspace_class);app_methods(object_getClass((id)workspace_class));app_methods(options_class);app_methods(objc_getClass("MIInstallerClient"));return 0;
  }
- id workspace=app_send((id)workspace_class,"defaultWorkspace");if(!workspace)return 1;
+ id workspace=app_send((id)workspace_class,"defaultWorkspace");if(!workspace){puts("stock workspace factory returned nil");return 1;}
  if(!strcmp(argv[1],"apps-list")){
   SEL selector=sel_registerName("allInstalledApplications");
   if(!class_getInstanceMethod(workspace_class,selector)){puts("installed app enumeration API unavailable");return 1;}
@@ -42,17 +42,19 @@ static int apps_control(int argc,char **argv){
  if(n<5||n>180||strchr(name,'/')||strstr(name,"..")||strcmp(name+n-4,".app")){puts("one original staged .app name required");return 2;}
  char path[256];snprintf(path,sizeof path,"/private/var/staged_system_apps/%s",name);
  struct stat st;if(lstat(path,&st)||!S_ISDIR(st.st_mode)){puts("staged app directory missing");return 1;}
- id options=app_send((id)options_class,"new");
+ CFDictionaryRef empty=CFDictionaryCreate(NULL,NULL,NULL,0,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+ id options=((id(*)(id,SEL,id))objc_msgSend)(app_send((id)options_class,"alloc"),sel_registerName("initWithLegacyOptionsDictionary:"),(id)empty);
+ CFRelease(empty);if(!options){puts("stock install options initializer returned nil");return 1;}
  const char *setters[]={"setSystemAppInstall:","setInstallForMigrator:"};
  for(unsigned i=0;i<2;i++){
   SEL sel=sel_registerName(setters[i]);Method method=class_getInstanceMethod(options_class,sel);char type[16]={0};
-  if(!method||method_getNumberOfArguments(method)!=3)return 1;
-  method_getArgumentType(method,2,type,sizeof type);if(type[0]!='B'&&type[0]!='c')return 1;
+  if(!method||method_getNumberOfArguments(method)!=3){printf("install option setter %s unavailable\n",setters[i]);return 1;}
+  method_getArgumentType(method,2,type,sizeof type);if(type[0]!='B'&&type[0]!='c'){printf("install option setter %s ABI=%s\n",setters[i],type);return 1;}
   ((void(*)(id,SEL,Boolean))objc_msgSend)(options,sel,true);
  }
  id dictionary=app_send(options,"legacyOptionsDictionary");
  CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8*)path,strlen(path),true);
- if(!dictionary||!url)return 1;
+ if(!dictionary||!url){printf("stock install options dictionary=%p URL=%p\n",dictionary,url);return 1;}
  printf("install stock staged app %s options=",path);CFShow((CFTypeRef)dictionary);
  SEL selector=sel_registerName("installApplication:withOptions:error:usingBlock:");
  Method method=class_getInstanceMethod(workspace_class,selector);char returns[16]={0};

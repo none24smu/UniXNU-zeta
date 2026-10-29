@@ -9,7 +9,7 @@ static void hid_event_callback(void *target,void *context,void *sender,void *eve
  if(type<64)hid_event_counts[type]++;
  if(type==11&&hid_event_counts[type]<=12)printf("HID digitizer event=%u\n",hid_event_counts[type]);
 }
-static int probe_hid(unsigned seconds){
+static int probe_hid(unsigned seconds,int refresh){
  if(seconds>15)return 2;
  alarm(25);
  void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);
@@ -32,6 +32,12 @@ static int probe_hid(unsigned seconds){
    status=properties(entry,&props,kCFAllocatorDefault,0);
    printf("HID registry id=%#llx properties=%#x\n",(unsigned long long)ident,status);
    if(props){
+    CFTypeRef product=CFDictionaryGetValue(props,CFSTR("Product"));
+    if(refresh&&ci==0&&product&&(CFEqual(product,CFSTR("Offline HID input probe"))||CFEqual(product,CFSTR("Offline touch digitizer")))){
+     int(*set)(mach_port_t,CFTypeRef)=(int(*)(mach_port_t,CFTypeRef))dlsym(io,"IORegistryEntrySetCFProperties");
+     const void *key=CFSTR("HIDRMDeviceState"),*value=CFSTR("Allowed");CFDictionaryRef state=CFDictionaryCreate(NULL,&key,&value,1,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+     printf("HID refresh our service status=%#x\n",set?set(entry,state):-1);CFRelease(state);
+    }
     const char *keys[]={"Product","Transport","PrimaryUsage","PrimaryUsagePage","Built-In","DisplayIntegrated","IOCFPlugInTypes","IOUserClientClass","HIDRMDeviceState","DebugState"};
     for(unsigned k=0;k<sizeof(keys)/sizeof(keys[0]);k++){CFStringRef key=CFStringCreateWithCString(NULL,keys[k],kCFStringEncodingUTF8);CFTypeRef value=CFDictionaryGetValue(props,key);if(value){printf("HID property %s=",keys[k]);CFShow(value);}CFRelease(key);}
     CFRelease(props);
@@ -61,8 +67,8 @@ static int probe_hid(unsigned seconds){
   if(clients)for(int type=0;type<=4;type++){CFArrayRef a=clients(admin,type);printf("HID clients type=%d count=%ld\n",type,a?CFArrayGetCount(a):-1L);if(a){CFShow(a);CFRelease(a);}}
   CFRelease(admin);
  }
- const char *paths[]={"/System/Library/Extensions/IOHIDFamily.kext/Contents/PlugIns/IOHIDLib.plugin","/System/Library/Extensions/IOHIDFamily.kext/PlugIns/IOHIDLib.plugin"};
- for(unsigned i=0;i<2;i++){CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8*)paths[i],strlen(paths[i]),true);CFPlugInRef p=CFPlugInCreate(NULL,url);printf("HID plugin bundle path=%s found=%d\n",paths[i],p!=NULL);if(p)CFRelease(p);CFRelease(url);}
+ const char *paths[]={"/System/Library/Extensions/IOHIDFamily.kext/Contents/PlugIns/IOHIDLib.plugin","/System/Library/Extensions/IOHIDFamily.kext/PlugIns/IOHIDLib.plugin","/System/Library/Extensions/IOHIDFamily.kext//////////PlugIns/IOHIDLib.plugin"};
+ for(unsigned i=0;i<3;i++){CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8*)paths[i],strlen(paths[i]),true);CFPlugInRef p=CFPlugInCreate(NULL,url);printf("HID plugin bundle path=%s found=%d\n",paths[i],p!=NULL);if(p)CFRelease(p);CFRelease(url);}
  if(seconds){
   void(*schedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientScheduleWithRunLoop");
   void(*unschedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientUnscheduleWithRunLoop");

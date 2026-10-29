@@ -3,6 +3,7 @@
  * Reads real device events; no synthetic gestures or exclusive HID opens. */
 #include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
+#include "input-kdk-digitizer.h"
 typedef struct {
  uint64_t version;
  void(*notification)(void*,void*,CFTypeRef,uint32_t,CFDictionaryRef);
@@ -59,8 +60,6 @@ static int run_input_bridge(unsigned seconds,int native_digitizer){
  INPUT_API(void,IOHIDEventSetSenderID,(CFTypeRef,uint64_t))
  INPUT_API(uint64_t,IOHIDServiceClientGetRegistryID,(CFTypeRef))
  INPUT_API(CFArrayRef,IOHIDEventGetChildren,(CFTypeRef))
- INPUT_API(double,IOHIDEventGetFloatValue,(CFTypeRef,uint32_t))
- INPUT_API(uint64_t,IOHIDEventGetTimeStamp,(CFTypeRef))
  INPUT_API(CFTypeRef,IOHIDEventCreateDigitizerEvent,(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,double,double,double,double,double,double,Boolean,Boolean,uint32_t))
  INPUT_API(CFTypeRef,IOHIDEventCreateDigitizerFingerEvent,(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,double,double,double,double,double,Boolean,Boolean,uint32_t))
  INPUT_API(void,IOHIDEventAppendEvent,(CFTypeRef,CFTypeRef,uint32_t))
@@ -108,36 +107,23 @@ static int run_input_bridge(unsigned seconds,int native_digitizer){
    for(unsigned n=0;n<256&&IODataQueueDataAvailable((void*)s->address);n++){
     uint32_t count=sizeof bytes;status=IODataQueueDequeue((void*)s->address,bytes,&count);
     if(status){printf("input bridge %s dequeue=%#x bytes=%u\n",s->name,status,count);s->failed++;break;}
-    CFTypeRef event=IOHIDEventCreateWithBytes(NULL,bytes,count);
+    CFTypeRef event=NULL;
+    if(i==0&&native_digitizer){
+     KdkTouch touch;
+     if(!decode_kdk_touch(bytes,count,&touch)){s->failed++;if(s->failed<=4)printf("KDK digitizer wire rejected bytes=%u\n",count);continue;}
+     uint32_t mask=0;Boolean down=false;
+     for(unsigned ci=0;ci<touch.count;ci++){mask|=touch.fingers[ci].mask;down|=touch.fingers[ci].down!=0;}
+     event=IOHIDEventCreateDigitizerEvent(NULL,touch.timestamp,3,0,0,mask&~1U,0,touch.fingers[0].x,touch.fingers[0].y,0,0,0,0,down,down,0);
+     if(!event){s->failed++;continue;}
+     for(unsigned ci=0;ci<touch.count;ci++){
+      const KdkFinger *f=&touch.fingers[ci];
+      CFTypeRef finger=IOHIDEventCreateDigitizerFingerEvent(NULL,touch.timestamp,f->index+1,f->index+2,f->mask,f->x,f->y,0,f->down?1.0:0.0,0,f->down,f->down,0);
+      if(finger){IOHIDEventAppendEvent(event,finger,0);CFRelease(finger);}
+     }
+     if(s->forwarded<4)printf("KDK touch decoded fingers=%u index=%u mask=%#x x=%.6f y=%.6f down=%d\n",touch.count,touch.fingers[0].index,touch.fingers[0].mask,touch.fingers[0].x,touch.fingers[0].y,touch.fingers[0].down);
+    }else event=IOHIDEventCreateWithBytes(NULL,bytes,count);
     if(!event){s->failed++;continue;}
     unsigned type=IOHIDEventGetType(event);
-    if(type==11&&native_digitizer){
-     /* Re-encode actual contacts with this OS's constructors, following the
-      * retained working OnePlus hand/finger layout. Preserve contact masks,
-      * coordinates and timestamps; never synthesize a finger or gesture. */
-     CFArrayRef children=IOHIDEventGetChildren(event);
-     CFIndex fingers=children?CFArrayGetCount(children):1;
-     if(fingers<1||fingers>16){s->failed++;CFRelease(event);continue;}
-     uint32_t mask=0;Boolean touching=false;double x=0,y=0;
-     for(CFIndex ci=0;ci<fingers;ci++){
-      CFTypeRef child=children?CFArrayGetValueAtIndex(children,ci):event;
-      mask|=(uint32_t)IOHIDEventGetIntegerValue(child,0xb0007);
-      touching|=IOHIDEventGetIntegerValue(child,0xb0009)!=0;
-      if(!ci){x=IOHIDEventGetFloatValue(child,0xb0000);y=IOHIDEventGetFloatValue(child,0xb0001);}
-     }
-     uint64_t stamp=IOHIDEventGetTimeStamp(event);
-     CFTypeRef hand=IOHIDEventCreateDigitizerEvent(NULL,stamp,3,0,0,mask&~1U,0,x,y,0,0,0,0,touching,touching,0);
-     if(!hand){s->failed++;CFRelease(event);continue;}
-     for(CFIndex ci=0;ci<fingers;ci++){
-      CFTypeRef old=children?CFArrayGetValueAtIndex(children,ci):event;
-      uint32_t index=(uint32_t)IOHIDEventGetIntegerValue(old,0xb0005);
-      Boolean down=IOHIDEventGetIntegerValue(old,0xb0009)!=0;
-      CFTypeRef finger=IOHIDEventCreateDigitizerFingerEvent(NULL,stamp,index+1,index+2,(uint32_t)IOHIDEventGetIntegerValue(old,0xb0007),IOHIDEventGetFloatValue(old,0xb0000),IOHIDEventGetFloatValue(old,0xb0001),0,down?1.0:0.0,0,down,down,0);
-      if(finger){IOHIDEventAppendEvent(hand,finger,0);CFRelease(finger);}
-     }
-     if(s->forwarded<4){puts("input original kernel digitizer:");CFShow(event);printf("input native re-encode fingers=%ld x=%f y=%f timestamp=%llu now=%llu\n",(long)fingers,x,y,(unsigned long long)stamp,(unsigned long long)mach_absolute_time());}
-     CFRelease(event);event=hand;
-    }
     if(type==3&&s->forwarded<8)printf("input bridge keyboard page=%#lx usage=%#lx down=%ld\n",(unsigned long)IOHIDEventGetIntegerValue(event,0x30000),(unsigned long)IOHIDEventGetIntegerValue(event,0x30001),(long)IOHIDEventGetIntegerValue(event,0x30002));
     // Replacing a kernel producer with a virtual service also replaces the
     // sender identity. Button policy requires built-in events, and UIKit's

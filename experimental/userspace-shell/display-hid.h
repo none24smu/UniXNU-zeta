@@ -31,21 +31,38 @@ static int probe_hid(unsigned seconds){
    uint64_t ident=0;entryid(entry,&ident);CFMutableDictionaryRef props=NULL;
    status=properties(entry,&props,kCFAllocatorDefault,0);
    printf("HID registry id=%#llx properties=%#x\n",(unsigned long long)ident,status);
-   if(props){CFShow(props);CFRelease(props);}release(entry);
+   if(props){
+    const char *keys[]={"Product","Transport","PrimaryUsage","PrimaryUsagePage","Built-In","DisplayIntegrated","IOCFPlugInTypes","IOUserClientClass","HIDRMDeviceState","DebugState"};
+    for(unsigned k=0;k<sizeof(keys)/sizeof(keys[0]);k++){CFStringRef key=CFStringCreateWithCString(NULL,keys[k],kCFStringEncodingUTF8);CFTypeRef value=CFDictionaryGetValue(props,key);if(value){printf("HID property %s=",keys[k]);CFShow(value);}CFRelease(key);}
+    CFRelease(props);
+   }
+   if(ci==0){
+    int(*plugin)(mach_port_t,CFUUIDRef,CFUUIDRef,void***,int32_t*)=(int(*)(mach_port_t,CFUUIDRef,CFUUIDRef,void***,int32_t*))dlsym(io,"IOCreatePlugInInterfaceForService");
+    int(*destroy)(void**)=(int(*)(void**))dlsym(io,"IODestroyPlugInInterface");
+    CFUUIDRef type=CFUUIDCreateFromString(NULL,CFSTR("7DDEECA8-A7B4-11DA-8A0E-0014519758EF")),iface=CFUUIDCreateFromString(NULL,CFSTR("C244E858-109C-11D4-91D4-0050E4C6426F"));
+    if(plugin&&destroy){void **result=NULL;int32_t score=0;int ps=plugin(entry,type,iface,&result,&score);printf("HID plugin create status=%#x interface=%p score=%d\n",ps,result,score);if(result)destroy(result);}
+    CFRelease(type);CFRelease(iface);
+   }
+   release(entry);
    if(++count==64)break;
   }
   release(it);printf("HID registry count=%u\n",count);
  }
  CFTypeRef(*create)(CFAllocatorRef,int,CFDictionaryRef)=(CFTypeRef(*)(CFAllocatorRef,int,CFDictionaryRef))dlsym(io,"IOHIDEventSystemClientCreateWithType");
+ CFArrayRef(*copyservices)(CFTypeRef)=(CFArrayRef(*)(CFTypeRef))dlsym(io,"IOHIDEventSystemClientCopyServices");
+ CFTypeRef(*property)(CFTypeRef,CFStringRef)=(CFTypeRef(*)(CFTypeRef,CFStringRef))dlsym(io,"IOHIDServiceClientCopyProperty");
  CFArrayRef(*services)(CFTypeRef)=(CFArrayRef(*)(CFTypeRef))dlsym(io,"_IOHIDEventSystemClientCopyServiceRecords");
  CFArrayRef(*clients)(CFTypeRef,int)=(CFArrayRef(*)(CFTypeRef,int))dlsym(io,"_IOHIDEventSystemClientCopyClientRecords");
  if(!create)return 1;
  CFTypeRef admin=create(kCFAllocatorDefault,0,NULL);printf("HID admin client=%p\n",admin);
  if(admin){
+  if(copyservices){CFArrayRef a=copyservices(admin);printf("HID client services count=%ld\n",a?CFArrayGetCount(a):-1L);if(a){for(CFIndex i=0;i<CFArrayGetCount(a);i++){CFTypeRef service=CFArrayGetValueAtIndex(a,i);CFTypeRef name=property?property(service,CFSTR("Product")):NULL;printf("HID client service index=%ld\n",i);if(name){CFShow(name);CFRelease(name);}}CFRelease(a);}}
   if(services){CFArrayRef a=services(admin);printf("HID service records=%ld\n",a?CFArrayGetCount(a):-1L);if(a){CFShow(a);CFRelease(a);}}
   if(clients)for(int type=0;type<=4;type++){CFArrayRef a=clients(admin,type);printf("HID clients type=%d count=%ld\n",type,a?CFArrayGetCount(a):-1L);if(a){CFShow(a);CFRelease(a);}}
   CFRelease(admin);
  }
+ const char *paths[]={"/System/Library/Extensions/IOHIDFamily.kext/Contents/PlugIns/IOHIDLib.plugin","/System/Library/Extensions/IOHIDFamily.kext/PlugIns/IOHIDLib.plugin"};
+ for(unsigned i=0;i<2;i++){CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8*)paths[i],strlen(paths[i]),true);CFPlugInRef p=CFPlugInCreate(NULL,url);printf("HID plugin bundle path=%s found=%d\n",paths[i],p!=NULL);if(p)CFRelease(p);CFRelease(url);}
  if(seconds){
   void(*schedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientScheduleWithRunLoop");
   void(*unschedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientUnscheduleWithRunLoop");

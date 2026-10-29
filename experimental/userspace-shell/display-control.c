@@ -28,9 +28,11 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-stage-restore.h"
 #include "display-metrics.h"
 #include "display-hit-test.h"
+#include "display-touch-trace.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
  if(argc==4&&!strcmp(argv[1],"finger-hit-test-filter"))return finger_hit_test_filter(argv[2],argv[3]);
+ if(argc==6&&!strcmp(argv[1],"trace-native-touches"))return trace_native_touches(argc,argv);
  if(argc==4&&!strcmp(argv[1],"set-display-scale"))return set_display_scale(argv[2],argv[3]);
  if(argc==2&&!strcmp(argv[1],"ui-metrics"))return ui_metrics();
  if(argc>=3&&!strcmp(argv[1],"perf-sample"))return perf_sample(argc,argv);

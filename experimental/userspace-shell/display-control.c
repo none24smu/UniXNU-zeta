@@ -24,8 +24,10 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-capture.h"
 #include "display-hid.h"
 #include "display-input-bridge.h"
+#include "display-apps.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if((argc==2&&(!strcmp(argv[1],"apps-api")||!strcmp(argv[1],"apps-list")))||(argc==3&&!strcmp(argv[1],"app-install-staged")))return apps_control(argc,argv);
  if(argc==3&&(!strcmp(argv[1],"input-bridge")||!strcmp(argv[1],"input-bridge-native")))return run_input_bridge((unsigned)strtoul(argv[2],NULL,0),!strcmp(argv[1],"input-bridge-native"));
  if((argc==2||argc==3)&&(!strcmp(argv[1],"hid")||!strcmp(argv[1],"hid-refresh")))return probe_hid(argc==3?(unsigned)strtoul(argv[2],NULL,0):0,!strcmp(argv[1],"hid-refresh"));
  if((argc==2&&(!strcmp(argv[1],"lock-service-info")||!strcmp(argv[1],"lock-status")))||(argc==3&&!strcmp(argv[1],"request-unlock"))){

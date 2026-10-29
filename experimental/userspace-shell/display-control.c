@@ -33,7 +33,7 @@ static int control(int argc,char **argv){
  if(argc==2&&!strcmp(argv[1],"ui-metrics"))return ui_metrics();
  if(argc>=3&&!strcmp(argv[1],"perf-sample"))return perf_sample(argc,argv);
  if(argc==9&&!strcmp(argv[1],"restore-staged-file"))return restore_staged_file(argc,argv);
- if((argc==2&&(!strcmp(argv[1],"apps-api")||!strcmp(argv[1],"apps-list")||!strcmp(argv[1],"apps-rebuild-system")))||(argc==3&&(!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"app-register-root")||!strcmp(argv[1],"app-open")||!strcmp(argv[1],"app-info")||!strcmp(argv[1],"app-reregister")||!strcmp(argv[1],"app-architecture")||!strcmp(argv[1],"app-open-error")||!strcmp(argv[1],"app-open-unlock"))))return apps_control(argc,argv);
+ if((argc==2&&(!strcmp(argv[1],"apps-api")||!strcmp(argv[1],"apps-list")||!strcmp(argv[1],"apps-rebuild-system")))||(argc==3&&(!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"app-register-root")||!strcmp(argv[1],"app-build-system-record")||!strcmp(argv[1],"app-refresh-system-record")||!strcmp(argv[1],"app-open")||!strcmp(argv[1],"app-info")||!strcmp(argv[1],"app-reregister")||!strcmp(argv[1],"app-architecture")||!strcmp(argv[1],"app-open-error")||!strcmp(argv[1],"app-open-unlock"))))return apps_control(argc,argv);
  if(argc==3&&(!strcmp(argv[1],"input-bridge")||!strcmp(argv[1],"input-bridge-native")))return run_input_bridge((unsigned)strtoul(argv[2],NULL,0),!strcmp(argv[1],"input-bridge-native"));
  if((argc==2||argc==3)&&(!strcmp(argv[1],"hid")||!strcmp(argv[1],"hid-refresh")))return probe_hid(argc==3?(unsigned)strtoul(argv[2],NULL,0):0,!strcmp(argv[1],"hid-refresh"));
  if((argc==2&&(!strcmp(argv[1],"lock-service-info")||!strcmp(argv[1],"lock-status")))||(argc==3&&!strcmp(argv[1],"request-unlock"))){

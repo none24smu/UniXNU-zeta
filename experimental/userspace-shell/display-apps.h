@@ -11,8 +11,9 @@ static void app_methods(Class cls){
  free(methods);
 }
 static id app_send(id object,const char *name){return ((id(*)(id,SEL))objc_msgSend)(object,sel_registerName(name));}
+#include "display-app-registration.h"
 static int apps_control(int argc,char **argv){
- alarm((!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"app-register-root")||!strcmp(argv[1],"apps-rebuild-system"))?180:20);
+ alarm((!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"app-register-root")||!strcmp(argv[1],"apps-rebuild-system")||!strcmp(argv[1],"app-build-system-record")||!strcmp(argv[1],"app-refresh-system-record"))?180:20);
  if(!strcmp(argv[1],"app-architecture")){
   if(argc!=3||strstr(argv[2],"..")||(strncmp(argv[2],"/Applications/",14)&&strncmp(argv[2],"/private/var/containers/Bundle/Application/",43)))return 2;
   void *library=dlopen("/System/Library/PrivateFrameworks/InstalledContentLibrary.framework/InstalledContentLibrary",RTLD_NOW|RTLD_LOCAL);
@@ -29,6 +30,10 @@ static int apps_control(int argc,char **argv){
   app_methods(workspace_class);app_methods(object_getClass((id)workspace_class));app_methods(options_class);app_methods(objc_getClass("MIInstallerClient"));return 0;
  }
  id workspace=app_send((id)workspace_class,"defaultWorkspace");if(!workspace){puts("stock workspace factory returned nil");return 1;}
+ if(!strcmp(argv[1],"app-build-system-record")||!strcmp(argv[1],"app-refresh-system-record")){
+  if(argc!=3||strcmp(argv[2],"com.apple.Preferences"))return 2;
+  return rebuild_settings_registration(workspace,!strcmp(argv[1],"app-refresh-system-record"));
+ }
  if(!strcmp(argv[1],"apps-rebuild-system")){
   SEL selector=sel_registerName("_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:");Method method=class_getInstanceMethod(workspace_class,selector);char type[16]={0};
   if(!method||method_getNumberOfArguments(method)!=5)return 1;method_getReturnType(method,type,sizeof type);if(type[0]!='B'&&type[0]!='c')return 1;

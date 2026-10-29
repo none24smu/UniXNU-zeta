@@ -14,6 +14,7 @@ up to "@z<id>.<status>".
 """
 import argparse
 import base64
+import fcntl
 import json
 import os
 import plistlib
@@ -41,6 +42,13 @@ class Shell:
 
     def run(self, text, quiet=False, timeout=None):
         """Send one command; return (status, lines)."""
+        # Every client uses the existing capture; hold the lease through the
+        # reply so a live button poll cannot overwrite another send request.
+        with (self.capture / '.kernel-shell.lock').open('a') as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX)
+            return self._run(text, quiet, timeout)
+
+    def _run(self, text, quiet=False, timeout=None):
         ident = self.next_id
         self.next_id += 1
         send = self.capture / 'send'

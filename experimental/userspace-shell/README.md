@@ -471,3 +471,54 @@ unchanged prefix because the index begins at offset48 in a64-byte cache line.
 A malformed short payload was rejected before writing. The resumed publisher
 verified the complete intermediate index and included the immutable prefix;
 all80 entries then matched in both views and all diagnostic handlers restored.
+
+
+## Same-boot input investigation, 2026-10-29
+
+Touch and physical power are **not yet UI-verified**. The working iOS26 control
+qcom-userland-cache-batch1 enabled offline-hid-input=1, offline-hid-home=1,
+zeta-touch=4, zeta-touch-mt=1, zeta-touch-dma=1, zeta-touch-hid=1,
+zeta-touch-listen=1 and zeta-touch-listen2=0. It used the default combined HID
+layout, initialized before BackBoard. The iOS27 shell3 configuration omitted
+the Home gate and both listen overrides (and offline-key-events=1). The current
+live attempt explicitly chose a separate digitizer, so it does not reproduce
+the control layout exactly.
+
+The hardware reader and HID driver are active in boot74. A bounded userspace
+adapter opened the two real HID event queues and forwarded1198 digitizer and6
+button events with no dispatch-call failure. Those counters are transport
+proof, **not UI response or successful event-policy acceptance**. Later helper
+variants add the reference's usage pairs, built-in/integrated flags, virtual
+sender identity and normal protected-service producer role. Current helper
+source92e4666/CI40800186178 is admitted as display-control.input5, adapter
+PID14591, log/private/var/ngpu/shell/input-bridge5.log, bounded1800seconds.
+
+The temporary zeta-live-power-button.py reads PMK8350 PON only: slave0,
+identity0x1304=01 09, status0x1310, bit0x80. User presses were observed as90/10
+and queued timed HID presses. It requires the host/capture and is not a native
+physical-button driver. Its two-sample debounce ignores an initially held key
+until release. All shell requests now share a per-command flock through their
+existing capture; no second USB reader is used. Host checks covered initial
+hold, bounce, repeat suppression and cross-process request serialization.
+
+BackBoard was restarted twice within the same boot (66 ->14377 ->14418).
+Current EDR queue0x6588f1500 was read back in14418; the prior deep-framebuffer
+policy0 was restored. The EDR bootstrap created its normal pthread, but the
+controller was guard-killed during thread-port cleanup. Do not repeat EDR
+startup when its queue is already nonzero. Root Dash106 and capture stayed up.
+
+API power control at framebuffer+0x8c was tested: enabling it changed the normal
+power-on API from Unsupported to Success and its pending word cleared. The UI
+still timed out waiting for Live. The experiment was reverted with native
+preimage/readback proof; no incomplete power capability was added to source.
+The original do_power_state_change_gated remains a no-op. A separate bounded
+notification registration test returned0 for power/vsync and caused450 kernel
+vsync ticks; the helper received no callbacks and did not establish a working
+normal display lifecycle. A pending BackBoard dispatch group had one operation
+remaining, so there is no evidence here of a completed group missing a wakeup.
+
+Source changes for the next kernel remove touch's dependency on the Home-only
+flag and keep MT reads continuous when UI HID is requested. They are not yet
+compiled or hardware-qualified. Evidence under the private workspace's
+live-display74/input-start1/, input-bridge1..5/ and power-lifecycle1/ records
+all experiments, exact input configuration, guards and rollback.

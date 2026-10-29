@@ -7,7 +7,7 @@
 // IOHIDInterface it publishes and the original IOHIDEventDriver turn its reports into events; no entitlement is substituted.
 // IOHIDEventDriver's personalities live in the codeless IOHIDEventDriver.kext plug-in, which the prelink does not carry, so its
 // "HID Keyboard Driver" personality is added to the catalogue here, as the plug-in's Info.plist declares it.
-// offline-hid-input=1 offline-hid-home=1 start the device. A press is Consumer Menu (the Home button usage) down, then up 100 ms later:
+// offline-hid-input=1 with offline-hid-home=1 or zeta-touch-hid=1 starts the device. A press is Consumer Menu (the Home button usage) down, then up 100 ms later:
 // offline-hid-auto-home=<seconds after the probe> offline-hid-auto-home-count (default 1, at most 8) offline-hid-auto-home-interval
 // (default 20 s, at least 5) press unattended, as on sheng, and the host sends one with "\0ZETA:HOME\n" on the XNU USB log
 // (UniXNU scripts/native-dwc3-console.c).
@@ -504,7 +504,10 @@ bool addKeyboardPersonality() {
 
 // bsd_autoconf, from the display's late probe (before launchd: backboardd matches HID services when it starts).
 void zeta_hid_input_probe(void) {
-    if (bootArg("offline-hid-input") != 1 || bootArg("offline-hid-home") != 1 || zeta_hid_stats[0]) return;
+    // UI touch requires this HID device too. A Home-only diagnostic flag
+    // must not silently disable an explicitly requested touch digitizer.
+    if (bootArg("offline-hid-input") != 1 ||
+        (bootArg("offline-hid-home") != 1 && bootArg("zeta-touch-hid") != 1) || zeta_hid_stats[0]) return;
     kern_return_t load = OSKextLoadKextWithIdentifier(kFamily);
     zeta_hid_stats[0] = load ? -1 : 1;
     if (load) {IOLog("zeta-hid: IOHIDFamily load %#x\n", load); return;}

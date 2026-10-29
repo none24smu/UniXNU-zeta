@@ -12,7 +12,14 @@ static void app_methods(Class cls){
 }
 static id app_send(id object,const char *name){return ((id(*)(id,SEL))objc_msgSend)(object,sel_registerName(name));}
 static int apps_control(int argc,char **argv){
- alarm(!strcmp(argv[1],"app-install-staged")?180:20);
+ alarm((!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"apps-rebuild-system"))?180:20);
+ if(!strcmp(argv[1],"app-architecture")){
+  if(argc!=3||strstr(argv[2],"..")||(strncmp(argv[2],"/Applications/",14)&&strncmp(argv[2],"/private/var/containers/Bundle/Application/",43)))return 2;
+  void *library=dlopen("/System/Library/PrivateFrameworks/InstalledContentLibrary.framework/InstalledContentLibrary",RTLD_NOW|RTLD_LOCAL);
+  Boolean(*match)(const char*,id*)=library?(Boolean(*)(const char*,id*))dlsym(library,"MIMachOFileMatchesMyArchitecture"):NULL;
+  if(!match){puts("original architecture classifier unavailable");return 1;}
+  id error=NULL;Boolean accepted=match(argv[2],&error);printf("MI architecture match path=%s accepted=%u error=%p\n",argv[2],accepted,error);if(error){CFShow((CFTypeRef)error);id info=app_send(error,"userInfo");if(info)CFShow((CFTypeRef)info);}return accepted?0:1;
+ }
  const char *paths[]={"/System/Library/PrivateFrameworks/MobileInstallation.framework/MobileInstallation","/System/Library/Frameworks/CoreServices.framework/CoreServices","/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices"};
  for(unsigned i=0;i<3;i++)dlopen(paths[i],RTLD_NOW|RTLD_LOCAL);
  Class workspace_class=objc_getClass("LSApplicationWorkspace");
@@ -22,6 +29,12 @@ static int apps_control(int argc,char **argv){
   app_methods(workspace_class);app_methods(object_getClass((id)workspace_class));app_methods(options_class);app_methods(objc_getClass("MIInstallerClient"));return 0;
  }
  id workspace=app_send((id)workspace_class,"defaultWorkspace");if(!workspace){puts("stock workspace factory returned nil");return 1;}
+ if(!strcmp(argv[1],"apps-rebuild-system")){
+  SEL selector=sel_registerName("_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:");Method method=class_getInstanceMethod(workspace_class,selector);char type[16]={0};
+  if(!method||method_getNumberOfArguments(method)!=5)return 1;method_getReturnType(method,type,sizeof type);if(type[0]!='B'&&type[0]!='c')return 1;
+  for(unsigned i=2;i<5;i++){method_getArgumentType(method,i,type,sizeof type);if(type[0]!='B'&&type[0]!='c')return 1;}
+  puts("requesting native system-app database rebuild system=1 internal=0 user=0");Boolean ok=((Boolean(*)(id,SEL,Boolean,Boolean,Boolean))objc_msgSend)(workspace,selector,true,false,false);printf("native system-app database rebuild accepted=%u; app classification requires reread\n",ok);return ok?0:1;
+ }
  if(!strcmp(argv[1],"app-info")||!strcmp(argv[1],"app-reregister")){
   Class cls=objc_getClass("LSApplicationProxy");SEL factory=sel_registerName("applicationProxyForIdentifier:");
   Method method=cls?class_getClassMethod(cls,factory):NULL;char returns[16]={0},argument[16]={0};

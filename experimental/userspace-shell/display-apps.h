@@ -22,7 +22,7 @@ static int apps_control(int argc,char **argv){
   app_methods(workspace_class);app_methods(object_getClass((id)workspace_class));app_methods(options_class);app_methods(objc_getClass("MIInstallerClient"));return 0;
  }
  id workspace=app_send((id)workspace_class,"defaultWorkspace");if(!workspace){puts("stock workspace factory returned nil");return 1;}
- if(!strcmp(argv[1],"app-info")){
+ if(!strcmp(argv[1],"app-info")||!strcmp(argv[1],"app-reregister")){
   Class cls=objc_getClass("LSApplicationProxy");SEL factory=sel_registerName("applicationProxyForIdentifier:");
   Method method=cls?class_getClassMethod(cls,factory):NULL;char returns[16]={0},argument[16]={0};
   if(!method||method_getNumberOfArguments(method)!=3)return 1;
@@ -30,14 +30,24 @@ static int apps_control(int argc,char **argv){
   if(returns[0]!='@'||argument[0]!='@')return 1;
   CFStringRef bundle=CFStringCreateWithCString(NULL,argv[2],kCFStringEncodingUTF8);if(!bundle)return 1;
   id proxy=((id(*)(id,SEL,id))objc_msgSend)((id)cls,factory,(id)bundle);CFRelease(bundle);if(!proxy)return 1;
-  const char *names[]={"applicationIdentifier","applicationType","bundleURL","appState","signerIdentity","isInstalled","isRestricted","isLaunchProhibited","isPlaceholder","isDeletable","isContainerized","requiresDeveloperMode"};
+  const char *names[]={"applicationIdentifier","applicationType","bundleURL","appState","signerIdentity","compatibilityState","executableArchitectures","minimumSystemVersion","SDKVersion","isInstalled","isRestricted","isLaunchProhibited","isPlaceholder","isDeletable","isContainerized","requiresDeveloperMode"};
   for(unsigned i=0;i<sizeof names/sizeof names[0];i++){
    SEL sel=sel_registerName(names[i]);Method getter=class_getInstanceMethod(object_getClass(proxy),sel);char type[32]={0};
    if(!getter||method_getNumberOfArguments(getter)!=2){printf("app.%s unavailable\n",names[i]);continue;}
    method_getReturnType(getter,type,sizeof type);printf("app.%s=",names[i]);
    if(type[0]=='@'){id value=((id(*)(id,SEL))objc_msgSend)(proxy,sel);if(value)CFShow((CFTypeRef)value);else puts("nil");}
    else if(type[0]=='B'||type[0]=='c')printf("%u\n",((Boolean(*)(id,SEL))objc_msgSend)(proxy,sel));
+   else if(type[0]=='Q'||type[0]=='q')printf("%llu\n",(unsigned long long)((uint64_t(*)(id,SEL))objc_msgSend)(proxy,sel));
+   else if(type[0]=='I'||type[0]=='i')printf("%u\n",((uint32_t(*)(id,SEL))objc_msgSend)(proxy,sel));
    else printf("unsupported ABI %s\n",type);
+  }
+  if(!strcmp(argv[1],"app-reregister")){
+   /* Rescan only an installed built-in app at its existing bundle URL. */
+   id kind=app_send(proxy,"applicationType"),url=app_send(proxy,"bundleURL");char path[1024]={0};
+   if(!kind||!CFEqual((CFTypeRef)kind,CFSTR("System"))||!url||CFGetTypeID((CFTypeRef)url)!=CFURLGetTypeID()||!CFURLGetFileSystemRepresentation((CFURLRef)url,true,(UInt8*)path,sizeof path)||strncmp(path,"/Applications/",14)){puts("built-in application location guard failed; no registration");return 1;}
+   SEL reg=sel_registerName("registerApplication:");Method registration=class_getInstanceMethod(workspace_class,reg);char rt[16]={0},at[16]={0};
+   if(!registration||method_getNumberOfArguments(registration)!=3)return 1;method_getReturnType(registration,rt,sizeof rt);method_getArgumentType(registration,2,at,sizeof at);if((rt[0]!='B'&&rt[0]!='c')||at[0]!='@')return 1;
+   Boolean ok=((Boolean(*)(id,SEL,id))objc_msgSend)(workspace,reg,url);printf("stock built-in registration request %s accepted=%u; metadata requires reread\n",argv[2],ok);return ok?0:1;
   }
   return 0;
  }

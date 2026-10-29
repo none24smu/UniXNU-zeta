@@ -17,6 +17,7 @@ typedef struct {
  const char *name;unsigned type;
  mach_port_t connection;mach_vm_address_t address;mach_vm_size_t size;
  CFMutableDictionaryRef properties;CFTypeRef service;
+ uint64_t sender_id;
  unsigned opened,forwarded,failed;
 } InputSource;
 static InputSource input_sources[2];
@@ -58,7 +59,7 @@ static int run_input_bridge(unsigned seconds,int native_digitizer){
  INPUT_API(CFIndex,IOHIDEventGetIntegerValue,(CFTypeRef,uint32_t))
  INPUT_API(void,IOHIDEventSetIntegerValue,(CFTypeRef,uint32_t,CFIndex))
  INPUT_API(void,IOHIDEventSetSenderID,(CFTypeRef,uint64_t))
- INPUT_API(uint64_t,IOHIDServiceClientGetRegistryID,(CFTypeRef))
+ INPUT_API(CFTypeRef,IOHIDServiceClientGetRegistryID,(CFTypeRef))
  INPUT_API(CFArrayRef,IOHIDEventGetChildren,(CFTypeRef))
  INPUT_API(CFTypeRef,IOHIDEventCreateDigitizerEvent,(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,double,double,double,double,double,double,Boolean,Boolean,uint32_t))
  INPUT_API(CFTypeRef,IOHIDEventCreateDigitizerFingerEvent,(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,double,double,double,double,double,Boolean,Boolean,uint32_t))
@@ -128,7 +129,17 @@ static int run_input_bridge(unsigned seconds,int native_digitizer){
     // Replacing a kernel producer with a virtual service also replaces the
     // sender identity. Button policy requires built-in events, and UIKit's
     // main-screen digitizer requires integrated hand and finger events.
-    IOHIDEventSetSenderID(event,IOHIDServiceClientGetRegistryID(s->service));
+    /* GetRegistryID returns a borrowed CFNumber, not uint64_t. Passing its
+     * tagged object pointer as SenderID loses the event/service association.
+     * Match IOKit's native CFNumberGetValue(kCFNumberSInt64Type) callers. */
+    CFTypeRef registry_number=IOHIDServiceClientGetRegistryID(s->service);int64_t registry_id=0;
+    if(!registry_number||CFGetTypeID(registry_number)!=CFNumberGetTypeID()||!CFNumberGetValue((CFNumberRef)registry_number,kCFNumberSInt64Type,&registry_id)||!registry_id){
+     if(++s->failed<=4)printf("input bridge %s numeric sender identity unavailable; event not dispatched\n",s->name);
+     CFRelease(event);continue;
+    }
+    uint64_t sender_id=(uint64_t)registry_id;
+    if(sender_id!=s->sender_id){s->sender_id=sender_id;printf("input bridge %s numeric sender=%#llx registry_number=%p\n",s->name,(unsigned long long)sender_id,registry_number);}
+    IOHIDEventSetSenderID(event,sender_id);
     IOHIDEventSetIntegerValue(event,4,1);
     if(type==11){IOHIDEventSetIntegerValue(event,0xb0019,1);CFArrayRef children=IOHIDEventGetChildren(event);if(children)for(CFIndex ci=0;ci<CFArrayGetCount(children);ci++){CFTypeRef child=CFArrayGetValueAtIndex(children,ci);IOHIDEventSetIntegerValue(child,4,1);IOHIDEventSetIntegerValue(child,0xb0019,1);}}
     if(type==11&&s->forwarded<4){

@@ -54,6 +54,7 @@ static int run_input_bridge(unsigned seconds){
  INPUT_API(Boolean,IOHIDVirtualServiceClientDispatchEvent,(CFTypeRef,CFTypeRef))
  INPUT_API(CFTypeRef,IOHIDEventCreateWithBytes,(CFAllocatorRef,const uint8_t*,CFIndex))
  INPUT_API(unsigned,IOHIDEventGetType,(CFTypeRef))
+ INPUT_API(CFIndex,IOHIDEventGetIntegerValue,(CFTypeRef,uint32_t))
  INPUT_API(void,IOHIDEventSetIntegerValue,(CFTypeRef,uint32_t,CFIndex))
  INPUT_API(void,IOHIDEventSetSenderID,(CFTypeRef,uint64_t))
  INPUT_API(uint64_t,IOHIDServiceClientGetRegistryID,(CFTypeRef))
@@ -105,6 +106,7 @@ static int run_input_bridge(unsigned seconds){
     CFTypeRef event=IOHIDEventCreateWithBytes(NULL,bytes,count);
     if(!event){s->failed++;continue;}
     unsigned type=IOHIDEventGetType(event);
+    if(type==3&&s->forwarded<8)printf("input bridge keyboard page=%#lx usage=%#lx down=%ld\n",(unsigned long)IOHIDEventGetIntegerValue(event,0x30000),(unsigned long)IOHIDEventGetIntegerValue(event,0x30001),(long)IOHIDEventGetIntegerValue(event,0x30002));
     // Replacing a kernel producer with a virtual service also replaces the
     // sender identity. Button policy requires built-in events, and UIKit's
     // main-screen digitizer requires integrated hand and finger events.

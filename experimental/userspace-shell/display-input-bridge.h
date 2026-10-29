@@ -54,6 +54,10 @@ static int run_input_bridge(unsigned seconds){
  INPUT_API(Boolean,IOHIDVirtualServiceClientDispatchEvent,(CFTypeRef,CFTypeRef))
  INPUT_API(CFTypeRef,IOHIDEventCreateWithBytes,(CFAllocatorRef,const uint8_t*,CFIndex))
  INPUT_API(unsigned,IOHIDEventGetType,(CFTypeRef))
+ INPUT_API(void,IOHIDEventSetIntegerValue,(CFTypeRef,uint32_t,CFIndex))
+ INPUT_API(void,IOHIDEventSetSenderID,(CFTypeRef,uint64_t))
+ INPUT_API(uint64_t,IOHIDServiceClientGetRegistryID,(CFTypeRef))
+ INPUT_API(CFArrayRef,IOHIDEventGetChildren,(CFTypeRef))
 #undef INPUT_API
  CFTypeRef client=IOHIDEventSystemClientCreateWithType(NULL,4,NULL);if(!client)return 1;
  dispatch_queue_t queue=dispatch_queue_create("org.unixnu.zeta.live-input",NULL);IOHIDEventSystemClientScheduleWithDispatchQueue(client,queue);
@@ -72,6 +76,12 @@ static int run_input_bridge(unsigned seconds){
     if(!status&&source->address&&source->size>=12&&source->size<=4*1024*1024){
      source->properties=CFDictionaryCreateMutable(NULL,0,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
      capture_number(source->properties,"PrimaryUsagePage",index?12:13);capture_number(source->properties,"PrimaryUsage",index?1:4);
+     capture_number(source->properties,"DeviceUsagePage",index?12:13);capture_number(source->properties,"DeviceUsage",index?1:4);
+     capture_number(source->properties,"VendorID",0);capture_number(source->properties,"ProductID",0);capture_number(source->properties,"ReportInterval",8000);
+     CFMutableDictionaryRef pair=CFDictionaryCreateMutable(NULL,0,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+     capture_number(pair,"DeviceUsagePage",index?12:13);capture_number(pair,"DeviceUsage",index?1:4);
+     const void *pair_value=pair;CFArrayRef pairs=CFArrayCreate(NULL,&pair_value,1,&kCFTypeArrayCallBacks);
+     CFDictionarySetValue(source->properties,CFSTR("DeviceUsagePairs"),pairs);CFRelease(pairs);CFRelease(pair);
      CFDictionarySetValue(source->properties,CFSTR("Built-In"),kCFBooleanTrue);CFDictionarySetValue(source->properties,CFSTR("Transport"),CFSTR("SPI"));
      CFDictionarySetValue(source->properties,CFSTR("Product"),index?CFSTR("Duo2 live buttons"):CFSTR("Duo2 live touch"));
      if(!index)CFDictionarySetValue(source->properties,CFSTR("DisplayIntegrated"),kCFBooleanTrue);
@@ -95,6 +105,12 @@ static int run_input_bridge(unsigned seconds){
     CFTypeRef event=IOHIDEventCreateWithBytes(NULL,bytes,count);
     if(!event){s->failed++;continue;}
     unsigned type=IOHIDEventGetType(event);
+    // Replacing a kernel producer with a virtual service also replaces the
+    // sender identity. Button policy requires built-in events, and UIKit's
+    // main-screen digitizer requires integrated hand and finger events.
+    IOHIDEventSetSenderID(event,IOHIDServiceClientGetRegistryID(s->service));
+    IOHIDEventSetIntegerValue(event,4,1);
+    if(type==11){IOHIDEventSetIntegerValue(event,0xb0019,1);CFArrayRef children=IOHIDEventGetChildren(event);if(children)for(CFIndex ci=0;ci<CFArrayGetCount(children);ci++){CFTypeRef child=CFArrayGetValueAtIndex(children,ci);IOHIDEventSetIntegerValue(child,4,1);IOHIDEventSetIntegerValue(child,0xb0019,1);}}
     if(type==s->type&&__atomic_load_n(&s->opened,__ATOMIC_ACQUIRE)){if(IOHIDVirtualServiceClientDispatchEvent(s->service,event))s->forwarded++;else s->failed++;}
     CFRelease(event);
    }

@@ -3,6 +3,33 @@
  * No service is seized and no events or properties are synthesized. */
 static unsigned hid_event_counts[64];
 static unsigned (*hid_event_type)(const void *);
+/* IUNKNOWN_C_GUTS + IOCFPLUGINBASE from Apple's IOKitUser/IOCFPlugIn.h. */
+typedef struct {
+ void *reserved;
+ int32_t(*query)(void*,CFUUIDBytes,void**);
+ uint32_t(*retain)(void*),(*release)(void*);
+ uint16_t version,revision;
+ int32_t(*probe)(void*,CFDictionaryRef,mach_port_t,int32_t*);
+ int32_t(*start)(void*,CFDictionaryRef,mach_port_t);
+ int32_t(*stop)(void*);
+} HidPluginVtable;
+static void trace_hid_plugin(mach_port_t entry,CFUUIDRef type,CFUUIDRef iface){
+ CFURLRef url=CFURLCreateWithFileSystemPath(NULL,CFSTR("/System/Library/Extensions/IOHIDFamily.kext/PlugIns/IOHIDLib.plugin"),kCFURLPOSIXPathStyle,true);
+ CFPlugInRef plugin=CFPlugInCreate(NULL,url);CFRelease(url);if(!plugin)return;
+ CFBundleRef bundle=CFPlugInGetBundle(plugin);CFErrorRef error=NULL;
+ Boolean loaded=bundle?CFBundleLoadExecutableAndReturnError(bundle,&error):false;
+ printf("HID plugin executable loaded=%u\n",loaded);if(error){CFShow(error);CFRelease(error);}
+ CFArrayRef factories=CFPlugInFindFactoriesForPlugInTypeInPlugIn(type,plugin);
+ printf("HID plugin factories=%ld\n",factories?CFArrayGetCount(factories):-1L);
+ if(factories)for(CFIndex i=0;i<CFArrayGetCount(factories);i++){
+  HidPluginVtable **object=(HidPluginVtable**)CFPlugInInstanceCreate(NULL,CFArrayGetValueAtIndex(factories,i),type);
+  printf("HID plugin factory instance=%p\n",object);if(!object)continue;
+  HidPluginVtable **interface=NULL;int32_t qs=(*object)->query(object,CFUUIDGetUUIDBytes(iface),(void**)&interface);
+  printf("HID plugin QueryInterface status=%#x interface=%p\n",qs,interface);(*object)->release(object);
+  if(interface){int32_t score=0,ps=(*interface)->probe(interface,NULL,entry,&score);printf("HID plugin Probe status=%#x score=%d\n",ps,score);if(!ps){int32_t st=(*interface)->start(interface,NULL,entry);printf("HID plugin Start status=%#x\n",st);if(!st)printf("HID plugin Stop status=%#x\n",(*interface)->stop(interface));}(*interface)->release(interface);}
+ }
+ if(factories)CFRelease(factories);CFRelease(plugin);
+}
 static void hid_event_callback(void *target,void *context,void *sender,void *event){
  (void)target;(void)context;(void)sender;
  unsigned type=hid_event_type?hid_event_type(event):63;
@@ -47,6 +74,7 @@ static int probe_hid(unsigned seconds,int refresh){
     int(*destroy)(void**)=(int(*)(void**))dlsym(io,"IODestroyPlugInInterface");
     CFUUIDRef type=CFUUIDCreateFromString(NULL,CFSTR("7DDEECA8-A7B4-11DA-8A0E-0014519758EF")),iface=CFUUIDCreateFromString(NULL,CFSTR("C244E858-109C-11D4-91D4-0050E4C6426F"));
     if(plugin&&destroy){void **result=NULL;int32_t score=0;int ps=plugin(entry,type,iface,&result,&score);printf("HID plugin create status=%#x interface=%p score=%d\n",ps,result,score);if(result)destroy(result);}
+    trace_hid_plugin(entry,type,iface);
     CFRelease(type);CFRelease(iface);
    }
    release(entry);

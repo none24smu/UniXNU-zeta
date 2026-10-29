@@ -210,7 +210,34 @@ static int control(int argc,char **argv){
  if(argc<3){fprintf(stderr,"usage: display-control probe | threads PID | abort PID TID | read32 PID ADDRESS | write32 PID ADDRESS EXPECTED VALUE\n");return 2;}
  pid_t pid=(pid_t)strtol(argv[2],0,0);if(pid<=1)return 2;mach_port_t task=0;kern_return_t kr=task_for_pid(mach_task_self(),pid,&task);printf("task_for_pid %d kr=%d task=%#x\n",pid,kr,task);if(kr)return 1;
  int result=0;
- if(!strcmp(argv[1],"edr-start")&&argc==3){result=start_edr_in_task(task);}
+ if(!strcmp(argv[1],"stacks")&&argc==3){
+  /* Passive, bounded user frame walks in one request. USB round trips
+   * otherwise outlive the display watchdog and leave stale evidence. */
+  thread_act_array_t threads=NULL;mach_msg_type_number_t n=0;
+  kr=task_threads(task,&threads,&n);printf("task_threads kr=%d count=%u\n",kr,n);
+  if(kr){result=1;goto finish;}
+  for(unsigned i=0;i<n;i++){
+   thread_identifier_info_data_t ident={0};mach_msg_type_number_t count=THREAD_IDENTIFIER_INFO_COUNT;
+   kern_return_t ik=thread_info(threads[i],THREAD_IDENTIFIER_INFO,(thread_info_t)&ident,&count);
+   arm_thread_state64_t s={0};count=ARM_THREAD_STATE64_COUNT;
+   kern_return_t sk=thread_get_state(threads[i],ARM_THREAD_STATE64,(thread_state_t)&s,&count);
+   printf("stack tid=%llu ident_kr=%d state_kr=%d pc=%#llx lr=%#llx fp=%#llx sp=%#llx x19=%#llx\n",(unsigned long long)ident.thread_id,ik,sk,(unsigned long long)arm_thread_state64_get_pc(s),(unsigned long long)arm_thread_state64_get_lr(s),(unsigned long long)arm_thread_state64_get_fp(s),(unsigned long long)arm_thread_state64_get_sp(s),(unsigned long long)s.__x[19]);
+   if(!sk){
+    uint64_t fp=arm_thread_state64_get_fp(s),sp=arm_thread_state64_get_sp(s);
+    for(unsigned depth=0;depth<24;depth++){
+     uint64_t pair[2]={0};mach_vm_size_t got=0;
+     if((fp&7)||fp<sp||fp-sp>8*1024*1024)break;
+     kr=mach_vm_read_overwrite(task,fp,sizeof pair,(mach_vm_address_t)pair,&got);
+     if(kr||got!=sizeof pair)break;
+     printf(" frame tid=%llu depth=%u fp=%#llx pc=%#llx\n",(unsigned long long)ident.thread_id,depth,(unsigned long long)fp,(unsigned long long)pair[1]);
+     if(pair[0]<=fp)break;fp=pair[0];
+    }
+   }
+   mach_port_deallocate(mach_task_self(),threads[i]);
+  }
+  vm_deallocate(mach_task_self(),(vm_address_t)threads,n*sizeof *threads);
+ }
+ else if(!strcmp(argv[1],"edr-start")&&argc==3){result=start_edr_in_task(task);}
  else if(!strcmp(argv[1],"cancel-coreduet")&&argc==4&&pid==59){result=cancel_named_service_in_task(task,(vm_address_t)strtoull(argv[3],NULL,0),"com.apple.coreduetd.context");}
  else if(!strcmp(argv[1],"cancel-datamigrator")&&argc==4&&pid>1){result=cancel_named_service_in_task(task,(vm_address_t)strtoull(argv[3],NULL,0),"com.apple.datamigrator");}
  else if((!strcmp(argv[1],"read32")&&argc==4)||(!strcmp(argv[1],"write32")&&argc==6)){vm_address_t address=strtoull(argv[3],0,0);uint32_t value=0;vm_size_t count=0;kr=vm_read_overwrite(task,address,sizeof value,(vm_address_t)&value,&count);printf("read32 %#llx kr=%d bytes=%llu value=%#x\n",(unsigned long long)address,kr,(unsigned long long)count,value);if(kr||count!=4){result=1;goto finish;}if(argc==6){uint32_t expected=(uint32_t)strtoul(argv[4],0,0),next=(uint32_t)strtoul(argv[5],0,0);if(value!=expected){puts("preflight mismatch; no write");result=1;goto finish;}kr=vm_write(task,address,(vm_offset_t)&next,4);printf("write32 kr=%d\n",kr);uint32_t after=0;count=0;kern_return_t check=vm_read_overwrite(task,address,4,(vm_address_t)&after,&count);printf("readback kr=%d bytes=%llu value=%#x\n",check,(unsigned long long)count,after);result=kr||check||count!=4||after!=next;}}

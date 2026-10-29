@@ -225,11 +225,19 @@ static int control(int argc,char **argv){
    if(!sk){
     uint64_t fp=arm_thread_state64_get_fp(s),sp=arm_thread_state64_get_sp(s);
     for(unsigned depth=0;depth<24;depth++){
-     uint64_t pair[2]={0};mach_vm_size_t got=0;
+     uint64_t pair[2]={0};vm_size_t got=0;
      if((fp&7)||fp<sp||fp-sp>8*1024*1024)break;
-     kr=mach_vm_read_overwrite(task,fp,sizeof pair,(mach_vm_address_t)pair,&got);
+     kr=vm_read_overwrite(task,fp,sizeof pair,(vm_address_t)pair,&got);
      if(kr||got!=sizeof pair)break;
      printf(" frame tid=%llu depth=%u fp=%#llx pc=%#llx\n",(unsigned long long)ident.thread_id,depth,(unsigned long long)fp,(unsigned long long)pair[1]);
+     if(pair[1]==0x1805a5304){
+      uint64_t connection=0,channel=0,label=0;char text[160]={0};
+      if(!vm_read_overwrite(task,fp-0x20,8,(vm_address_t)&connection,&got)&&got==8&&connection&&
+         !vm_read_overwrite(task,connection+0xa8,8,(vm_address_t)&channel,&got)&&got==8&&channel&&
+         !vm_read_overwrite(task,channel+0x48,8,(vm_address_t)&label,&got)&&got==8&&label&&
+         !vm_read_overwrite(task,label,sizeof text-1,(vm_address_t)text,&got))
+       printf(" xpc tid=%llu connection=%#llx label=%s\n",(unsigned long long)ident.thread_id,(unsigned long long)connection,text);
+     }
      if(pair[0]<=fp)break;fp=pair[0];
     }
    }

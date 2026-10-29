@@ -33,6 +33,13 @@ static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
  if(argc==4&&!strcmp(argv[1],"finger-hit-test-filter"))return finger_hit_test_filter(argv[2],argv[3]);
  if(argc==6&&!strcmp(argv[1],"trace-native-touches"))return trace_native_touches(argc,argv);
+ if(argc==2&&!strcmp(argv[1],"frontmost-app")){
+  void *sbs=dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",RTLD_NOW|RTLD_LOCAL);
+  CFStringRef(*copy_frontmost)(void)=sbs?(CFStringRef(*)(void))dlsym(sbs,"SBSCopyFrontmostApplicationDisplayIdentifier"):NULL;
+  if(!copy_frontmost)return 1;alarm(8);CFStringRef identifier=copy_frontmost();alarm(0);
+  if(!identifier){puts("native frontmost application unknown (empty or server error)");return 1;}
+  puts("native frontmost application identifier:");CFShow(identifier);CFRelease(identifier);return 0;
+ }
  if(argc==2&&!strcmp(argv[1],"reset-home")){
   if(!dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",RTLD_NOW|RTLD_LOCAL))return 1;
   Class cls=objc_getClass("SBSTestAutomationService");SEL reset=sel_registerName("resetToHomeScreenAnimated:");

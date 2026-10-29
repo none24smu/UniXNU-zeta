@@ -558,3 +558,28 @@ setter did change gScripted before an uncached readback lagged. It was
 explicitly restored with native full-line preimage/readback in
 input-start1/touch-flag-restore5.json. The debug OID was restored. Do not use
 those failed scripts as synthetic-gesture or physical-touch success evidence.
+
+
+2026-10-29 boot74: owner confirmed physical power button working after the
+normal, label-guarded ATT connection cancellation. This is still a host PMIC
+poll bridge plus the native HID release timer; independent boot operation is
+not proven. SpringBoard14984's main thread returned to the ordinary runloop.
+Touch remained unresponsive despite forwarded events.
+
+The direct touch defect was captured in input-bridge9/runtime.txt: decoding
+KDK bytes with iOS27 IOHIDEventCreateWithBytes yielded x=0, y~16367, changing
+contact IDs around1072630000, stylus type and no child events. Reconstructing
+from those already-corrupt getters did not help. A passive read of the actual
+kernel queue (input-bridge9/kernel-touch-queue.bin) proves each digitizer body
+is160bytes with double XYZ at offsets16/24/32, index40, type44, identity48,
+mask52. Each child has its own28byte queue header. The raw down/up fixtures
+decode to index4,x0.843856812,y0.419372559 and masks4/3.
+
+input-kdk-digitizer.h strictly decodes that observed layout, validates bounds,
+depth, counts, type, finite normalized coordinates and complete consumption.
+input-bridge-native now builds native iOS hand/finger objects from those raw
+contacts, without interpreting KDK data with iOS accessors. The sanitizer test
+(test-kdk-digitizer.c with the two retained wire fixtures) passed774 checks.
+Helper CI40858316371 and source6628f67 were staged/admitted/read back as
+/private/var/ngpu/shell/display-control.input10. Live touch functionality is
+pending physical verification; source and host tests alone do not establish it.

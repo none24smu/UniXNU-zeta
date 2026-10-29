@@ -83,6 +83,9 @@ static int probe_hid(unsigned seconds,int refresh){
   release(it);printf("HID registry count=%u\n",count);
  }
  CFTypeRef(*create)(CFAllocatorRef,int,CFDictionaryRef)=(CFTypeRef(*)(CFAllocatorRef,int,CFDictionaryRef))dlsym(io,"IOHIDEventSystemClientCreateWithType");
+ void(*schedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientScheduleWithRunLoop");
+ void(*unschedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientUnscheduleWithRunLoop");
+ void(*setmatching)(CFTypeRef,CFDictionaryRef)=(void(*)(CFTypeRef,CFDictionaryRef))dlsym(io,"IOHIDEventSystemClientSetMatching");
  CFArrayRef(*copyservices)(CFTypeRef)=(CFArrayRef(*)(CFTypeRef))dlsym(io,"IOHIDEventSystemClientCopyServices");
  CFTypeRef(*property)(CFTypeRef,CFStringRef)=(CFTypeRef(*)(CFTypeRef,CFStringRef))dlsym(io,"IOHIDServiceClientCopyProperty");
  CFArrayRef(*services)(CFTypeRef)=(CFArrayRef(*)(CFTypeRef))dlsym(io,"_IOHIDEventSystemClientCopyServiceRecords");
@@ -90,20 +93,21 @@ static int probe_hid(unsigned seconds,int refresh){
  if(!create)return 1;
  CFTypeRef admin=create(kCFAllocatorDefault,0,NULL);printf("HID admin client=%p\n",admin);
  if(admin){
+  if(setmatching)setmatching(admin,NULL);
+  if(schedule){schedule(admin,CFRunLoopGetCurrent(),kCFRunLoopDefaultMode);CFRunLoopRunInMode(kCFRunLoopDefaultMode,1,0);}
   if(copyservices){CFArrayRef a=copyservices(admin);printf("HID client services count=%ld\n",a?CFArrayGetCount(a):-1L);if(a){for(CFIndex i=0;i<CFArrayGetCount(a);i++){CFTypeRef service=CFArrayGetValueAtIndex(a,i);CFTypeRef name=property?property(service,CFSTR("Product")):NULL;printf("HID client service index=%ld\n",i);if(name){CFShow(name);CFRelease(name);}}CFRelease(a);}}
   if(services){CFArrayRef a=services(admin);printf("HID service records=%ld\n",a?CFArrayGetCount(a):-1L);if(a){CFShow(a);CFRelease(a);}}
   if(clients)for(int type=0;type<=4;type++){CFArrayRef a=clients(admin,type);printf("HID clients type=%d count=%ld\n",type,a?CFArrayGetCount(a):-1L);if(a){CFShow(a);CFRelease(a);}}
-  CFRelease(admin);
+  if(unschedule)unschedule(admin,CFRunLoopGetCurrent(),kCFRunLoopDefaultMode);CFRelease(admin);
  }
  const char *paths[]={"/System/Library/Extensions/IOHIDFamily.kext/Contents/PlugIns/IOHIDLib.plugin","/System/Library/Extensions/IOHIDFamily.kext/PlugIns/IOHIDLib.plugin","/System/Library/Extensions/IOHIDFamily.kext//////////PlugIns/IOHIDLib.plugin"};
  for(unsigned i=0;i<3;i++){CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8*)paths[i],strlen(paths[i]),true);CFPlugInRef p=CFPlugInCreate(NULL,url);printf("HID plugin bundle path=%s found=%d\n",paths[i],p!=NULL);if(p)CFRelease(p);CFRelease(url);}
  if(seconds){
-  void(*schedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientScheduleWithRunLoop");
-  void(*unschedule)(CFTypeRef,CFRunLoopRef,CFStringRef)=(void(*)(CFTypeRef,CFRunLoopRef,CFStringRef))dlsym(io,"IOHIDEventSystemClientUnscheduleWithRunLoop");
   void(*callback)(CFTypeRef,void(*)(void*,void*,void*,void*),void*,void*)=(void(*)(CFTypeRef,void(*)(void*,void*,void*,void*),void*,void*))dlsym(io,"IOHIDEventSystemClientRegisterEventCallback");
   hid_event_type=(unsigned(*)(const void*))dlsym(io,"IOHIDEventGetType");
   if(!schedule||!unschedule||!callback||!hid_event_type)return 1;
   CFTypeRef monitor=create(kCFAllocatorDefault,1,NULL);printf("HID monitor client=%p duration=%u\n",monitor,seconds);if(!monitor)return 1;
+  if(setmatching)setmatching(monitor,NULL);
   callback(monitor,hid_event_callback,NULL,NULL);schedule(monitor,CFRunLoopGetCurrent(),kCFRunLoopDefaultMode);
   CFRunLoopRunInMode(kCFRunLoopDefaultMode,seconds,0);
   unschedule(monitor,CFRunLoopGetCurrent(),kCFRunLoopDefaultMode);CFRelease(monitor);

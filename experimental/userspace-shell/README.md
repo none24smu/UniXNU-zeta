@@ -522,3 +522,39 @@ flag and keep MT reads continuous when UI HID is requested. They are not yet
 compiled or hardware-qualified. Evidence under the private workspace's
 live-display74/input-start1/, input-bridge1..5/ and power-lifecycle1/ records
 all experiments, exact input configuration, guards and rollback.
+
+
+Boot74 input continuation (2026-10-29 UTC): native `stacks PID` was added
+(3eb362f; helper CI40803829865) because serial kernel frame walks outlived the
+UI watchdog. The diagnostic helper is input6; active admission receipt is
+live-display74/input-functional1/live-admission.json. Native input adapter and
+host PMIC bridge still do not prove working physical input.
+
+The pending BackBoard group was resolved to
+BKButtonHapticsController._configureAsyncWithBlock:, not display power.
+Do not manually complete it as a display fix.
+
+The BLSHOSDisplayInterface initializer's CoreBrightness capability call at
+0x22410a5b0 selected a display-mode controller that legacy GOP does not supply.
+CBDisplayStateClient.supported at0x2292373c0 returns !MG(IsVirtualDevice), not
+hardware-controller discovery. The exact cache.36 capability diagnostic in
+select-zeta-ios27-cb-display-fallback.py replaces that single call with false
+and takes the shipped legacy fallback. Identity and watchdogs are unchanged.
+Its live code is independently read back as0x52800000 in SpringBoard14984;
+records/index/native readback/cleanup are in live-display74/cb-fallback1/.
+The prior CB_DM watchdog did not recur over the observed interval, but this
+alone is not touch, power, or whole-OS qualification.
+
+SpringBoard14984 subsequently blocks its main thread in CoreBluetooth during
+UIKit activation. Stock bluetoothd repeatedly faults on AUTIBSP at1003d6490;
+its basename was absent from the selected CPU table. An exact original binary
+CPU-lowering diagnostic is under live-display74/bluetooth-input1/. Its one
+remaining LDG at10074a594 is guarded by a local feature predicate whose
+non-MTE binding at100751f48 is MOVw0,#0;RET. Preserve the LDG and feature guard;
+validate the live binding and actual daemon behavior before claiming support.
+
+Attempted host-driven swipe tests did not complete. In particular an int
+setter did change gScripted before an uncached readback lagged. It was
+explicitly restored with native full-line preimage/readback in
+input-start1/touch-flag-restore5.json. The debug OID was restored. Do not use
+those failed scripts as synthetic-gesture or physical-touch success evidence.

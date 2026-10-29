@@ -30,7 +30,7 @@ static Boolean input_set(void*t,void*c,CFTypeRef s,CFStringRef key,CFTypeRef val
 }
 static void input_notification(void*t,void*c,CFTypeRef s,uint32_t type,CFDictionaryRef p){(void)t;(void)c;(void)s;(void)p;printf("input bridge notification=%u\n",type);}
 static const InputCallbacks input_callbacks={2,input_notification,input_set,input_property,NULL,NULL,NULL};
-static int run_input_bridge(unsigned seconds){
+static int run_input_bridge(unsigned seconds,int native_digitizer){
  if(seconds<1||seconds>3600)return 2;
  alarm(seconds+30);
  void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);if(!io)return 1;
@@ -59,6 +59,11 @@ static int run_input_bridge(unsigned seconds){
  INPUT_API(void,IOHIDEventSetSenderID,(CFTypeRef,uint64_t))
  INPUT_API(uint64_t,IOHIDServiceClientGetRegistryID,(CFTypeRef))
  INPUT_API(CFArrayRef,IOHIDEventGetChildren,(CFTypeRef))
+ INPUT_API(double,IOHIDEventGetFloatValue,(CFTypeRef,uint32_t))
+ INPUT_API(uint64_t,IOHIDEventGetTimeStamp,(CFTypeRef))
+ INPUT_API(CFTypeRef,IOHIDEventCreateDigitizerEvent,(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,double,double,double,double,double,double,Boolean,Boolean,uint32_t))
+ INPUT_API(CFTypeRef,IOHIDEventCreateDigitizerFingerEvent,(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,double,double,double,double,double,Boolean,Boolean,uint32_t))
+ INPUT_API(void,IOHIDEventAppendEvent,(CFTypeRef,CFTypeRef,uint32_t))
 #undef INPUT_API
  CFTypeRef client=IOHIDEventSystemClientCreateWithType(NULL,3,NULL);if(!client)return 1;printf("input bridge client type=3 (rate controlled)\n");
  dispatch_queue_t queue=dispatch_queue_create("org.unixnu.zeta.live-input",NULL);IOHIDEventSystemClientScheduleWithDispatchQueue(client,queue);
@@ -106,6 +111,33 @@ static int run_input_bridge(unsigned seconds){
     CFTypeRef event=IOHIDEventCreateWithBytes(NULL,bytes,count);
     if(!event){s->failed++;continue;}
     unsigned type=IOHIDEventGetType(event);
+    if(type==11&&native_digitizer){
+     /* Re-encode actual contacts with this OS's constructors, following the
+      * retained working OnePlus hand/finger layout. Preserve contact masks,
+      * coordinates and timestamps; never synthesize a finger or gesture. */
+     CFArrayRef children=IOHIDEventGetChildren(event);
+     CFIndex fingers=children?CFArrayGetCount(children):1;
+     if(fingers<1||fingers>16){s->failed++;CFRelease(event);continue;}
+     uint32_t mask=0;Boolean touching=false;double x=0,y=0;
+     for(CFIndex ci=0;ci<fingers;ci++){
+      CFTypeRef child=children?CFArrayGetValueAtIndex(children,ci):event;
+      mask|=(uint32_t)IOHIDEventGetIntegerValue(child,0xb0007);
+      touching|=IOHIDEventGetIntegerValue(child,0xb0009)!=0;
+      if(!ci){x=IOHIDEventGetFloatValue(child,0xb0000);y=IOHIDEventGetFloatValue(child,0xb0001);}
+     }
+     uint64_t stamp=IOHIDEventGetTimeStamp(event);
+     CFTypeRef hand=IOHIDEventCreateDigitizerEvent(NULL,stamp,3,0,0,mask&~1U,0,x,y,0,0,0,0,touching,touching,0);
+     if(!hand){s->failed++;CFRelease(event);continue;}
+     for(CFIndex ci=0;ci<fingers;ci++){
+      CFTypeRef old=children?CFArrayGetValueAtIndex(children,ci):event;
+      uint32_t index=(uint32_t)IOHIDEventGetIntegerValue(old,0xb0005);
+      Boolean down=IOHIDEventGetIntegerValue(old,0xb0009)!=0;
+      CFTypeRef finger=IOHIDEventCreateDigitizerFingerEvent(NULL,stamp,index+1,index+2,(uint32_t)IOHIDEventGetIntegerValue(old,0xb0007),IOHIDEventGetFloatValue(old,0xb0000),IOHIDEventGetFloatValue(old,0xb0001),0,down?1.0:0.0,0,down,down,0);
+      if(finger){IOHIDEventAppendEvent(hand,finger,0);CFRelease(finger);}
+     }
+     if(s->forwarded<4){puts("input original kernel digitizer:");CFShow(event);printf("input native re-encode fingers=%ld x=%f y=%f timestamp=%llu now=%llu\n",(long)fingers,x,y,(unsigned long long)stamp,(unsigned long long)mach_absolute_time());}
+     CFRelease(event);event=hand;
+    }
     if(type==3&&s->forwarded<8)printf("input bridge keyboard page=%#lx usage=%#lx down=%ld\n",(unsigned long)IOHIDEventGetIntegerValue(event,0x30000),(unsigned long)IOHIDEventGetIntegerValue(event,0x30001),(long)IOHIDEventGetIntegerValue(event,0x30002));
     // Replacing a kernel producer with a virtual service also replaces the
     // sender identity. Button policy requires built-in events, and UIKit's

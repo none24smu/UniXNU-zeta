@@ -29,6 +29,7 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-metrics.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==4&&!strcmp(argv[1],"set-display-scale"))return set_display_scale(argv[2],argv[3]);
  if(argc==2&&!strcmp(argv[1],"ui-metrics"))return ui_metrics();
  if(argc>=3&&!strcmp(argv[1],"perf-sample"))return perf_sample(argc,argv);
  if(argc==9&&!strcmp(argv[1],"restore-staged-file"))return restore_staged_file(argc,argv);

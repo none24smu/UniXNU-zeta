@@ -46,3 +46,22 @@ static int perf_sample(int argc,char **argv){
  for(int i=2;i<argc;i++){unsigned j=(unsigned)i-2;after[j]=perf_snapshot(tasks[j]);struct perf_snapshot *a=&after[j],*b=&before[j];printf("perf pid=%s interval_target_ms=1000 live_thread_times_kr=%d/%d events_kr=%d/%d",argv[i],b->times_kr,a->times_kr,b->events_kr,a->events_kr);if(!a->times_kr&&!b->times_kr)printf(" user_us=%lld system_us=%lld",perf_us(a->times.user_time)-perf_us(b->times.user_time),perf_us(a->times.system_time)-perf_us(b->times.system_time));if(!a->events_kr&&!b->events_kr)printf(" faults=%u pageins=%u cow=%u mach_calls=%u unix_calls=%u context_switches=%u",(unsigned)(a->events.faults-b->events.faults),(unsigned)(a->events.pageins-b->events.pageins),(unsigned)(a->events.cow_faults-b->events.cow_faults),(unsigned)(a->events.syscalls_mach-b->events.syscalls_mach),(unsigned)(a->events.syscalls_unix-b->events.syscalls_unix),(unsigned)(a->events.csw-b->events.csw));puts("");if(tasks[j])mach_port_deallocate(mach_task_self(),tasks[j]);}
  puts("live-thread CPU deltas are approximate and can exclude threads which exit during sampling");return 0;
 }
+/* Request a real WindowServer point-scale update; no pixel bounds are forged. */
+static int set_display_scale(const char *old_text,const char *new_text){
+ unsigned long long expected=strtoull(old_text,NULL,10),next=strtoull(new_text,NULL,10);
+ if((expected!=2&&expected!=3)||(next!=2&&next!=3)||expected==next)return 2;alarm(15);
+ if(!dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore",RTLD_NOW|RTLD_LOCAL))return 1;
+ Class cl=objc_getClass("CADisplay"),props_class=objc_getClass("CADisplayProperties");
+ if(!cl||!props_class||!class_getClassMethod(cl,sel_registerName("mainDisplay")))return 1;
+ id display=((id(*)(id,SEL))objc_msgSend)((id)cl,sel_registerName("mainDisplay"));
+ if(!ui_getter(display,"pointScale",'q')){puts("CADisplay point-scale getter unavailable; no update");return 1;}
+ uint64_t before=((uint64_t(*)(id,SEL))objc_msgSend)(display,sel_registerName("pointScale"));printf("WindowServer pointScale before=%llu expected=%llu\n",(unsigned long long)before,expected);if(before!=expected)return 1;
+ SEL set_scale=sel_registerName("setPointScale:"),apply=sel_registerName("setDisplayProperties:");Method setter=class_getInstanceMethod(props_class,set_scale),method=class_getInstanceMethod(cl,apply);char arg[16]={0},ret[16]={0};
+ if(!setter||!method||method_getNumberOfArguments(setter)!=3||method_getNumberOfArguments(method)!=3)return 1;
+ method_getArgumentType(setter,2,arg,sizeof arg);method_getReturnType(method,ret,sizeof ret);if(arg[0]!='Q'||ret[0]!='B'){puts("display update ABI mismatch; no update");return 1;}
+ id props=((id(*)(id,SEL))objc_msgSend)((id)props_class,sel_registerName("new"));if(!props)return 1;
+ ((void(*)(id,SEL,uint64_t))objc_msgSend)(props,set_scale,next);Boolean accepted=((Boolean(*)(id,SEL,id))objc_msgSend)(display,apply,props);printf("WindowServer setDisplayProperties pointScale=%llu accepted=%u\n",next,accepted);
+ if(!accepted)return 1;
+ for(unsigned i=0;i<5;i++){if(ui_getter(display,"update",'v'))((void(*)(id,SEL))objc_msgSend)(display,sel_registerName("update"));CFRunLoopRunInMode(kCFRunLoopDefaultMode,.2,0);}
+ uint64_t after=((uint64_t(*)(id,SEL))objc_msgSend)(display,sel_registerName("pointScale"));printf("WindowServer pointScale after=%llu; FBS/UIKit and scene layout require verification\n",(unsigned long long)after);return after==next?0:1;
+}

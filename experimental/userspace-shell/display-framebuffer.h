@@ -1,6 +1,7 @@
 /* Read-only queries through the shipped iOS27 IOMobileFramebuffer interface.
  * The getter trampolines' register contracts were checked in the exact cache.
  * No guessed external-method selectors or synthesized scanout are used. */
+#include <CoreFoundation/CoreFoundation.h>
 static unsigned framebuffer_notification_count;
 static void framebuffer_notification(void *context,uint64_t a,uint64_t b,uint64_t c){
  printf("IOMFB notification context=%p words=%#llx/%#llx/%#llx\n",context,(unsigned long long)a,(unsigned long long)b,(unsigned long long)c);framebuffer_notification_count++;

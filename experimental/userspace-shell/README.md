@@ -583,3 +583,71 @@ contacts, without interpreting KDK data with iOS accessors. The sanitizer test
 Helper CI40858316371 and source6628f67 were staged/admitted/read back as
 /private/var/ngpu/shell/display-control.input10. Live touch functionality is
 pending physical verification; source and host tests alone do not establish it.
+
+### Live boot74: complete stock application installation (2026-10-29)
+
+The running userspace is iOS27.1 build24A94425 from the iPhone19,4 restore.
+Before this repair, LaunchServices enumerated212 base records and none of the52
+bundles in `/private/var/staged_system_apps` had a bundle container. Skipping
+Setup Assistant had not completed this separate installation step.
+
+All52 staged applications now have real bundle containers and LaunchServices
+records: the final enumeration is264 records, all52 expected identifiers
+present, and52 container URLs. The serial installer batch returned0 for49
+apps; Compass and the restored Calculator/Contacts installs also succeeded.
+This proves installation and registration, not execution of all52 applications
+or working hardware services.
+
+`display-control app-install-staged NAME.app` uses the shipped
+`MIInstallerClient` asynchronous installation API, its exact four-argument reply
+block, `MIInstallOptions` SystemAppInstall/InstallForMigrator, the identifier
+from the original Info.plist, and the stock `MIAppIdentity initWithBundleID:`
+common Data location/persona. The helper requires the exact allowedSPI value
+`InstallForInstallCoordination`. The old LSApplicationWorkspace install APIs
+return unimpErr in this userspace and must not be used for this operation.
+
+The actual failure chain also required original-binary CPU compatibility for
+installcoordinationd, MobileInstallationHelperService, trustd and its file
+helper. The native installd thread stack named its synchronous trustd wait.
+A separate macOS AMFI version-entitlement policy rejected the unchanged iOS
+trustd, which has no such entitlement. The same-boot diagnostic excludes only
+that name from the macOS version list: entry`fffffff006f3b240` points from
+`fffffff006811bb6` to`fffffff006811bb7`. Exact module segment/function/table
+preimages, original trustd SHA, native readback and debug-handler restoration
+were verified. This is a mixed-platform owner-development workaround; it does
+not turn off signature or trust-cache validation. It still needs an explicit
+future-boot integration decision.
+
+`select-zeta-ios27-installer-arch.py` preserves cache-file signatures on disk
+and adds two exact post-validation instructions to libdyld's
+`macho_best_slice_in_fd`: the executable grade uses the shipped original x1
+architecture pair and the same grade is passed for executable candidates. The
+converted libdyld header otherwise advertises arm64 and makes the installer
+reject original x1 applications. Slice parsing, platform checks and signature
+validation continue normally. Neither this grading change nor registration
+proves native x1 hardware support: application instruction conversion is still
+required by this port.
+
+Failed stock installations consume their staged source. Calculator/Contacts
+were restored from the original32 files using `restore-staged-file`, which
+verifies decompressed size/SHA before creating a new Data file, refuses
+existing paths and unsafe components, and retains source mode/owner. Every
+restored file was read back and hashed before retrying installation.
+
+Workspace evidence: `live-display74/stock-apps7/all-stock-registration-result.json`,
+`apps-after-all-stock.txt`, `install-bulk-results-current3.tsv`,
+`restore-results.json`, and `installer-arch2/mobile-installation.log` under the
+parent iOS27 work directory. The current selected CPU/cache profile at the
+registration checkpoint is `native27-installer-arch-selected2`; later app
+execution checkpoints must extend that profile, not an earlier display profile.
+
+The first app execution check extended the profile to
+`native27-calculator-selected1` (Calculator:18,675 descriptors;86 filenames;
+append high-water924,321). A direct diagnostic process23746 executed the real
+Calculator through SwiftUI into UIApplicationMain/GSEventRunModal without the
+old instruction fault. This is execution/run-loop proof, not foreground-window
+proof. The stock workspace foreground request returned false while the device
+reported locked with no passcode. The direct root diagnostic was then stopped
+to avoid interfering with a normal SpringBoard launch. Other app executables
+have not all received instruction conversion, so52 registrations must not be
+reported as52 qualified working applications.

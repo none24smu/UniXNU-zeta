@@ -75,6 +75,13 @@ needed. The new helper is a separate bundle entry, so the live nav13 executable
 and its current trust admission need not be rotated. Do not reboot merely to
 finish packaging. Retain the control boot image and original addon files.
 
+`stage-zeta-ios27-boot-addon.py --capture CAPTURE --package ADDON --backup NEW_BACKUP`
+performs this separate staging step through the existing USB owner. It checks
+all expected preimages before changing a file, backs up the existing contents,
+publishes the consolidated cache last and verifies every byte. It does not start
+the new jobs, rotate live trust, or reboot. An unfamiliar current file causes an
+abort before any file is written.
+
 Qualification remains separate: a successful build does not prove boot, physical
 Home input, complete foldable behavior or 60/90 Hz performance. The physical power
 button still uses the existing host PMIC bridge. Bluetooth transport, the proper

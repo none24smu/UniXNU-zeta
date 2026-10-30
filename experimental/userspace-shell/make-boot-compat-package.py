@@ -60,12 +60,14 @@ def main():
     shell_manifest = json.loads((args.shell_package / 'manifest.json').read_text())
     helper_manifest = json.loads((args.helper_artifact / 'trust.json').read_text())
     payloads = {}
+    expected_before = {}
     hashes = []
     for name in ('ZetaDash', 'ZetaShellAgent'):
         raw = (args.shell_package / name).read_bytes()
         cd, _ = audit_executable(raw, shell_manifest['files'][name], writer)
         require(raw[cd['at'] + 38] == 26, 'shell owner metadata changed')
         payloads['addons/ZetaShellAgent.bundle/' + name] = (raw, 0o755)
+        expected_before['/private/var/ngpu/addons/ZetaShellAgent.bundle/' + name] = hashlib.sha256(raw).hexdigest()
         hashes.append(writer.cdhash(raw, cd))
     raw = (args.helper_artifact / 'display-control').read_bytes()
     cd, off = audit_executable(raw, helper_manifest['files']['display-control'], writer)
@@ -105,6 +107,8 @@ def main():
     payloads['xpc/launchd.plist.sig'] = (sig, 0o644)
     for name in ('extensions.plist', 'extensions.plist.sig', 'foreground_user_endpoints.plist'):
         payloads['xpc/' + name] = ((args.xpc_source / name).read_bytes(), 0o644)
+    for name in ('launchd.plist', 'launchd.plist.sig', 'extensions.plist', 'extensions.plist.sig', 'foreground_user_endpoints.plist'):
+        expected_before['/private/var/ngpu/xpc/' + name] = hashlib.sha256((args.xpc_source / name).read_bytes()).hexdigest()
     require(len(hashes) == len(set(hashes)) == 4, 'unexpected trust entry count')
     trust = (struct.pack('<I', 2) + uuid.uuid5(uuid.NAMESPACE_URL, 'org.unixnu.zeta.ios27.boot-compat.v1').bytes +
              struct.pack('<I', len(hashes)) + b''.join(h + bytes([2, 0, 0, 0]) for h in sorted(hashes)))
@@ -118,6 +122,7 @@ def main():
         files['/private/var/ngpu/' + relative] = dict(record(path), mode=oct(mode), uid=0, gid=0)
     (args.output / 'boot-compat.trustcache').write_bytes(trust)
     result = dict(schema='zeta-ios27-boot-addon-v1', files=files, helper_ci=args.helper_run,
+                  expected_before_sha256=expected_before,
                   helper_cdhash=helper_hash.hex(), trustcache=record(args.output / 'boot-compat.trustcache'),
                   jobs=jobs, original_jobs=len(original['LaunchDaemons']), new_jobs=len(cache['LaunchDaemons']),
                   existing_jobs_preserved=True, native_execution_pending=True,

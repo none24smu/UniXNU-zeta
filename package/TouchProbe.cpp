@@ -7,7 +7,7 @@
 //      report descriptor (logged in hex)
 //   4  also log the input reports it sends for zeta-touch-listen=<s> (default 30) seconds: report id, length, first bytes
 // `zeta-touch-mt=1` then switches the firmware to heat frames as the stock HAL does (feature 0x05, panel state 0x38) and reads
-// them for zeta-touch-listen2=<s> (default 120, 0 = for good): each panel's 21 x 30 grid goes through the stock heat
+// them for zeta-touch-listen2=<s> (default 0 = for good): each panel's 21 x 30 grid goes through the stock heat
 // library's finger path (HeatTouch.h), and the contacts, mapped into the spanned screen (zeta-touch-flip=<bits>), are
 // published for the digitizer in HidInputProbe.cpp (zeta-touch-hid=1).
 // `zeta-swipe=<s>`: sheng's scripted input, s seconds after the probe starts (see swipeThread).
@@ -543,7 +543,7 @@ struct Touch {
         unsigned counts[256] = {}, shown[256] = {}, pointers = 0;
         const uint64_t end = mach_absolute_time() + (uint64_t)seconds * 19200000;
         flip = bootArg("zeta-touch-flip");
-        hinge = bootArg("zeta-span-hinge", 64);
+        hinge = bootArg("zeta-span-hinge", 66);   // NativeLegacyDisplay spans 1344 + 66 + 1344
         while (!seconds || mach_absolute_time() < end) {
             liftQuiet();
             if (!waitIrq(20)) continue;
@@ -590,7 +590,7 @@ void run(void *, wait_result_t) {
     if (const unsigned value = bootArg("zeta-touch-mt")) {
         touch->mode(value);
         // zeta-touch-listen2=0: keep reading (the digitizer stays live for the session).
-        touch->listen(bootArg("zeta-touch-listen2", 120));
+        touch->listen(bootArg("zeta-touch-listen2", 0));
         IOLog("zeta-touch: listen after mode switch done\n");
     }
 }

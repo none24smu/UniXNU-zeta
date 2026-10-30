@@ -1094,10 +1094,10 @@ static void crash_banner(unsigned now) {
 }
 static void touch_overlay_locked(void);
 static void touch_overlay(void) {
-  // sheng-banner=0 switches every on-screen diagnostic painting off once the system owns the display (the UFS log carries the same rows):
+  // Every on-screen diagnostic painting is off once the system owns the display unless sheng-banner=1 (the UFS log carries the same rows):
   // the painters hold render_busy for about a million uncached stores, which a swap's scanout hand-off has to wait for.
   static int banner_off=-1;
-  if(banner_off<0){unsigned v=1;PE_parse_boot_argn("sheng-banner",&v,sizeof(v));banner_off=v==0;}
+  if(banner_off<0){unsigned v=0;PE_parse_boot_argn("sheng-banner",&v,sizeof(v));banner_off=v==0;}
   if(banner_off)return;
   __atomic_fetch_add(&touch_passes,1,__ATOMIC_RELAXED);
   // Same rule as the text renderer: draw only while holding render_busy, so a display handoff (which takes it before

@@ -431,6 +431,18 @@ void Bringup::path() {
     mdpCopy(0x7000, 0x5000, 0x1f8);                    // VIG1 <- VIG0
     mdpCopy(0x46000, 0x45000, 0x320);                  // LM_1 <- LM_0
     mdpCopy(0x81200, 0x81100, 0x100, 0x04, 0x18);      // DSC_1 encoder <- DSC_0 encoder, status words skipped
+    // The panel decodes with the PPS in kOnCommands, but DSC_0 carries ABL's rate model for the left panel
+    // (scale_increment_interval 25371, nfl_bpg_offset 27 against the PPS's 25889 and 26). Flat content survives the
+    // mismatch; detail (the logo edge) decodes as noise smeared to the right. Take both from the PPS that is sent.
+    for (size_t at = 0; at < sizeof(kOnCommands);) {
+        const uint8_t *pps = kOnCommands + at + 7;
+        if (kOnCommands[at] == 0x0a) {
+            mdpWrite(0x81248, (uint32_t)(pps[22] << 8 | pps[23]) | (uint32_t)((pps[24] << 8 | pps[25]) & 0x7ff) << 16);
+            mdpWrite(0x81250, (uint32_t)(pps[28] << 8 | pps[29]) | (uint32_t)(pps[30] << 8 | pps[31]) << 16);
+            break;
+        }
+        at += 7 + (size_t)(kOnCommands[at + 5] << 8 | kOnCommands[at + 6]);
+    }
     mdpWrite(0x81f84, mdpRead(0x81f04));
     mdpWrite(0x81f88, mdpRead(0x81f08));
     mdpWrite(0x81f80, 1);                              // DSC_1 from PP_1

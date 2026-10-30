@@ -74,9 +74,11 @@ void native_aks_call(uint32_t selector, int32_t result) {
     aks_publish();
 }
 static void native_keyevents_probe(void) {
-    unsigned enabled = 0, original = 0;
-    if (!PE_parse_boot_argn("offline-key-events", &enabled, sizeof(enabled)) || enabled != 1 ||
-        native_keyevents_stage) return;
+    // On by default with sheng-aks=1 (liveactivitiesd traps on a NULL MKBEventsRegister without it);
+    // offline-key-events=0 turns it off.
+    unsigned enabled = 1, original = 0;
+    PE_parse_boot_argn("offline-key-events", &enabled, sizeof(enabled));
+    if (enabled != 1 || native_keyevents_stage) return;
     native_keyevents_stage = 1;
     PE_parse_boot_argn("offline-keystore", &original, sizeof(original));
     native_keyevents_status = kIOReturnNotPermitted;

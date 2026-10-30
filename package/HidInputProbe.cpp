@@ -394,7 +394,8 @@ bool homeRequested() {
 // ZetaShell.c's spmi command (msm-5.4 spmi-pmic-arb.c) and the stock HLOS do.
 extern "C" vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 extern "C" void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
-extern "C" vm_size_t page_mask;
+// page_mask is already declared in scope by the kernel headers IOKit pulls in
+// (ZetaShell.c, a C unit, has to declare it itself; this C++ unit must not).
 #define ZETA_VM_WIMG_IO 0x7 // osfmk/arm/memory_types.h VM_WIMG_IO
 
 static volatile uint32_t *gPonChannel; // the PON APID's observer channel, mapped once

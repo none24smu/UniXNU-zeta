@@ -29,8 +29,11 @@ extern kern_return_t bootstrap_look_up(mach_port_t,const char*,mach_port_t*);
 #include "display-metrics.h"
 #include "display-hit-test.h"
 #include "display-touch-trace.h"
+#include "display-boot-compat.h"
 static int control(int argc,char **argv){
  setvbuf(stdout,NULL,_IONBF,0);printf("live-display uid=%u pid=%d\n",getuid(),getpid());
+ if(argc==2&&!strcmp(argv[1],"boot-edr-watch"))return boot_edr_watch(argv[0]);
+ if(argc==2&&!strcmp(argv[1],"input-bridge-daemon"))return run_input_bridge(0,1);
  if(argc==4&&!strcmp(argv[1],"finger-hit-test-filter"))return finger_hit_test_filter(argv[2],argv[3]);
  if(argc==6&&!strcmp(argv[1],"trace-native-touches"))return trace_native_touches(argc,argv);
  if(argc==2&&!strcmp(argv[1],"frontmost-app")){
@@ -55,7 +58,7 @@ static int control(int argc,char **argv){
  if(argc>=3&&!strcmp(argv[1],"perf-sample"))return perf_sample(argc,argv);
  if(argc==9&&!strcmp(argv[1],"restore-staged-file"))return restore_staged_file(argc,argv);
  if((argc==2&&(!strcmp(argv[1],"apps-api")||!strcmp(argv[1],"apps-list")||!strcmp(argv[1],"apps-rebuild-system")))||(argc==3&&(!strcmp(argv[1],"app-install-staged")||!strcmp(argv[1],"app-register-root")||!strcmp(argv[1],"app-build-system-record")||!strcmp(argv[1],"app-refresh-system-record")||!strcmp(argv[1],"app-open")||!strcmp(argv[1],"app-info")||!strcmp(argv[1],"app-reregister")||!strcmp(argv[1],"app-architecture")||!strcmp(argv[1],"app-open-error")||!strcmp(argv[1],"app-open-unlock"))))return apps_control(argc,argv);
- if(argc==3&&(!strcmp(argv[1],"input-bridge")||!strcmp(argv[1],"input-bridge-native")))return run_input_bridge((unsigned)strtoul(argv[2],NULL,0),!strcmp(argv[1],"input-bridge-native"));
+ if(argc==3&&(!strcmp(argv[1],"input-bridge")||!strcmp(argv[1],"input-bridge-native"))){unsigned seconds=(unsigned)strtoul(argv[2],NULL,0);return seconds?run_input_bridge(seconds,!strcmp(argv[1],"input-bridge-native")):2;}
  if((argc==2||argc==3)&&(!strcmp(argv[1],"hid")||!strcmp(argv[1],"hid-refresh")))return probe_hid(argc==3?(unsigned)strtoul(argv[2],NULL,0):0,!strcmp(argv[1],"hid-refresh"));
  if((argc==2&&(!strcmp(argv[1],"lock-service-info")||!strcmp(argv[1],"lock-status")))||(argc==3&&!strcmp(argv[1],"request-unlock"))){
   void *sbs=dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",RTLD_NOW|RTLD_LOCAL);if(!sbs)return 1;

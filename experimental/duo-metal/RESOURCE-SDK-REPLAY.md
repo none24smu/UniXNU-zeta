@@ -28,7 +28,7 @@ called an exact original-header snapshot replay. `replay.json` says so explicitl
 Reproduce this bounded postcheck without rebuilding a kernel:
 
 ```sh
-gh workflow run air-probe.yml --ref port/ios27-userspace \
+gh workflow run air-probe.yml --ref ios-27 \
   -f resource_snapshot_run=40588059062
 ```
 

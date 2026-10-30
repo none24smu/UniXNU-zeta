@@ -16,7 +16,10 @@ static int start_edr_in_task(mach_port_t task){
  arm_thread_state64_t state={0};state.__x[0]=scratch;state.__x[2]=entry;state.__sp=(scratch+bytes-256)&~15ULL;state.__pc=create;state.__lr=park;
  kr=thread_set_state(bootstrap,ARM_THREAD_STATE64,(thread_state_t)&state,ARM_THREAD_STATE64_COUNT);if(!kr)kr=thread_resume(bootstrap);printf("remote libpthread bootstrap port=%#x resume_kr=%d\n",bootstrap,kr);int result=1,returned=0;
  if(!kr){for(unsigned attempt=0;attempt<1000;attempt++){mach_msg_type_number_t count=ARM_THREAD_STATE64_COUNT;kern_return_t sk=thread_get_state(bootstrap,ARM_THREAD_STATE64,(thread_state_t)&state,&count);if(sk){printf("bootstrap state kr=%d\n",sk);break;}if(arm_thread_state64_get_pc(state)==park){uint64_t pthread=0;n=0;kern_return_t read=vm_read_overwrite(task,scratch,8,(vm_address_t)&pthread,&n);printf("pthread_create_from_mach_thread return=%llu pthread=%#llx read_kr=%d\n",(unsigned long long)state.__x[0],(unsigned long long)pthread,read);result=state.__x[0]!=0||read||n!=8||!pthread;returned=1;break;}usleep(10000);}}
- kern_return_t stop=thread_terminate(bootstrap);printf("bootstrap cleanup terminate_kr=%d returned=%d\n",stop,returned);mach_port_deallocate(mach_task_self(),bootstrap);if(!stop){kr=vm_deallocate(task,scratch,bytes);printf("scratch free kr=%d\n",kr);}else result=1;
+ kern_return_t stop=thread_terminate(bootstrap);printf("bootstrap cleanup terminate_kr=%d returned=%d\n",stop,returned);
+ /* The terminated bootstrap right may be guarded. Controller exit releases
+  * it; explicitly deallocating it killed the live controller with EXC_GUARD. */
+ if(!stop){kr=vm_deallocate(task,scratch,bytes);printf("scratch free kr=%d\n",kr);}else result=1;
  server_queue=0;n=0;kr=vm_read_overwrite(task,queue,8,(vm_address_t)&server_queue,&n);printf("libEDR server queue after=%#llx read_kr=%d\n",(unsigned long long)server_queue,kr);return result;
 }
 

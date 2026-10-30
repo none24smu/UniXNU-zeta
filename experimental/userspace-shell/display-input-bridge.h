@@ -33,8 +33,9 @@ static Boolean input_set(void*t,void*c,CFTypeRef s,CFStringRef key,CFTypeRef val
 static void input_notification(void*t,void*c,CFTypeRef s,uint32_t type,CFDictionaryRef p){(void)t;(void)c;(void)s;(void)p;printf("input bridge notification=%u\n",type);}
 static const InputCallbacks input_callbacks={2,input_notification,input_set,input_property,NULL,NULL,NULL};
 static int run_input_bridge(unsigned seconds,int native_digitizer){
- if(seconds<1||seconds>3600)return 2;
- alarm(seconds+30);
+ /* Zero is reserved for the explicit launchd input-bridge-daemon command. */
+ if(seconds>3600)return 2;
+ alarm(seconds?seconds+30:0);
  void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);if(!io)return 1;
 #define INPUT_API(result,name,args) result(*name)args=(result(*)args)dlsym(io,#name);if(!name){puts("missing " #name);return 1;}
  INPUT_API(CFMutableDictionaryRef,IOServiceMatching,(const char*))
@@ -102,7 +103,7 @@ static int run_input_bridge(unsigned seconds,int native_digitizer){
  printf("input bridge sources=%u duration=%u\n",sources,seconds);
  uint64_t end=mach_continuous_time();mach_timebase_info_data_t tb;mach_timebase_info(&tb);end+=(uint64_t)seconds*1000000000ULL*tb.denom/tb.numer;
  uint8_t bytes[65536];unsigned elapsed=0;
- while(sources&&mach_continuous_time()<end){
+ while(sources&&(!seconds||mach_continuous_time()<end)){
   for(unsigned i=0;i<2;i++){
    InputSource *s=&input_sources[i];if(!s->service||!s->address)continue;
    for(unsigned n=0;n<256&&IODataQueueDataAvailable((void*)s->address);n++){

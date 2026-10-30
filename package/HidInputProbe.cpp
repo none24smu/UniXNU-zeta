@@ -11,6 +11,9 @@
 // offline-hid-auto-home=<seconds after the probe> offline-hid-auto-home-count (default 1, at most 8) offline-hid-auto-home-interval
 // (default 20 s, at least 5) press unattended, as on sheng, and the host sends one with "\0ZETA:HOME\n" on the XNU USB log
 // (UniXNU scripts/native-dwc3-console.c).
+// offline-power-key=1 polls the PMK8350 power-on peripheral in the kernel (SPMI sid 0 STATUS 0x1310 bit 0x80) and queues a short
+// power-key press on each physical press, so the side button locks/wakes with no host bridge; pair it with the input-bridge daemon
+// (org.unixnu.zeta.boot-input) that carries the HID device's events to backboardd. Default off leaves behaviour unchanged.
 // zeta-touch-hid=1 adds NativeHidInput's touch digitizer (report 3, ten fingers), fed by the digitizer probe (TouchProbe.cpp)
 // through the native_touch_* seqlock and its sink. By default it is in the Home device's descriptor, after the keyboard: sheng's
 // combined layout, the one whose event driver and user client attach on hardware; the event services get sheng's Built-In /
@@ -383,6 +386,86 @@ bool homeRequested() {
     return false;
 }
 
+// Autonomous side button (offline-power-key=1): read the PMK8350 power-on
+// peripheral in the kernel so the physical key queues a press with no host. The
+// host bridge (board/scripts/zeta-live-power-button.py) polls SPMI sid 0 STATUS
+// 0x1310 bit 0x80 and calls the shell `power` command; this does the same read
+// on the HID work-loop through the SPMI v5 observer channel, exactly as
+// ZetaShell.c's spmi command (msm-5.4 spmi-pmic-arb.c) and the stock HLOS do.
+extern "C" vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+extern "C" void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
+extern "C" vm_size_t page_mask;
+#define ZETA_VM_WIMG_IO 0x7 // osfmk/arm/memory_types.h VM_WIMG_IO
+
+static volatile uint32_t *gPonChannel; // the PON APID's observer channel, mapped once
+static vm_offset_t gPonBase; static vm_size_t gPonSize;
+static IOTimerEventSource *gPowerTimer;
+
+// The host bridge's debounce: arm on a stable release, fire once on the next
+// stable press, so a held button is one press and a key is never left down.
+struct ZetaButton {
+    int candidate = -1, stable = -1, samples = 0; bool released = false;
+    bool sample(bool down) {
+        const int d = down ? 1 : 0;
+        if (d != candidate) {candidate = d; samples = 1;} else ++samples;
+        if (samples < 2 || stable == d) return false;
+        stable = d;
+        if (!d) {released = true; return false;}
+        return released;
+    }
+};
+static ZetaButton gPowerButton;
+
+// One SPMI v5 EXT_READL of PMK8350 PON STATUS (sid 0, address 0x1310): -1 on a
+// bus error, else the byte (bit 0x80 = key down).
+static int ponReadStatus() {
+    if (!gPonChannel) return -1;
+    gPonChannel[0] = 1u << 27 | (0x1310 & 0xff) << 4 | 0; // EXT_READL, one byte
+    __asm__ volatile("dsb sy" ::: "memory");
+    uint32_t status = 0;
+    const uint64_t deadline = counterNow() + (gFrequency ? gFrequency / 500 : 0); // ~2 ms
+    while (!((status = gPonChannel[2]) & 1) && counterNow() < deadline) {}
+    if ((status & 0xf) != 1) return -1;
+    return (int)(gPonChannel[6] & 0xff);
+}
+
+void powerPoll(OSObject *, IOTimerEventSource *source) {
+    const int status = ponReadStatus();
+    if (status >= 0 && gPowerButton.sample((status & 0x80) != 0) && gPower.request())
+        __atomic_fetch_add(&zeta_hid_power_stats[0], 1, __ATOMIC_RELAXED);
+    source->setTimeoutMS(40);
+}
+
+// Resolve the PON APID once (APID map at 0xc440900, PPID in bits 8..19; sid 0
+// peripheral 0x13 -> PON base 0x1300), map its 0xe600000+0x80*apid channel and
+// start a 40 ms poll on the HID work-loop. Degrades to a log line on any failure.
+static void startPowerKey(IOService *device) {
+    if (!bootArg("offline-power-key")) return;
+    const unsigned ppid = 0u << 8 | 0x1310 >> 8; // 0x13
+    const uint64_t mphys = 0xc440900ull, mfirst = mphys & ~(uint64_t)page_mask;
+    const vm_size_t msize = (vm_size_t)(((mphys + 0x800 + page_mask) & ~(uint64_t)page_mask) - mfirst);
+    const vm_offset_t mbase = ml_io_map_unmappable((vm_offset_t)mfirst, msize, ZETA_VM_WIMG_IO);
+    if (!mbase) {IOLog("zeta-hid: power key: APID map failed\n"); return;}
+    volatile uint32_t *const map = (volatile uint32_t *)(mbase + (mphys - mfirst));
+    int apid = -1;
+    for (unsigned n = 0; n < 0x200 && apid < 0; ++n) {const uint32_t e = map[n]; if (e && ((e >> 8) & 0xfff) == ppid) apid = (int)n;}
+    ml_io_unmap(mbase, msize);
+    if (apid < 0) {IOLog("zeta-hid: power key: no APID for PON\n"); return;}
+    const uint64_t cphys = 0xe600000ull + 0x80 * (unsigned)apid, cfirst = cphys & ~(uint64_t)page_mask;
+    gPonSize = (vm_size_t)(((cphys + 0x20 + page_mask) & ~(uint64_t)page_mask) - cfirst);
+    gPonBase = ml_io_map_unmappable((vm_offset_t)cfirst, gPonSize, ZETA_VM_WIMG_IO);
+    if (!gPonBase) {IOLog("zeta-hid: power key: channel map failed\n"); gPonSize = 0; return;}
+    gPonChannel = (volatile uint32_t *)(gPonBase + (cphys - cfirst));
+    gPowerTimer = IOTimerEventSource::timerEventSource(device, powerPoll);
+    if (!gPowerTimer || gLoop->addEventSource(gPowerTimer) != kIOReturnSuccess) {
+        IOLog("zeta-hid: power key: no timer\n");
+        OSSafeReleaseNULL(gPowerTimer);
+        ml_io_unmap(gPonBase, gPonSize); gPonBase = 0; gPonSize = 0; gPonChannel = nullptr; return;
+    }
+    IOLog("zeta-hid: autonomous power key on PON apid %d\n", apid);
+    gPowerTimer->setTimeoutMS(200);
+}
+
 // Always release after a press, even when the press returned an error: input is never left down.
 void tick(OSObject *, IOTimerEventSource *source) {
     if(gPower.down()) {
@@ -592,6 +675,7 @@ void zeta_hid_input_probe(void) {
     zeta_hid_stats[0] = 3;
     if (touchTarget()) native_touch_set_sink(&touchNotify, nullptr);
     IOLog("zeta-hid: Home input started (auto %u s, %u presses every %u s)\n", first, gAutoCount, gAutoInterval);
+    startPowerKey(device);
     gTimer->setTimeoutMS(1000);
 }
 
